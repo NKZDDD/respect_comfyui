@@ -1,15 +1,19 @@
 [project]
-name = "xiaopei_comfyui"
-version = "1.0.0"
-description = "ComfyUI 小裴 API 扩展节点，封装 api.aicopy.top 的图片与视频接口"
+name = "respect_comfyui"
+version = "1.1.0"
+description = "Respect ComfyUI 扩展节点：封装 api.aicopy.top 的图片/视频生成接口，并提供 ZIP 批量加载等基础节点"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Xiaopei" }]
+authors = [{ name = "Respect" }]
+keywords = ["comfyui", "comfyui-nodes", "image-generation", "video-generation", "aicopy"]
 classifiers = [
     "Framework :: ComfyUI",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
     "requests>=2.31.0",
@@ -18,9 +22,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://api.aicopy.top"
+Homepage = "https://github.com/NKZDDD/respect_comfyui"
+Repository = "https://github.com/NKZDDD/respect_comfyui"
+Issues = "https://github.com/NKZDDD/respect_comfyui/issues"
 
 [tool.comfy]
-PublisherId = "xiaopei"
-DisplayName = "小裴 ComfyUI 扩展"
+PublisherId = "respect"
+DisplayName = "Respect ComfyUI 扩展"
 Icon = ""

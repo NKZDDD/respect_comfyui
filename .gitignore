@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# 运行时生成
+comfyui_multi/
+output/
+outputs/
+respect_zip/
+*.log
+
+# 临时文件
+*.tmp
+_test_*.py
+
+# 密钥 / 本地配置（千万不要提交）
+.env
+.env.*
+*.key
+secrets.*
+config.local.*
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~

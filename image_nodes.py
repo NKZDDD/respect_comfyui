@@ -1,6 +1,6 @@
-"""小裴 ComfyUI 扩展 - 图片生成 / 编辑节点。
+"""Respect ComfyUI 扩展 - 图片生成 / 编辑节点。
 
-接口逻辑详见 `小裴api图片接口文档.md`。
+封装 api.aicopy.top 的图片生成与编辑接口。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import torch
 from .utils import (
     ASPECT_RATIOS,
     RESOLUTIONS,
-    XiaopeiAPIError,
+    RespectAPIError,
     api_request,
     aspect_to_x,
     ensure_config,
@@ -25,7 +25,7 @@ from .utils import (
     tensors_concat,
 )
 
-CATEGORY = "小裴/Xiaopei"
+CATEGORY = "Respect"
 
 
 # ---------------------------------------------------------------------------
@@ -76,14 +76,14 @@ def _parse_response_to_tensor(data: Any, cfg, raw_text: str = "") -> torch.Tenso
         payloads = extract_image_payloads(raw_text)
     if not payloads:
         snippet = json.dumps(data, ensure_ascii=False)[:600] if not isinstance(data, str) else data[:600]
-        raise XiaopeiAPIError(f"未能从响应中提取图片: {snippet}")
+        raise RespectAPIError(f"未能从响应中提取图片: {snippet}")
     tensors: list[torch.Tensor] = []
     for item in payloads:
         t = resolve_image_to_tensor(item, cfg)
         if t is not None:
             tensors.append(t)
     if not tensors:
-        raise XiaopeiAPIError("提取到的图片资源全部下载失败")
+        raise RespectAPIError("提取到的图片资源全部下载失败")
     return tensors_concat(tensors)
 
 
@@ -92,7 +92,7 @@ def _parse_response_to_tensor(data: Any, cfg, raw_text: str = "") -> torch.Tenso
 # ---------------------------------------------------------------------------
 
 
-class XiaopeiImageGenerate:
+class RespectImageGenerate:
     """标准图片生成节点。
 
     走 `/v1/images/generations`。如传入单张 reference_image，会附加到 `image` 字段
@@ -103,7 +103,7 @@ class XiaopeiImageGenerate:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "model_family": (IMAGE_FAMILIES, {"default": "firefly-nano-banana"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "aspect_ratio": (ASPECT_RATIOS, {"default": "1:1"}),
@@ -137,7 +137,7 @@ class XiaopeiImageGenerate:
         cfg = ensure_config(api_config)
         model = build_image_model_id(model_family, resolution, aspect_ratio, custom_model)
         if not model:
-            raise XiaopeiAPIError("请选择模型家族或填写 custom_model")
+            raise RespectAPIError("请选择模型家族或填写 custom_model")
 
         body: dict = {
             "model": model,
@@ -164,14 +164,14 @@ class XiaopeiImageGenerate:
 # ---------------------------------------------------------------------------
 
 
-class XiaopeiImageMultiRef:
+class RespectImageMultiRef:
     """多图参考节点，走 `/v1/responses`，最多 7 张参考图。"""
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "model": ("STRING", {"default": "GPT本地版", "multiline": False}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "aspect_ratio": (ASPECT_RATIOS, {"default": "1:1"}),
@@ -245,7 +245,7 @@ GPT_LOCAL_MODELS = [
 ]
 
 
-class XiaopeiGPTLocalImage:
+class RespectGPTLocalImage:
     """GPT 本地版 / 应急通道生图。
 
     `GPT本地版` 开头会优先调用 `/v1/responses`，失败后降级到 `/v1/images/generations`；
@@ -256,7 +256,7 @@ class XiaopeiGPTLocalImage:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "model": (GPT_LOCAL_MODELS, {"default": "GPT本地版"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "aspect_ratio": (ASPECT_RATIOS, {"default": "1:1"}),
@@ -297,8 +297,8 @@ class XiaopeiGPTLocalImage:
         if use_responses:
             try:
                 return (self._call_responses(cfg, model, prompt, size, reference_image, extra_image), model)
-            except XiaopeiAPIError as exc:
-                print(f"[Xiaopei] /responses 调用失败，降级 /images/generations: {exc}")
+            except RespectAPIError as exc:
+                print(f"[Respect] /responses 调用失败，降级 /images/generations: {exc}")
 
         body: dict = {
             "model": model,
@@ -348,7 +348,7 @@ class XiaopeiGPTLocalImage:
 # ---------------------------------------------------------------------------
 
 
-class XiaopeiImageChat:
+class RespectImageChat:
     """通过 `/v1/chat/completions` 多模态调用并从文本中解析图片地址，
     适合 firefly-nano-banana 等通过 chat 流式返回的模型。"""
 
@@ -356,7 +356,7 @@ class XiaopeiImageChat:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "model": ("STRING", {"default": "firefly-nano-banana-1k-1x1"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "stream": ("BOOLEAN", {"default": True}),
@@ -426,15 +426,15 @@ class XiaopeiImageChat:
 
 
 NODE_CLASS_MAPPINGS = {
-    "XiaopeiImageGenerate": XiaopeiImageGenerate,
-    "XiaopeiImageMultiRef": XiaopeiImageMultiRef,
-    "XiaopeiGPTLocalImage": XiaopeiGPTLocalImage,
-    "XiaopeiImageChat": XiaopeiImageChat,
+    "RespectImageGenerate": RespectImageGenerate,
+    "RespectImageMultiRef": RespectImageMultiRef,
+    "RespectGPTLocalImage": RespectGPTLocalImage,
+    "RespectImageChat": RespectImageChat,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaopeiImageGenerate": "小裴 图片生成",
-    "XiaopeiImageMultiRef": "小裴 多参考图编辑",
-    "XiaopeiGPTLocalImage": "小裴 GPT本地版生图",
-    "XiaopeiImageChat": "小裴 多模态对话生图",
+    "RespectImageGenerate": "Respect 图片生成",
+    "RespectImageMultiRef": "Respect 多参考图编辑",
+    "RespectGPTLocalImage": "Respect GPT本地版生图",
+    "RespectImageChat": "Respect 多模态对话生图",
 }

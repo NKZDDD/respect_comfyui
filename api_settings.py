@@ -1,4 +1,4 @@
-"""小裴 ComfyUI 扩展 - API 配置与模型列表节点。"""
+"""Respect ComfyUI 扩展 - API 配置与模型列表节点。"""
 
 from __future__ import annotations
 
@@ -7,21 +7,21 @@ from typing import Any
 from .utils import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT,
-    XiaopeiAPIError,
-    XiaopeiConfig,
+    RespectAPIError,
+    RespectConfig,
     api_request,
     ensure_config,
 )
 
 
-CATEGORY = "小裴/Xiaopei"
+CATEGORY = "Respect"
 
 
-class XiaopeiApiSettings:
+class RespectApiSettings:
     """中转 API 配置节点。
 
-    输出 `XIAOPEI_CONFIG`，供后续图片 / 视频节点使用。
-    api_key 留空时会读取环境变量 `XIAOPEI_API_KEY` 或 `AICOPY_API_KEY`。
+    输出 `RESPECT_CONFIG`，供后续图片 / 视频节点使用。
+    api_key 留空时会读取环境变量 `RESPECT_API_KEY` 或 `AICOPY_API_KEY`。
     """
 
     @classmethod
@@ -37,31 +37,31 @@ class XiaopeiApiSettings:
             },
         }
 
-    RETURN_TYPES = ("XIAOPEI_CONFIG",)
+    RETURN_TYPES = ("RESPECT_CONFIG",)
     RETURN_NAMES = ("api_config",)
     FUNCTION = "build"
     CATEGORY = CATEGORY
 
-    def build(self, api_key: str, base_url: str, timeout: int, proxy: str = "") -> tuple[XiaopeiConfig]:
-        cfg = XiaopeiConfig(
+    def build(self, api_key: str, base_url: str, timeout: int, proxy: str = "") -> tuple[RespectConfig]:
+        cfg = RespectConfig(
             api_key=(api_key or "").strip(),
             base_url=(base_url or DEFAULT_BASE_URL).strip(),
             timeout=int(timeout),
             proxy=(proxy or "").strip(),
         )
         if not cfg.resolve_api_key():
-            print("[Xiaopei] 警告：未提供 api_key 且未检测到 XIAOPEI_API_KEY / AICOPY_API_KEY 环境变量")
+            print("[Respect] 警告：未提供 api_key 且未检测到 RESPECT_API_KEY / AICOPY_API_KEY 环境变量")
         return (cfg,)
 
 
-class XiaopeiLoadModels:
+class RespectLoadModels:
     """请求 `/v1/models`，把模型 ID 列表用换行符拼成字符串输出。"""
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
             },
             "optional": {
                 "filter": ("STRING", {"default": "", "multiline": False, "placeholder": "包含关键字过滤，可留空"}),
@@ -79,7 +79,7 @@ class XiaopeiLoadModels:
         try:
             resp = api_request(cfg, "GET", "/v1/models", retries=2)
             data = resp.json()
-        except XiaopeiAPIError as exc:
+        except RespectAPIError as exc:
             return (f"加载失败: {exc}", "0")
 
         items = data.get("data", []) if isinstance(data, dict) else []
@@ -91,11 +91,11 @@ class XiaopeiLoadModels:
 
 
 NODE_CLASS_MAPPINGS = {
-    "XiaopeiApiSettings": XiaopeiApiSettings,
-    "XiaopeiLoadModels": XiaopeiLoadModels,
+    "RespectApiSettings": RespectApiSettings,
+    "RespectLoadModels": RespectLoadModels,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaopeiApiSettings": "小裴 API 设置",
-    "XiaopeiLoadModels": "小裴 加载模型列表",
+    "RespectApiSettings": "Respect API 设置",
+    "RespectLoadModels": "Respect 加载模型列表",
 }

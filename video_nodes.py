@@ -1,6 +1,6 @@
-"""小裴 ComfyUI 扩展 - 视频生成节点。
+"""Respect ComfyUI 扩展 - 视频生成节点。
 
-接口逻辑详见 `小裴视频文档.md`。
+封装 api.aicopy.top 的视频生成接口。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any, Optional
 import torch
 
 from .utils import (
-    XiaopeiAPIError,
+    RespectAPIError,
     api_request,
     collect_stream_text,
     download_to_output,
@@ -24,7 +24,7 @@ from .utils import (
 )
 
 
-CATEGORY = "小裴/Xiaopei"
+CATEGORY = "Respect"
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def _resolve_video_url(payload: Any, raw_text: str = "") -> str:
         urls = extract_video_urls(raw_text)
     if not urls:
         snippet = raw_text or (json.dumps(payload, ensure_ascii=False)[:600] if not isinstance(payload, str) else payload[:600])
-        raise XiaopeiAPIError(f"未能从响应中提取视频 URL: {snippet}")
+        raise RespectAPIError(f"未能从响应中提取视频 URL: {snippet}")
     return urls[0]
 
 
@@ -127,7 +127,7 @@ SORA2_DURATIONS = ["4", "8", "12"]
 SORA2_ASPECTS = ["16:9", "9:16"]
 
 
-class XiaopeiFireflySora2:
+class RespectFireflySora2:
     """Firefly Sora2 视频生成。模型 ID 由参数自动拼接：
     `firefly-sora2[-pro]-{秒数}s-{比例x}`。
     填了 `custom_model` 时优先使用，方便手动指定任意官方模型名。
@@ -137,7 +137,7 @@ class XiaopeiFireflySora2:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": (SORA2_DURATIONS, {"default": "8"}),
                 "aspect_ratio": (SORA2_ASPECTS, {"default": "16:9"}),
@@ -147,7 +147,7 @@ class XiaopeiFireflySora2:
             "optional": {
                 "first_frame": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用，如 firefly-sora2-pro-12s-16x9"}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/xiaopei，相对路径基于 output，支持绝对路径"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect，相对路径基于 output，支持绝对路径"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳；无扩展名自动补 .mp4"}),
             },
         }
@@ -192,7 +192,7 @@ class XiaopeiFireflySora2:
             try:
                 local = download_to_output(url, cfg, prefix="sora2", save_dir=save_dir, filename=filename)
             except Exception as exc:
-                print(f"[Xiaopei] Sora2 视频下载失败: {exc}")
+                print(f"[Respect] Sora2 视频下载失败: {exc}")
         return (url, local, model)
 
 
@@ -207,7 +207,7 @@ VEO31_RESOLUTIONS = ["720p", "1080p"]
 VEO31_VARIANTS = ["default", "fast", "ref"]
 
 
-class XiaopeiFireflyVeo31:
+class RespectFireflyVeo31:
     """Firefly VEO 3.1 视频生成。
     模型 ID 拼接：`firefly-veo31[-fast|-ref]-{秒数}s-{比例x}-{清晰度}`。
     填了 `custom_model` 时优先使用，方便手动指定 pro / components / 4k 等变体。
@@ -217,7 +217,7 @@ class XiaopeiFireflyVeo31:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": (VEO31_DURATIONS, {"default": "6"}),
                 "aspect_ratio": (VEO31_ASPECTS, {"default": "16:9"}),
@@ -231,7 +231,7 @@ class XiaopeiFireflyVeo31:
                 "ref_image_1": ("IMAGE",),
                 "ref_image_2": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用，如 firefly-veo31-pro-8s-16x9-1080p"}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/xiaopei，相对路径基于 output，支持绝对路径"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect，相对路径基于 output，支持绝对路径"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳；无扩展名自动补 .mp4"}),
             },
         }
@@ -281,7 +281,7 @@ class XiaopeiFireflyVeo31:
             try:
                 local = download_to_output(url, cfg, prefix="veo31", save_dir=save_dir, filename=filename)
             except Exception as exc:
-                print(f"[Xiaopei] VEO3.1 视频下载失败: {exc}")
+                print(f"[Respect] VEO3.1 视频下载失败: {exc}")
         return (url, local, model)
 
 
@@ -294,7 +294,7 @@ RUNWAY45_DURATIONS = ["5", "10"]
 RUNWAY45_ASPECTS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "9:21"]
 
 
-class XiaopeiFireflyRunway45:
+class RespectFireflyRunway45:
     """Firefly Runway 4.5 视频生成。
     模型 ID：`firefly-runway45-{秒数}s-{比例x}-720p`。
     填了 `custom_model` 时优先使用。
@@ -304,7 +304,7 @@ class XiaopeiFireflyRunway45:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": (RUNWAY45_DURATIONS, {"default": "5"}),
                 "aspect_ratio": (RUNWAY45_ASPECTS, {"default": "16:9"}),
@@ -313,7 +313,7 @@ class XiaopeiFireflyRunway45:
             "optional": {
                 "first_frame": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用，如 firefly-runway45-10s-21x9-720p"}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/xiaopei，相对路径基于 output，支持绝对路径"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect，相对路径基于 output，支持绝对路径"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳；无扩展名自动补 .mp4"}),
             },
         }
@@ -357,7 +357,7 @@ class XiaopeiFireflyRunway45:
             try:
                 local = download_to_output(url, cfg, prefix="runway45", save_dir=save_dir, filename=filename)
             except Exception as exc:
-                print(f"[Xiaopei] Runway 4.5 视频下载失败: {exc}")
+                print(f"[Respect] Runway 4.5 视频下载失败: {exc}")
         return (url, local, model)
 
 
@@ -422,14 +422,14 @@ def _sd2_poll(cfg, task_id: str, interval: int = 5, timeout: int = 1800) -> str:
     while time.time() - start < timeout:
         try:
             resp = api_request(cfg, "GET", f"/v1/videos/{task_id}", retries=1, timeout=60)
-        except XiaopeiAPIError as exc:
-            print(f"[Xiaopei] SD2 轮询错误，继续重试: {exc}")
+        except RespectAPIError as exc:
+            print(f"[Respect] SD2 轮询错误，继续重试: {exc}")
             time.sleep(interval)
             continue
         data = resp.json() if resp.content else {}
         status = str(data.get("status", "")).lower()
         if status and status != last_status:
-            print(f"[Xiaopei] SD2 任务 {task_id} 状态: {status}")
+            print(f"[Respect] SD2 任务 {task_id} 状态: {status}")
             last_status = status
         if status in ("completed", "succeeded", "success"):
             url = _sd2_extract_direct_url(data)
@@ -438,12 +438,12 @@ def _sd2_poll(cfg, task_id: str, interval: int = 5, timeout: int = 1800) -> str:
             base = cfg.normalized_base().rsplit("/v1", 1)[0]
             return f"{base}/v1/videos/{task_id}/content"
         if status in ("failed", "cancelled", "canceled", "error"):
-            raise XiaopeiAPIError(f"SD2 任务失败: {json.dumps(data, ensure_ascii=False)[:600]}")
+            raise RespectAPIError(f"SD2 任务失败: {json.dumps(data, ensure_ascii=False)[:600]}")
         time.sleep(interval)
-    raise XiaopeiAPIError(f"SD2 任务超时: {task_id}")
+    raise RespectAPIError(f"SD2 任务超时: {task_id}")
 
 
-class XiaopeiSD2Video:
+class RespectSD2Video:
     """即梦 / SD2 视频生成。
 
     无参考图走 JSON `/v1/videos`；有参考图自动切换到 multipart 上传。
@@ -454,7 +454,7 @@ class XiaopeiSD2Video:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "model": (SD2_MODELS, {"default": "sd2-720p-fast"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": ("INT", {"default": 5, "min": 4, "max": 15}),
@@ -469,7 +469,7 @@ class XiaopeiSD2Video:
                 "ref_image_3": ("IMAGE",),
                 "ref_image_4": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用，例如新模型 sd2-4k"}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/xiaopei，相对路径基于 output，支持绝对路径"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect，相对路径基于 output，支持绝对路径"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳；无扩展名自动补 .mp4"}),
             },
         }
@@ -550,14 +550,14 @@ class XiaopeiSD2Video:
         elif task_id:
             url = _sd2_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
         else:
-            raise XiaopeiAPIError(f"SD2 提交未返回 task_id 或视频 URL: {json.dumps(data, ensure_ascii=False)[:600]}")
+            raise RespectAPIError(f"SD2 提交未返回 task_id 或视频 URL: {json.dumps(data, ensure_ascii=False)[:600]}")
 
         local = ""
         if auto_download and url:
             try:
                 local = download_to_output(url, cfg, prefix="sd2", save_dir=save_dir, filename=filename)
             except Exception as exc:
-                print(f"[Xiaopei] SD2 视频下载失败: {exc}")
+                print(f"[Respect] SD2 视频下载失败: {exc}")
 
         return (url, local, task_id or "")
 
@@ -567,10 +567,10 @@ class XiaopeiSD2Video:
 # ---------------------------------------------------------------------------
 
 
-class XiaopeiSaveVideo:
+class RespectSaveVideo:
     """把视频 URL 下载到指定位置。可以单独使用。
 
-    - `save_dir` 留空 → `ComfyUI/output/xiaopei/`
+    - `save_dir` 留空 → `ComfyUI/output/respect/`
     - `save_dir` 相对路径 → 基于 ComfyUI output 目录
     - `save_dir` 绝对路径 → 直接使用，例如 `D:\\videos\\veo31`
     - `filename` 留空 → 自动 `<prefix>_<时间戳>_<6位hash>.mp4`
@@ -581,13 +581,13 @@ class XiaopeiSaveVideo:
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("XIAOPEI_CONFIG",),
+                "api_config": ("RESPECT_CONFIG",),
                 "video_url": ("STRING", {"default": "", "multiline": False, "forceInput": True}),
             },
             "optional": {
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/xiaopei，相对路径基于 output，支持绝对路径"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect，相对路径基于 output，支持绝对路径"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳；无扩展名自动补 .mp4"}),
-                "prefix": ("STRING", {"default": "xiaopei", "multiline": False, "placeholder": "仅当 filename 为空时用于自动命名"}),
+                "prefix": ("STRING", {"default": "respect", "multiline": False, "placeholder": "仅当 filename 为空时用于自动命名"}),
             },
         }
 
@@ -603,7 +603,7 @@ class XiaopeiSaveVideo:
         video_url: str,
         save_dir: str = "",
         filename: str = "",
-        prefix: str = "xiaopei",
+        prefix: str = "respect",
     ) -> tuple[str]:
         if not video_url:
             return ("",)
@@ -612,29 +612,29 @@ class XiaopeiSaveVideo:
             path = download_to_output(
                 video_url,
                 cfg,
-                prefix=prefix or "xiaopei",
+                prefix=prefix or "respect",
                 save_dir=save_dir,
                 filename=filename,
             )
-            print(f"[Xiaopei] 视频已保存: {path}")
+            print(f"[Respect] 视频已保存: {path}")
             return (path,)
         except Exception as exc:
-            print(f"[Xiaopei] 视频保存失败: {exc}")
+            print(f"[Respect] 视频保存失败: {exc}")
             return ("",)
 
 
 NODE_CLASS_MAPPINGS = {
-    "XiaopeiFireflySora2": XiaopeiFireflySora2,
-    "XiaopeiFireflyVeo31": XiaopeiFireflyVeo31,
-    "XiaopeiFireflyRunway45": XiaopeiFireflyRunway45,
-    "XiaopeiSD2Video": XiaopeiSD2Video,
-    "XiaopeiSaveVideo": XiaopeiSaveVideo,
+    "RespectFireflySora2": RespectFireflySora2,
+    "RespectFireflyVeo31": RespectFireflyVeo31,
+    "RespectFireflyRunway45": RespectFireflyRunway45,
+    "RespectSD2Video": RespectSD2Video,
+    "RespectSaveVideo": RespectSaveVideo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaopeiFireflySora2": "小裴 Firefly Sora2 视频",
-    "XiaopeiFireflyVeo31": "小裴 Firefly VEO3.1 视频",
-    "XiaopeiFireflyRunway45": "小裴 Firefly Runway 4.5 视频",
-    "XiaopeiSD2Video": "小裴 即梦/SD2 视频",
-    "XiaopeiSaveVideo": "小裴 保存视频",
+    "RespectFireflySora2": "Respect Firefly Sora2 视频",
+    "RespectFireflyVeo31": "Respect Firefly VEO3.1 视频",
+    "RespectFireflyRunway45": "Respect Firefly Runway 4.5 视频",
+    "RespectSD2Video": "Respect 即梦/SD2 视频",
+    "RespectSaveVideo": "Respect 保存视频",
 }

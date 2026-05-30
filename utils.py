@@ -1,4 +1,4 @@
-"""小裴 ComfyUI 扩展 - 通用工具模块
+"""Respect ComfyUI 扩展 - 通用工具模块
 
 封装中转 API (api.aicopy.top) 的 HTTP 调用、图片与视频的读写、
 以及 ComfyUI IMAGE tensor 的相互转换。
@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover - ComfyUI 运行环境之外
 
 DEFAULT_BASE_URL = "https://api.aicopy.top"
 DEFAULT_TIMEOUT = 600
-DEFAULT_USER_AGENT = "XiaopeiComfyUI/1.0"
+DEFAULT_USER_AGENT = "RespectComfyUI/1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ DEFAULT_USER_AGENT = "XiaopeiComfyUI/1.0"
 
 
 @dataclass
-class XiaopeiConfig:
+class RespectConfig:
     """中转 API 配置。"""
 
     api_key: str = ""
@@ -69,7 +69,7 @@ class XiaopeiConfig:
     def resolve_api_key(self) -> str:
         if self.api_key:
             return self.api_key
-        env = os.environ.get("XIAOPEI_API_KEY") or os.environ.get("AICOPY_API_KEY")
+        env = os.environ.get("RESPECT_API_KEY") or os.environ.get("AICOPY_API_KEY")
         return env or ""
 
     def proxies(self) -> Optional[dict]:
@@ -78,19 +78,19 @@ class XiaopeiConfig:
         return {"http": self.proxy, "https": self.proxy}
 
 
-def ensure_config(cfg: Any) -> XiaopeiConfig:
-    """允许 API_CONFIG 输入是 dict 或 XiaopeiConfig。"""
-    if isinstance(cfg, XiaopeiConfig):
+def ensure_config(cfg: Any) -> RespectConfig:
+    """允许 API_CONFIG 输入是 dict 或 RespectConfig。"""
+    if isinstance(cfg, RespectConfig):
         return cfg
     if isinstance(cfg, dict):
-        return XiaopeiConfig(
+        return RespectConfig(
             api_key=str(cfg.get("api_key", "")),
             base_url=str(cfg.get("base_url", DEFAULT_BASE_URL)),
             timeout=int(cfg.get("timeout", DEFAULT_TIMEOUT)),
             proxy=str(cfg.get("proxy", "")),
             extra_headers=dict(cfg.get("extra_headers", {}) or {}),
         )
-    raise ValueError("无效的 API 配置，请连接 Xiaopei API Settings 节点")
+    raise ValueError("无效的 API 配置，请连接 Respect API Settings 节点")
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +150,15 @@ def b64_to_tensor(data: str) -> torch.Tensor:
     return bytes_to_tensor(base64.b64decode(data))
 
 
-def url_to_tensor(url: str, cfg: XiaopeiConfig) -> torch.Tensor:
+def url_to_tensor(url: str, cfg: RespectConfig) -> torch.Tensor:
+    # 只对中转 API 自己的域名带 Bearer token；S3 / CloudFront 预签名 URL 不能
+    # 同时带 Authorization 头, 否则 AWS 会返回 400 Bad Request。
+    low = url.lower()
+    is_api = ("aicopy" in low) or ("/v1/" in low)
+    headers = {"Authorization": f"Bearer {cfg.resolve_api_key()}"} if is_api else {}
     resp = requests.get(
         url,
-        headers={"Authorization": f"Bearer {cfg.resolve_api_key()}"},
+        headers=headers,
         timeout=cfg.timeout,
         proxies=cfg.proxies(),
         stream=True,
@@ -303,7 +308,7 @@ def _dedup_preserve(items: Iterable[str]) -> list[str]:
     return out
 
 
-def resolve_image_to_tensor(item: str, cfg: XiaopeiConfig) -> Optional[torch.Tensor]:
+def resolve_image_to_tensor(item: str, cfg: RespectConfig) -> Optional[torch.Tensor]:
     """图片资源字符串 -> tensor。"""
     try:
         if item.startswith("data:"):
@@ -315,7 +320,7 @@ def resolve_image_to_tensor(item: str, cfg: XiaopeiConfig) -> Optional[torch.Ten
         if len(item) > 200 and re.match(r"^[A-Za-z0-9+/=\s]+$", item):
             return b64_to_tensor(item)
     except Exception as exc:  # pragma: no cover - 仅记录失败
-        print(f"[Xiaopei] 图片解析失败: {item[:120]}... err={exc}")
+        print(f"[Respect] 图片解析失败: {item[:120]}... err={exc}")
     return None
 
 
@@ -324,14 +329,22 @@ def resolve_image_to_tensor(item: str, cfg: XiaopeiConfig) -> Optional[torch.Ten
 # ---------------------------------------------------------------------------
 
 
-class XiaopeiAPIError(RuntimeError):
+class RespectAPIError(RuntimeError):
     def __init__(self, message: str, status: int = 0, payload: Any = None):
         super().__init__(message)
         self.status = status
         self.payload = payload
 
 
+def _force_utf8(resp: requests.Response) -> None:
+    """中转 API 默认返回 UTF-8, 但 Content-Type 经常没带 charset,
+    requests 会按 ISO-8859-1 解码导致中文消息乱码。这里强制 utf-8。"""
+    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1", "latin-1"):
+        resp.encoding = "utf-8"
+
+
 def _format_error(resp: requests.Response) -> str:
+    _force_utf8(resp)
     try:
         data = resp.json()
         err = data.get("error") if isinstance(data, dict) else None
@@ -345,7 +358,7 @@ def _format_error(resp: requests.Response) -> str:
 
 
 def api_request(
-    cfg: XiaopeiConfig,
+    cfg: RespectConfig,
     method: str,
     path: str,
     *,
@@ -389,19 +402,19 @@ def api_request(
                 time.sleep(2 ** attempt)
                 continue
             if resp.status_code >= 400:
-                raise XiaopeiAPIError(_format_error(resp), status=resp.status_code)
+                raise RespectAPIError(_format_error(resp), status=resp.status_code)
             return resp
-        except XiaopeiAPIError:
+        except RespectAPIError:
             raise
         except requests.RequestException as exc:
             last_exc = exc
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
                 continue
-            raise XiaopeiAPIError(f"网络错误: {exc}") from exc
+            raise RespectAPIError(f"网络错误: {exc}") from exc
     if last_exc:
-        raise XiaopeiAPIError(f"网络错误: {last_exc}")
-    raise XiaopeiAPIError("未知错误")
+        raise RespectAPIError(f"网络错误: {last_exc}")
+    raise RespectAPIError("未知错误")
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +468,7 @@ def _comfy_output_base() -> str:
     return os.path.join(os.getcwd(), "output")
 
 
-def _output_dir(subdir: str = "xiaopei") -> str:
+def _output_dir(subdir: str = "respect") -> str:
     target = os.path.join(_comfy_output_base(), subdir)
     os.makedirs(target, exist_ok=True)
     return target
@@ -506,10 +519,10 @@ def _resolve_save_target(
 
 def download_to_output(
     url: str,
-    cfg: XiaopeiConfig,
-    prefix: str = "xiaopei",
+    cfg: RespectConfig,
+    prefix: str = "respect",
     ext: str = ".mp4",
-    subdir: str = "xiaopei",
+    subdir: str = "respect",
     save_dir: str = "",
     filename: str = "",
 ) -> str:
