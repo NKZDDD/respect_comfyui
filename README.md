@@ -105,6 +105,8 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectSaveVideo` | Respect 保存视频 | 下载视频 URL 到本地 |
 | `RespectLoadImagesFromZip` | Respect ZIP批量加载图片 | 从 ZIP 按批次取 IMAGE |
 | `RespectLoadVideosFromZip` | Respect ZIP批量加载视频 | 从 ZIP 按批次取视频 |
+| `RespectPreviewImage` | Respect 查看图像 | 节点内预览 IMAGE |
+| `RespectPreviewVideo` | Respect 查看视频 | 节点内渲染 `<video>` 播放本地视频 |
 
 ## 基础加载节点
 
@@ -182,6 +184,23 @@ pip install -r respect_comfyui/requirements.txt
 | 即梦 SD2 | `sd2-720p[-fast]` / `sd2-1080p[-fast]` / `sd2-720p-min[-fast]` | 4-15 秒，min 模型≥5 秒，支持首尾帧/多参考图 |
 
 输出统一为 `video_url`（远端）+ `local_path`（本地）+ `model_used` / `task_id`。
+
+## 预览节点
+
+### Respect 查看图像
+
+输入 IMAGE，直接在节点内显示（行为同核心 PreviewImage）。可接任意输出 IMAGE 的节点，如
+**Respect 图片生成**、**Respect ZIP批量加载图片**。
+
+### Respect 查看视频
+
+输入本地视频路径字符串，在节点内渲染一个 `<video>` 播放器，可直接播放/暂停。
+
+- 入口 `video_path` 接 **Respect Firefly/SD2 视频** 的 `local_path`，或 **Respect ZIP批量加载视频** 的 `first_video`。
+- 支持多行路径（取第一行）。
+- 视频不在 ComfyUI `output/input/temp` 目录时，会自动复制一份到 `output/respect_preview/` 以便播放。
+- 该节点依赖前端脚本 `web/respect_preview.js`，由 ComfyUI 自动加载；安装后需**完全重启**（不是刷新）才能生效。
+- 同时透传 `video_path` 输出，方便继续接 **Respect 保存视频** 等节点。
 
 ## 模型 ID 速查
 
