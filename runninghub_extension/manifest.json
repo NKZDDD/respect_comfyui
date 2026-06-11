@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "RunningHub 批量任务助手",
+  "version": "1.0.1",
+  "description": "在 RunningHub 工作流页面批量创建任务：选一个本地文件夹，自动按顺序把 images/ 与 videos/ 子目录里的图片+视频成对上传并依次运行。",
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.runninghub.ai/*",
+        "https://www.runninghub.cn/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
