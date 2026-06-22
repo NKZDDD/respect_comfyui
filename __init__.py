@@ -13,13 +13,13 @@
 
 from __future__ import annotations
 
-from . import api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes
+from . import api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes, llm_nodes
 
 
 NODE_CLASS_MAPPINGS: dict = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict = {}
 
-for module in (api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes):
+for module in (api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes, llm_nodes):
     NODE_CLASS_MAPPINGS.update(getattr(module, "NODE_CLASS_MAPPINGS", {}))
     NODE_DISPLAY_NAME_MAPPINGS.update(getattr(module, "NODE_DISPLAY_NAME_MAPPINGS", {}))
 

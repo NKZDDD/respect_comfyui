@@ -369,8 +369,13 @@ def api_request(
     stream: bool = False,
     retries: int = 3,
     timeout: Optional[int] = None,
+    headers: Optional[dict] = None,
 ) -> requests.Response:
-    """带重试的通用请求。path 可以是 /v1/xxx 或 xxx (会自动拼接)。"""
+    """带重试的通用请求。path 可以是 /v1/xxx 或 xxx (会自动拼接)。
+
+    传入 `headers` 时直接使用该请求头（用于 Anthropic 的 x-api-key 等非 Bearer 场景），
+    否则按 OpenAI 兼容方式自动生成 Bearer 请求头。
+    """
     base = cfg.normalized_base()
     if path.startswith("/v1/"):
         url = base.rsplit("/v1", 1)[0] + path
@@ -379,9 +384,10 @@ def api_request(
     else:
         url = base + "/" + path.lstrip("/")
 
-    headers = cfg.headers(content_type=None if files else "application/json")
-    if files:
-        headers.pop("Content-Type", None)
+    if headers is None:
+        headers = cfg.headers(content_type=None if files else "application/json")
+        if files:
+            headers.pop("Content-Type", None)
 
     last_exc: Optional[Exception] = None
     for attempt in range(max(1, retries)):
