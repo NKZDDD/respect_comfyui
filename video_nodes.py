@@ -623,10 +623,497 @@ class RespectSaveVideo:
             return ("",)
 
 
+# ===========================================================================
+# 新增模型（06.06 小裴/正寒接口更新）：Kling3 / Sora V3 / Grok
+# ===========================================================================
+
+
+def _img_data_urls(images: list[Optional[torch.Tensor]], max_side: int = 1536, quality: int = 88) -> list[str]:
+    """多张 IMAGE -> base64 data URL 列表（用于异步接口的 reference_images / images）。"""
+    urls: list[str] = []
+    for img in images:
+        if img is None or (hasattr(img, "numel") and img.numel() == 0):
+            continue
+        b64 = tensor_to_b64(img[:1], fmt="JPEG", quality=quality, max_side=max_side)
+        if b64:
+            urls.append(b64[0])
+    return urls
+
+
+# --- 异步 /v1/videos 通用：URL / 状态提取 + 提交 + 轮询 --------------------
+
+
+def _async_extract_url(data: Any) -> str:
+    """从异步视频响应中尽量提取直链视频 URL（兼容多字段与嵌套）。"""
+    if not isinstance(data, dict):
+        return ""
+    for k in ("result_url", "video_url", "url", "download_url", "file_url"):
+        v = data.get(k)
+        if isinstance(v, str) and v.startswith("http"):
+            return v
+    video = data.get("video")
+    if isinstance(video, dict):
+        v = video.get("url")
+        if isinstance(v, str) and v.startswith("http"):
+            return v
+    for parent in ("data", "output", "result"):
+        inner = data.get(parent)
+        if isinstance(inner, dict):
+            u = _async_extract_url(inner)
+            if u:
+                return u
+    return ""
+
+
+_ASYNC_DONE = ("completed", "succeeded", "success", "done", "finished", "complete", "generated")
+_ASYNC_FAIL = ("failed", "cancelled", "canceled", "error", "fail")
+
+
+def _async_status(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for k in ("status", "state", "task_status", "job_status"):
+        v = data.get(k)
+        if isinstance(v, str) and v:
+            return v.lower()
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        for k in ("status", "state", "task_status", "job_status"):
+            v = inner.get(k)
+            if isinstance(v, str) and v:
+                return v.lower()
+    return ""
+
+
+def _submit_async_video(cfg, body: dict, timeout: int = 300) -> tuple[str, str]:
+    """POST /v1/videos，返回 (直链 URL, task_id)。"""
+    resp = api_request(cfg, "POST", "/v1/videos", json_body=body, retries=2, timeout=max(cfg.timeout, timeout))
+    data = resp.json() if resp.content else {}
+    return (_async_extract_url(data), _sd2_extract_task_id(data))
+
+
+def _async_poll(cfg, task_id: str, interval: int = 5, timeout: int = 1800) -> str:
+    start = time.time()
+    last = ""
+    while time.time() - start < timeout:
+        try:
+            resp = api_request(cfg, "GET", f"/v1/videos/{task_id}", retries=1, timeout=60)
+        except RespectAPIError as exc:
+            print(f"[Respect] 轮询错误，继续重试: {exc}")
+            time.sleep(interval)
+            continue
+        data = resp.json() if resp.content else {}
+        url = _async_extract_url(data)
+        status = _async_status(data)
+        if status and status != last:
+            print(f"[Respect] 任务 {task_id} 状态: {status}")
+            last = status
+        if status in _ASYNC_FAIL:
+            raise RespectAPIError(f"任务失败: {json.dumps(data, ensure_ascii=False)[:600]}")
+        if url and (not status or status in _ASYNC_DONE):
+            return url
+        if status in _ASYNC_DONE:
+            base = cfg.normalized_base().rsplit("/v1", 1)[0]
+            return url or f"{base}/v1/videos/{task_id}/content"
+        time.sleep(interval)
+    raise RespectAPIError(f"任务超时: {task_id}")
+
+
+def _finalize_async(cfg, direct: str, task_id: str, *, poll_interval: int, poll_timeout: int,
+                    auto_download: bool, prefix: str, save_dir: str, filename: str) -> tuple[str, str, str]:
+    if direct:
+        url = direct
+    elif task_id:
+        url = _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
+    else:
+        raise RespectAPIError("提交未返回 task_id 或视频 URL")
+    local = ""
+    if auto_download and url:
+        try:
+            local = download_to_output(url, cfg, prefix=prefix, save_dir=save_dir, filename=filename)
+        except Exception as exc:
+            print(f"[Respect] {prefix} 视频下载失败: {exc}")
+    return (url, local, task_id or "")
+
+
+# ---------------------------------------------------------------------------
+# Kling3 / Kling3-Omni（chat completions SSE，同 VEO31/Sora2 机制）
+# ---------------------------------------------------------------------------
+
+
+KLING3_VARIANTS = ["kling3", "kling3omni"]
+KLING3_ASPECTS = ["16:9", "9:16", "1:1"]
+KLING3_RESOLUTIONS = ["1080p", "720p"]
+KLING3_MODES = ["文生视频", "首帧生成视频", "首尾帧生成视频"]
+
+
+class RespectFireflyKling3:
+    """Firefly 可灵3.0 / 可灵3.0 Omni 视频。
+    模型 ID：`firefly-kling3[omni]-{秒数}s-{比例x}-{清晰度}`。
+    走 `/v1/chat/completions` 流式。`custom_model` 填了优先使用。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "variant": (KLING3_VARIANTS, {"default": "kling3"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 5, "min": 1, "max": 60}),
+                "aspect_ratio": (KLING3_ASPECTS, {"default": "16:9"}),
+                "resolution": (KLING3_RESOLUTIONS, {"default": "1080p"}),
+                "generation_mode": (KLING3_MODES, {"default": "文生视频"}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "last_frame": ("IMAGE",),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，如 firefly-kling3-15s-16x9-1080p"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "model_used")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(
+        self,
+        api_config: Any,
+        variant: str,
+        prompt: str,
+        duration: int,
+        aspect_ratio: str,
+        resolution: str,
+        generation_mode: str,
+        auto_download: bool,
+        first_frame: Optional[torch.Tensor] = None,
+        last_frame: Optional[torch.Tensor] = None,
+        custom_model: str = "",
+        save_dir: str = "",
+        filename: str = "",
+    ) -> tuple[str, str, str]:
+        cfg = ensure_config(api_config)
+        custom_model = (custom_model or "").strip()
+        if custom_model:
+            model = custom_model
+        else:
+            family = "firefly-kling3omni" if variant == "kling3omni" else "firefly-kling3"
+            model = f"{family}-{int(duration)}s-{aspect_ratio.replace(':', 'x')}-{resolution}"
+
+        if generation_mode == "首帧生成视频":
+            if first_frame is None:
+                raise RespectAPIError("首帧生成视频需要提供 first_frame")
+            imgs = [first_frame]
+        elif generation_mode == "首尾帧生成视频":
+            if first_frame is None or last_frame is None:
+                raise RespectAPIError("首尾帧生成视频需要同时提供 first_frame 和 last_frame")
+            imgs = [first_frame, last_frame]
+        else:
+            imgs = []
+
+        url, _ = _call_chat_video(
+            cfg, model, prompt, imgs,
+            aspect_ratio=aspect_ratio, video_length=int(duration), resolution=resolution, stream=True,
+        )
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="kling3", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] Kling3 视频下载失败: {exc}")
+        return (url, local, model)
+
+
+# ---------------------------------------------------------------------------
+# Sora V3（异步 /v1/videos + video_config 轮询）
+# ---------------------------------------------------------------------------
+
+
+SORA_V3_MODELS = ["sora-v3-fast", "sora-v3-pro"]
+SORA_V3_ASPECTS = ["16:9", "9:16", "1:1"]
+SORA_V3_RESOLUTIONS = ["720p", "480p"]
+SORA_V3_MODES = ["文生视频", "首帧生成视频", "首尾帧生成视频", "参考图生成视频", "多参考图生成视频"]
+_SORA_REF_MODE = {
+    "首帧生成视频": "start_frame",
+    "首尾帧生成视频": "start_end",
+    "参考图生成视频": "image_reference",
+    "多参考图生成视频": "image_reference",
+    "文生视频": "auto",
+}
+_SORA_SIZE = {
+    "720p": {"16:9": "1280x720", "9:16": "720x1280", "1:1": "720x720"},
+    "480p": {"16:9": "854x480", "9:16": "480x854", "1:1": "480x480"},
+}
+
+
+class RespectSoraV3Video:
+    """Sora V3 (pro/fast) 异步视频。`POST /v1/videos` 提交后轮询 `GET /v1/videos/{id}`。
+    支持 文生 / 首帧 / 首尾帧 / 参考图 / 多参考图（最多 4 张）。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "model": (SORA_V3_MODELS, {"default": "sora-v3-fast"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 6, "min": 1, "max": 60}),
+                "aspect_ratio": (SORA_V3_ASPECTS, {"default": "16:9"}),
+                "resolution": (SORA_V3_RESOLUTIONS, {"default": "720p"}),
+                "generation_mode": (SORA_V3_MODES, {"default": "文生视频"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "last_frame": ("IMAGE",),
+                "ref_image_1": ("IMAGE",),
+                "ref_image_2": ("IMAGE",),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(
+        self,
+        api_config: Any,
+        model: str,
+        prompt: str,
+        duration: int,
+        aspect_ratio: str,
+        resolution: str,
+        generation_mode: str,
+        poll_interval: int,
+        poll_timeout: int,
+        auto_download: bool,
+        first_frame: Optional[torch.Tensor] = None,
+        last_frame: Optional[torch.Tensor] = None,
+        ref_image_1: Optional[torch.Tensor] = None,
+        ref_image_2: Optional[torch.Tensor] = None,
+        ref_image_3: Optional[torch.Tensor] = None,
+        ref_image_4: Optional[torch.Tensor] = None,
+        custom_model: str = "",
+        save_dir: str = "",
+        filename: str = "",
+    ) -> tuple[str, str, str]:
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+        size = _SORA_SIZE.get(resolution, {}).get(aspect_ratio, "1280x720")
+        ref_mode = _SORA_REF_MODE.get(generation_mode, "auto")
+        duration = int(duration)
+
+        if generation_mode == "首帧生成视频":
+            if first_frame is None:
+                raise RespectAPIError("首帧生成视频需要提供 first_frame")
+            imgs = [first_frame]
+        elif generation_mode == "首尾帧生成视频":
+            if first_frame is None or last_frame is None:
+                raise RespectAPIError("首尾帧生成视频需要同时提供 first_frame 和 last_frame")
+            imgs = [first_frame, last_frame]
+        elif generation_mode == "参考图生成视频":
+            imgs = [ref_image_1]
+        elif generation_mode == "多参考图生成视频":
+            imgs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4]
+        else:
+            imgs = []
+
+        body: dict = {
+            "model": model,
+            "prompt": prompt,
+            "duration": duration,
+            "seconds": str(duration),
+            "size": size,
+            "video_config": {
+                "aspect_ratio": aspect_ratio,
+                "resolution_name": resolution,
+                "reference_mode": ref_mode,
+            },
+        }
+        ref_urls = _img_data_urls(imgs)
+        if ref_urls:
+            body["reference_images"] = ref_urls
+
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        return _finalize_async(
+            cfg, direct, task_id,
+            poll_interval=poll_interval, poll_timeout=poll_timeout,
+            auto_download=auto_download, prefix="sora_v3", save_dir=save_dir, filename=filename,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Grok 视频（异步 /v1/videos，1.0 类 / 1.5 preview 类两种 body）
+# ---------------------------------------------------------------------------
+
+
+GROK_VIDEO_VARIANTS = [
+    "grok-imagine-1.0-video",
+    "grok-imagine-1.0-video-official",
+    "grok-imagine-video-preview",
+    "grok-imagine-video-1.5-preview",
+    "grok-imagine-video-1.5-preview-official",
+]
+_GROK_MODEL_ID = {
+    "grok-imagine-1.0-video": "grok-imagine-1.0-video",
+    "grok-imagine-1.0-video-official": "grok-1.0-官转接口",
+    "grok-imagine-video-preview": "grok-imagine-video-preview",
+    "grok-imagine-video-1.5-preview": "grok-imagine-video-1.5-preview",
+    "grok-imagine-video-1.5-preview-official": "grok-1.5-官转接口",
+}
+GROK_ASPECTS = ["16:9", "9:16", "1:1", "3:2", "2:3"]
+GROK_RESOLUTIONS = ["720p", "1080p", "480p"]
+GROK_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
+_GROK15_SIZE = {
+    "16:9": "1280x720", "9:16": "720x1280", "1:1": "1024x1024",
+    "3:2": "1792x1024", "2:3": "1024x1792",
+}
+
+
+class RespectGrokVideo:
+    """Grok 视频系列（异步 `/v1/videos`）。
+
+    - 1.0 类（含 preview / 官转）：body 带 aspect_ratio + resolution(HD/SD) + video_config，
+      支持 文生 / 首帧 / 多参考图（最多 7 张）。
+    - 1.5 preview 类：body 用 seconds + size + images，仅 首帧；非官转默认把首帧重复 2 次。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "model_variant": (GROK_VIDEO_VARIANTS, {"default": "grok-imagine-1.0-video"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 6, "min": 1, "max": 60}),
+                "aspect_ratio": (GROK_ASPECTS, {"default": "16:9"}),
+                "resolution": (GROK_RESOLUTIONS, {"default": "720p"}),
+                "generation_mode": (GROK_MODES, {"default": "文生视频"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "ref_image_1": ("IMAGE",),
+                "ref_image_2": ("IMAGE",),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "ref_image_5": ("IMAGE",),
+                "ref_image_6": ("IMAGE",),
+                "ref_image_7": ("IMAGE",),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "model_used")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(
+        self,
+        api_config: Any,
+        model_variant: str,
+        prompt: str,
+        duration: int,
+        aspect_ratio: str,
+        resolution: str,
+        generation_mode: str,
+        poll_interval: int,
+        poll_timeout: int,
+        auto_download: bool,
+        first_frame: Optional[torch.Tensor] = None,
+        ref_image_1: Optional[torch.Tensor] = None,
+        ref_image_2: Optional[torch.Tensor] = None,
+        ref_image_3: Optional[torch.Tensor] = None,
+        ref_image_4: Optional[torch.Tensor] = None,
+        ref_image_5: Optional[torch.Tensor] = None,
+        ref_image_6: Optional[torch.Tensor] = None,
+        ref_image_7: Optional[torch.Tensor] = None,
+        save_dir: str = "",
+        filename: str = "",
+    ) -> tuple[str, str, str]:
+        cfg = ensure_config(api_config)
+        model_id = _GROK_MODEL_ID.get(model_variant, model_variant)
+        is_15 = "1.5-preview" in model_variant
+        is_official = model_variant.endswith("-official")
+        duration = int(duration)
+
+        if is_15:
+            # 1.5 preview：仅首帧，seconds + size + images
+            if first_frame is None:
+                raise RespectAPIError("Grok 1.5 Preview 仅支持首帧生成视频，需要提供 first_frame")
+            size = _GROK15_SIZE.get(aspect_ratio, "1280x720")
+            urls = _img_data_urls([first_frame])
+            images = urls if is_official else ([urls[0], urls[0]] if urls else urls)
+            body: dict = {
+                "model": model_id,
+                "prompt": prompt,
+                "seconds": str(duration),
+                "size": size,
+                "images": images,
+            }
+        else:
+            # 1.0 类：aspect_ratio + resolution(HD/SD) + video_config
+            res_up = "SD" if resolution.lower() in ("480p", "sd") else "HD"
+            if generation_mode == "首帧生成视频":
+                if first_frame is None:
+                    raise RespectAPIError("首帧生成视频需要提供 first_frame")
+                imgs = [first_frame]
+            elif generation_mode == "多参考图生成视频":
+                imgs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4,
+                        ref_image_5, ref_image_6, ref_image_7]
+            else:
+                imgs = []
+            body = {
+                "model": model_id,
+                "prompt": prompt,
+                "duration": duration,
+                "video_length": duration,
+                "aspect_ratio": aspect_ratio,
+                "resolution": res_up,
+                "video_config": {
+                    "video_length": duration,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": res_up,
+                    "preset": "normal",
+                },
+            }
+            ref_urls = _img_data_urls(imgs, max_side=1536)
+            if ref_urls:
+                body["reference_images"] = ref_urls
+
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        url, local, _ = _finalize_async(
+            cfg, direct, task_id,
+            poll_interval=poll_interval, poll_timeout=poll_timeout,
+            auto_download=auto_download, prefix="grok", save_dir=save_dir, filename=filename,
+        )
+        return (url, local, model_id)
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectFireflySora2": RespectFireflySora2,
     "RespectFireflyVeo31": RespectFireflyVeo31,
     "RespectFireflyRunway45": RespectFireflyRunway45,
+    "RespectFireflyKling3": RespectFireflyKling3,
+    "RespectSoraV3Video": RespectSoraV3Video,
+    "RespectGrokVideo": RespectGrokVideo,
     "RespectSD2Video": RespectSD2Video,
     "RespectSaveVideo": RespectSaveVideo,
 }
@@ -635,6 +1122,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectFireflySora2": "Respect Firefly Sora2 视频",
     "RespectFireflyVeo31": "Respect Firefly VEO3.1 视频",
     "RespectFireflyRunway45": "Respect Firefly Runway 4.5 视频",
+    "RespectFireflyKling3": "Respect Firefly 可灵3.0 视频",
+    "RespectSoraV3Video": "Respect Sora V3 视频",
+    "RespectGrokVideo": "Respect Grok 视频",
     "RespectSD2Video": "Respect 即梦/SD2 视频",
     "RespectSaveVideo": "Respect 保存视频",
 }

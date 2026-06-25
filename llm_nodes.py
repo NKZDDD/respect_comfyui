@@ -23,6 +23,7 @@ from .utils import (
     DEFAULT_USER_AGENT,
     RespectAPIError,
     api_request,
+    aspect_to_x,
     ensure_config,
     extract_image_payloads,
     iter_sse_lines,
@@ -317,19 +318,42 @@ class RespectResponsesLLM:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI Images —— gpt-image
+# aicopy gpt-image-2（image2）—— 文生图 / 图生图
 # ---------------------------------------------------------------------------
 
 
 GPT_IMAGE_MODELS = ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]
-# OpenAI gpt-image 的 size 取像素串（宽高须被 16 整除、比例 1:3~3:1、最大 3840x2160）。
-# 没有 "1K"/"2K" 关键字——下方 ~1024 长边≈1K 档，~2048 长边≈2K 档（gpt-image-2 才支持 2K+）。
-GPT_IMAGE_SIZES = [
-    "auto",
-    "1024x1024", "1536x1024", "1024x1536",          # 1K 档
-    "2048x2048", "2048x1152", "1152x2048",           # 2K 档（gpt-image-2）
-]
-GPT_IMAGE_QUALITY = ["auto", "high", "medium", "low"]
+# image2 在 api.aicopy.top 上支持的宽高比（文档 §8）
+GPT_IMAGE2_ASPECTS = ["1:1", "5:4", "4:5", "9:16", "16:9", "21:9", "4:3", "3:4", "3:2", "2:3"]
+GPT_IMAGE2_RESOLUTIONS = ["1k", "2k", "4k"]
+_RES_LONG_EDGE = {"1k": 1024, "2k": 2048, "4k": 4096}
+
+
+def _aicopy_image2_size(aspect_ratio: str, resolution: str) -> str:
+    """按 aicopy 文档把 比例+分辨率档 换算成 `宽x高`（长边 1k=1024 / 2k=2048 / 4k=4096）。
+
+    例：1k 1:1=1024x1024、1k 16:9=1024x576、2k 16:9=2048x1152、2k 9:16=1152x2048。
+    宽高对齐到 16 的倍数。
+    """
+    long_edge = _RES_LONG_EDGE.get((resolution or "1k").lower(), 1024)
+    try:
+        wr, hr = aspect_ratio.replace("x", ":").split(":")
+        wr, hr = float(wr), float(hr)
+    except Exception:
+        wr, hr = 1.0, 1.0
+    if wr <= 0 or hr <= 0:
+        wr, hr = 1.0, 1.0
+
+    def _round16(v: float) -> int:
+        return max(16, int(round(v / 16.0)) * 16)
+
+    if wr >= hr:
+        width = long_edge
+        height = _round16(long_edge * hr / wr)
+    else:
+        height = long_edge
+        width = _round16(long_edge * wr / hr)
+    return f"{width}x{height}"
 
 
 def _tensor_to_png_bytes(tensor: torch.Tensor, max_side: int = 1536) -> bytes:
@@ -348,12 +372,14 @@ def _tensor_to_png_bytes(tensor: torch.Tensor, max_side: int = 1536) -> bytes:
 
 
 class RespectOpenAIImage:
-    """OpenAI 兼容 gpt-image-1 / 1.5 / 2 文生图与图生图。
+    """aicopy image2（gpt-image-2）文生图 / 图生图。
 
+    按 api.aicopy.top 文档发送 `size` + `aspect_ratio` + `resolution(1k/2k/4k)`：
     - 不接参考图 → `POST /v1/images/generations`（纯文生图）
-    - 接了 1~4 张参考图 → `POST /v1/images/edits`（multipart 上传，图生图 / 多图编辑）
+    - 接了 1~4 张参考图 → `POST /v1/images/edits`（multipart，每张参考图作为一个 `image` 字段）
 
-    `custom_model` 填了优先使用，覆盖上方下拉。返回 IMAGE。
+    尺寸按文档换算：长边 1k=1024 / 2k=2048 / 4k=4096（如 2k 16:9 → 2048x1152）。
+    `custom_model` / `custom_size` 填了优先使用。返回 IMAGE。
     """
 
     @classmethod
@@ -363,13 +389,13 @@ class RespectOpenAIImage:
                 "api_config": ("RESPECT_CONFIG",),
                 "model": (GPT_IMAGE_MODELS, {"default": "gpt-image-2"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
-                "size": (GPT_IMAGE_SIZES, {"default": "auto"}),
-                "quality": (GPT_IMAGE_QUALITY, {"default": "auto"}),
+                "aspect_ratio": (GPT_IMAGE2_ASPECTS, {"default": "1:1"}),
+                "resolution": (GPT_IMAGE2_RESOLUTIONS, {"default": "1k"}),
                 "n": ("INT", {"default": 1, "min": 1, "max": 4}),
             },
             "optional": {
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
-                "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，如 2048x2048，填了覆盖上方 size（宽高须被16整除）"}),
+                "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，如 2048x2048，填了覆盖比例+分辨率换算的 size"}),
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
@@ -380,15 +406,15 @@ class RespectOpenAIImage:
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("image", "model_used", "size_used")
     FUNCTION = "generate"
-    CATEGORY = CATEGORY
+    CATEGORY = "Respect"
 
     def generate(
         self,
         api_config: Any,
         model: str,
         prompt: str,
-        size: str,
-        quality: str,
+        aspect_ratio: str,
+        resolution: str,
         n: int,
         custom_model: str = "",
         custom_size: str = "",
@@ -402,7 +428,9 @@ class RespectOpenAIImage:
         if not model:
             raise RespectAPIError("请选择模型或填写 custom_model")
 
-        size = (custom_size or "").strip() or size
+        size = (custom_size or "").strip() or _aicopy_image2_size(aspect_ratio, resolution)
+        aspect_x = aspect_to_x(aspect_ratio)
+        res = (resolution or "1k").lower()
 
         refs: list[bytes] = []
         for img in (image_1, image_2, image_3, image_4):
@@ -418,23 +446,26 @@ class RespectOpenAIImage:
                 ("model", (None, model)),
                 ("prompt", (None, prompt)),
                 ("n", (None, str(int(n)))),
+                ("size", (None, size)),
+                ("aspect_ratio", (None, aspect_x)),
+                ("resolution", (None, res)),
             ]
-            if size and size.lower() != "auto":
-                files.append(("size", (None, size)))
-            if quality and quality.lower() != "auto":
-                files.append(("quality", (None, quality)))
             for i, data in enumerate(refs):
-                files.append(("image[]", (f"ref_{i + 1}.png", data, "image/png")))
+                # 文档要求每张参考图都用名为 image 的字段（重复出现）
+                files.append(("image", (f"ref_{i + 1}.png", data, "image/png")))
             resp = api_request(
                 cfg, "POST", "/v1/images/edits",
                 files=files, retries=3, timeout=max(cfg.timeout, 300),
             )
         else:
-            body: dict = {"model": model, "prompt": prompt, "n": int(n)}
-            if size and size.lower() != "auto":
-                body["size"] = size
-            if quality and quality.lower() != "auto":
-                body["quality"] = quality
+            body: dict = {
+                "model": model,
+                "prompt": prompt,
+                "n": int(n),
+                "size": size,
+                "aspect_ratio": aspect_x,
+                "resolution": res,
+            }
             resp = api_request(cfg, "POST", "/v1/images/generations", json_body=body, retries=3)
 
         return (_images_to_tensor(resp.json(), cfg), model, size)
@@ -549,6 +580,6 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectChatLLM": "Respect Chat 对话 (OpenAI)",
     "RespectResponsesLLM": "Respect Responses 代码 (Codex)",
-    "RespectOpenAIImage": "Respect gpt-image 文生图",
+    "RespectOpenAIImage": "Respect image2 文生图/图生图 (aicopy)",
     "RespectClaudeLLM": "Respect Claude 对话 (Anthropic)",
 }

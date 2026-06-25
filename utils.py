@@ -590,7 +590,15 @@ RESOLUTION_TABLE: dict[str, dict[str, str]] = {
     },
 }
 
-ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9"]
+# nano-banana2 额外支持的超宽/超长比例（firefly model_id 已自带尺寸，这里仅为下拉可选 + lookup_size 兜底）
+for _res, _long in (("1k", 1024), ("2k", 2048), ("4k", 4096)):
+    RESOLUTION_TABLE[_res].update({
+        "8:1": f"{_long}x{max(16, _long // 8)}",
+        "1:4": f"{max(16, _long // 4)}x{_long}",
+        "1:8": f"{max(16, _long // 8)}x{_long}",
+    })
+
+ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "8:1", "1:4", "1:8"]
 RESOLUTIONS = ["1k", "2k", "4k"]
 
 
