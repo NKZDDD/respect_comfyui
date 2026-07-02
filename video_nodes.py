@@ -966,6 +966,7 @@ GROK_VIDEO_VARIANTS = [
     "grok-imagine-video-preview",
     "grok-imagine-video-1.5-preview",
     "grok-imagine-video-1.5-preview-official",
+    "grok-imagine-video-1.5-fast",
 ]
 _GROK_MODEL_ID = {
     "grok-imagine-1.0-video": "grok-imagine-1.0-video",
@@ -973,7 +974,9 @@ _GROK_MODEL_ID = {
     "grok-imagine-video-preview": "grok-imagine-video-preview",
     "grok-imagine-video-1.5-preview": "grok-imagine-video-1.5-preview",
     "grok-imagine-video-1.5-preview-official": "grok-1.5-官转接口",
+    "grok-imagine-video-1.5-fast": "grok-imagine-video-1.5-fast",
 }
+GROK_BODY_STYLES = ["auto", "1.0类", "1.5类"]
 GROK_ASPECTS = ["16:9", "9:16", "1:1", "3:2", "2:3"]
 GROK_RESOLUTIONS = ["720p", "1080p", "480p"]
 GROK_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
@@ -988,7 +991,10 @@ class RespectGrokVideo:
 
     - 1.0 类（含 preview / 官转）：body 带 aspect_ratio + resolution(HD/SD) + video_config，
       支持 文生 / 首帧 / 多参考图（最多 7 张）。
-    - 1.5 preview 类：body 用 seconds + size + images，仅 首帧；非官转默认把首帧重复 2 次。
+    - 1.5 类（preview / fast / 官转）：body 用 seconds + size + images，仅 首帧；非官转默认把首帧重复 2 次。
+
+    `custom_model` 填了优先使用（可填模型列表里的任意 grok 视频模型）。
+    `body_style` 决定请求体格式：auto 按模型名里是否含「1.5」判断，也可手动指定 1.0类 / 1.5类。
     """
 
     @classmethod
@@ -1007,6 +1013,8 @@ class RespectGrokVideo:
                 "auto_download": ("BOOLEAN", {"default": True}),
             },
             "optional": {
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用，如 grok-imagine-video-1.5-fast"}),
+                "body_style": (GROK_BODY_STYLES, {"default": "auto"}),
                 "first_frame": ("IMAGE",),
                 "ref_image_1": ("IMAGE",),
                 "ref_image_2": ("IMAGE",),
@@ -1037,6 +1045,8 @@ class RespectGrokVideo:
         poll_interval: int,
         poll_timeout: int,
         auto_download: bool,
+        custom_model: str = "",
+        body_style: str = "auto",
         first_frame: Optional[torch.Tensor] = None,
         ref_image_1: Optional[torch.Tensor] = None,
         ref_image_2: Optional[torch.Tensor] = None,
@@ -1049,15 +1059,27 @@ class RespectGrokVideo:
         filename: str = "",
     ) -> tuple[str, str, str]:
         cfg = ensure_config(api_config)
-        model_id = _GROK_MODEL_ID.get(model_variant, model_variant)
-        is_15 = "1.5-preview" in model_variant
-        is_official = model_variant.endswith("-official")
+        custom_model = (custom_model or "").strip()
+        if custom_model:
+            model_id = custom_model
+            name_ref = custom_model
+        else:
+            model_id = _GROK_MODEL_ID.get(model_variant, model_variant)
+            name_ref = model_variant
+
+        if body_style == "1.5类":
+            is_15 = True
+        elif body_style == "1.0类":
+            is_15 = False
+        else:  # auto：按模型名里是否含 "1.5" 判断
+            is_15 = "1.5" in name_ref
+        is_official = name_ref.endswith("-official") or "官转" in name_ref
         duration = int(duration)
 
         if is_15:
-            # 1.5 preview：仅首帧，seconds + size + images
+            # 1.5 类（preview / fast）：仅首帧，seconds + size + images
             if first_frame is None:
-                raise RespectAPIError("Grok 1.5 Preview 仅支持首帧生成视频，需要提供 first_frame")
+                raise RespectAPIError("Grok 1.5 类仅支持首帧生成视频，需要提供 first_frame")
             size = _GROK15_SIZE.get(aspect_ratio, "1280x720")
             urls = _img_data_urls([first_frame])
             images = urls if is_official else ([urls[0], urls[0]] if urls else urls)
