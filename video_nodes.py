@@ -960,41 +960,64 @@ class RespectSoraV3Video:
 # ---------------------------------------------------------------------------
 
 
+# 变体即 model_id（按 07.06 源码；custom_model 可覆盖）
 GROK_VIDEO_VARIANTS = [
     "grok-imagine-1.0-video",
-    "grok-imagine-1.0-video-official",
+    "grok-1.0-官转接口",
+    "grok-1.0-备用接口",
+    "grok-imagine-video-1.5-fast",
     "grok-imagine-video-preview",
     "grok-imagine-video-1.5-preview",
-    "grok-imagine-video-1.5-preview-official",
-    "grok-imagine-video-1.5-fast",
+    "grok-1.5-官转接口",
+    "grok-1.5-备用接口",
 ]
-_GROK_MODEL_ID = {
-    "grok-imagine-1.0-video": "grok-imagine-1.0-video",
-    "grok-imagine-1.0-video-official": "grok-1.0-官转接口",
-    "grok-imagine-video-preview": "grok-imagine-video-preview",
-    "grok-imagine-video-1.5-preview": "grok-imagine-video-1.5-preview",
-    "grok-imagine-video-1.5-preview-official": "grok-1.5-官转接口",
-    "grok-imagine-video-1.5-fast": "grok-imagine-video-1.5-fast",
+# 1.0 体：duration + video_config + reference_images（文生/首帧/多参考≤7）
+_GROK_ONE_CLASS = {
+    "grok-imagine-1.0-video", "grok-1.0-官转接口", "grok-1.0-备用接口",
+    "grok-imagine-video-1.5-fast",
 }
+# 1.5 体：seconds + size + images（仅首帧）
+_GROK_FIRSTFRAME_CLASS = {
+    "grok-imagine-video-preview", "grok-imagine-video-1.5-preview",
+    "grok-1.5-官转接口", "grok-1.5-备用接口",
+}
+# 1.5 体里不把首帧重复第二次的（官转/备用）
+_GROK_NO_DUP = {"grok-1.5-官转接口", "grok-1.5-备用接口"}
 GROK_BODY_STYLES = ["auto", "1.0类", "1.5类"]
-GROK_ASPECTS = ["16:9", "9:16", "1:1", "3:2", "2:3"]
+GROK_ASPECTS = ["16:9", "9:16", "3:2", "1:1"]
 GROK_RESOLUTIONS = ["720p", "1080p", "480p"]
 GROK_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
-_GROK15_SIZE = {
+_GROK_SIZE = {
     "16:9": "1280x720", "9:16": "720x1280", "1:1": "1024x1024",
     "3:2": "1792x1024", "2:3": "1024x1792",
 }
+_GROK_15_DURATIONS = (6, 10, 15)
+
+
+def _grok_clamp_15_duration(vl: int) -> int:
+    vl = int(vl or 6)
+    if vl in _GROK_15_DURATIONS:
+        return vl
+    lower = [d for d in _GROK_15_DURATIONS if d <= vl]
+    return max(lower) if lower else 6
+
+
+def _grok_resolution_hdsd(resolution: str) -> str:
+    return "SD" if str(resolution or "").lower() in ("480p", "sd") else "HD"
 
 
 class RespectGrokVideo:
     """Grok 视频系列（异步 `/v1/videos`）。
 
-    - 1.0 类（含 preview / 官转）：body 带 aspect_ratio + resolution(HD/SD) + video_config，
+    按 07.06 源码分两种请求体：
+    - **1.0 体**（grok-imagine-1.0-video / grok-1.0-官转/备用 / **grok-imagine-video-1.5-fast**）：
+      body 带 duration + resolution(HD/SD) + video_config + reference_images(base64)，
       支持 文生 / 首帧 / 多参考图（最多 7 张）。
-    - 1.5 类（preview / fast / 官转）：body 用 seconds + size + images，仅 首帧；非官转默认把首帧重复 2 次。
+    - **1.5 体**（preview / 1.5-preview / 1.5-官转 / 1.5-备用）：
+      body 用 seconds + size + images，**仅首帧**；官转/备用不重复首帧，其余重复 2 次。
 
-    `custom_model` 填了优先使用（可填模型列表里的任意 grok 视频模型）。
-    `body_style` 决定请求体格式：auto 按模型名里是否含「1.5」判断，也可手动指定 1.0类 / 1.5类。
+    `custom_model` 填了优先使用。`body_style`：auto 按已知变体判断（自定义则含 preview 视为 1.5 体），
+    也可手动指定 1.0类 / 1.5类。
     """
 
     @classmethod
@@ -1059,40 +1082,39 @@ class RespectGrokVideo:
         filename: str = "",
     ) -> tuple[str, str, str]:
         cfg = ensure_config(api_config)
-        custom_model = (custom_model or "").strip()
-        if custom_model:
-            model_id = custom_model
-            name_ref = custom_model
-        else:
-            model_id = _GROK_MODEL_ID.get(model_variant, model_variant)
-            name_ref = model_variant
+        model_id = (custom_model or "").strip() or model_variant
+        duration = int(duration)
 
         if body_style == "1.5类":
             is_15 = True
         elif body_style == "1.0类":
             is_15 = False
-        else:  # auto：按模型名里是否含 "1.5" 判断
-            is_15 = "1.5" in name_ref
-        is_official = name_ref.endswith("-official") or "官转" in name_ref
-        duration = int(duration)
+        elif model_id in _GROK_FIRSTFRAME_CLASS:
+            is_15 = True
+        elif model_id in _GROK_ONE_CLASS:
+            is_15 = False
+        else:  # 自定义：含 preview 视为仅首帧 1.5 体，否则按 1.0 体
+            is_15 = "preview" in model_id.lower()
 
         if is_15:
-            # 1.5 类（preview / fast）：仅首帧，seconds + size + images
+            # 1.5 体：仅首帧，seconds + size + images
             if first_frame is None:
-                raise RespectAPIError("Grok 1.5 类仅支持首帧生成视频，需要提供 first_frame")
-            size = _GROK15_SIZE.get(aspect_ratio, "1280x720")
+                raise RespectAPIError("该模型（1.5 体）仅支持首帧生成视频，需要提供 first_frame")
+            vl = _grok_clamp_15_duration(duration)
             urls = _img_data_urls([first_frame])
-            images = urls if is_official else ([urls[0], urls[0]] if urls else urls)
+            images = list(urls)
+            if model_id not in _GROK_NO_DUP and urls:
+                images.append(urls[0])  # 非官转/备用：首帧重复 2 次
             body: dict = {
                 "model": model_id,
                 "prompt": prompt,
-                "seconds": str(duration),
-                "size": size,
+                "seconds": str(vl),
+                "size": _GROK_SIZE.get(aspect_ratio, "1280x720"),
                 "images": images,
             }
         else:
-            # 1.0 类：aspect_ratio + resolution(HD/SD) + video_config
-            res_up = "SD" if resolution.lower() in ("480p", "sd") else "HD"
+            # 1.0 体：duration + resolution(HD/SD) + video_config + reference_images
+            res_up = _grok_resolution_hdsd(resolution)
             if generation_mode == "首帧生成视频":
                 if first_frame is None:
                     raise RespectAPIError("首帧生成视频需要提供 first_frame")
@@ -1116,7 +1138,7 @@ class RespectGrokVideo:
                     "preset": "normal",
                 },
             }
-            ref_urls = _img_data_urls(imgs, max_side=1536)
+            ref_urls = _img_data_urls(imgs, max_side=1536)[:7]
             if ref_urls:
                 body["reference_images"] = ref_urls
 
