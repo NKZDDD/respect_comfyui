@@ -64,22 +64,33 @@ def _extract_upload_token(data: Any) -> str:
 
 
 def _upload_reference(cfg, tensor: torch.Tensor, index: int = 1) -> str:
+    """把参考图上传换公网 URL。默认发 {upload_base}/v1/uploads（字段 image），/v1/upload 兜底。"""
     data = _tensor_to_jpeg_bytes(tensor, max_side=1536, quality=90)
     if not data:
         raise RespectAPIError(f"参考图{index} 为空，无法上传")
-    resp = api_request(
-        cfg, "POST", "/v1/uploads",
-        files=[("file", (f"ref_{index}.jpg", data, "image/jpeg"))],
-        retries=2, timeout=max(cfg.timeout, 300),
-    )
-    try:
-        payload = resp.json()
-    except Exception:
-        raise RespectAPIError(f"上传返回非 JSON: {resp.text[:200]}")
-    token = _extract_upload_token(payload)
-    if not token:
-        raise RespectAPIError(f"上传未返回可用引用(url/name): {json.dumps(payload, ensure_ascii=False)[:300]}")
-    return token
+    base = cfg.resolve_upload_base()
+    last_err: Optional[Exception] = None
+    for endpoint in ("/v1/uploads", "/v1/upload"):
+        url = f"{base}{endpoint}"
+        try:
+            resp = api_request(
+                cfg, "POST", url,
+                files=[("image", (f"ref_{index}.jpg", data, "image/jpeg"))],
+                retries=1, timeout=max(cfg.timeout, 300),
+            )
+        except RespectAPIError as exc:
+            last_err = exc
+            continue
+        try:
+            payload = resp.json()
+        except Exception:
+            last_err = RespectAPIError(f"上传返回非 JSON: {resp.text[:200]}")
+            continue
+        token = _extract_upload_token(payload)
+        if token:
+            return token
+        last_err = RespectAPIError(f"上传未返回可用引用(url/name): {json.dumps(payload, ensure_ascii=False)[:300]}")
+    raise last_err or RespectAPIError("参考图上传失败")
 
 
 def _upload_all(cfg, tensors: list[Optional[torch.Tensor]]) -> list[str]:

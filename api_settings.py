@@ -7,6 +7,7 @@ from typing import Any
 from .utils import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT,
+    DEFAULT_UPLOAD_BASE,
     RespectAPIError,
     RespectConfig,
     api_request,
@@ -34,6 +35,7 @@ class RespectApiSettings:
             },
             "optional": {
                 "proxy": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，http(s)://host:port"}),
+                "upload_base_url": ("STRING", {"default": DEFAULT_UPLOAD_BASE, "multiline": False, "placeholder": "参考图上传地址（Seedance/grok-video 用），默认 api.aione.help"}),
             },
         }
 
@@ -42,12 +44,13 @@ class RespectApiSettings:
     FUNCTION = "build"
     CATEGORY = CATEGORY
 
-    def build(self, api_key: str, base_url: str, timeout: int, proxy: str = "") -> tuple[RespectConfig]:
+    def build(self, api_key: str, base_url: str, timeout: int, proxy: str = "", upload_base_url: str = "") -> tuple[RespectConfig]:
         cfg = RespectConfig(
             api_key=(api_key or "").strip(),
             base_url=(base_url or DEFAULT_BASE_URL).strip(),
             timeout=int(timeout),
             proxy=(proxy or "").strip(),
+            upload_base_url=(upload_base_url or "").strip(),
         )
         if not cfg.resolve_api_key():
             print("[Respect] 警告：未提供 api_key 且未检测到 RESPECT_API_KEY / AICOPY_API_KEY 环境变量")

@@ -30,6 +30,8 @@ except Exception:  # pragma: no cover - ComfyUI 运行环境之外
 DEFAULT_BASE_URL = "https://api.aicopy.top"
 DEFAULT_TIMEOUT = 600
 DEFAULT_USER_AGENT = "RespectComfyUI/1.0"
+# Seedance / grok-video 等的参考图公网上传地址（源码写死为 api.aione.help，可在设置节点覆盖）
+DEFAULT_UPLOAD_BASE = "https://api.aione.help"
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,7 @@ class RespectConfig:
     base_url: str = DEFAULT_BASE_URL
     timeout: int = DEFAULT_TIMEOUT
     proxy: str = ""
+    upload_base_url: str = ""
     extra_headers: dict = field(default_factory=dict)
 
     def normalized_base(self) -> str:
@@ -54,6 +57,10 @@ class RespectConfig:
         if not base.endswith("/v1"):
             base = base + "/v1"
         return base
+
+    def resolve_upload_base(self) -> str:
+        """参考图公网上传的基址（默认 api.aione.help）。"""
+        return (self.upload_base_url or "").strip().rstrip("/") or DEFAULT_UPLOAD_BASE
 
     def headers(self, content_type: str = "application/json") -> dict:
         hdrs = {
@@ -88,6 +95,7 @@ def ensure_config(cfg: Any) -> RespectConfig:
             base_url=str(cfg.get("base_url", DEFAULT_BASE_URL)),
             timeout=int(cfg.get("timeout", DEFAULT_TIMEOUT)),
             proxy=str(cfg.get("proxy", "")),
+            upload_base_url=str(cfg.get("upload_base_url", "")),
             extra_headers=dict(cfg.get("extra_headers", {}) or {}),
         )
     raise ValueError("无效的 API 配置，请连接 Respect API Settings 节点")
