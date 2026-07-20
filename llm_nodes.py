@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from typing import Any, Optional
 
 import torch
@@ -173,6 +174,74 @@ def _images_to_tensor(data: Any, cfg) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# response_format / json_schema 结构化输出
+# ---------------------------------------------------------------------------
+
+
+RESPONSE_FORMATS = ["text", "json_object", "json_schema"]
+
+
+def _parse_json_loose(s: str) -> Any:
+    s = (s or "").strip()
+    if not s:
+        return None
+    m = re.search(r"```(?:json)?\s*(.+?)```", s, re.DOTALL | re.IGNORECASE)
+    if m:
+        s = m.group(1).strip()
+    return json.loads(s)
+
+
+def _parsed_schema(schema_str: str) -> dict:
+    try:
+        schema = _parse_json_loose(schema_str)
+    except Exception as exc:
+        raise RespectAPIError(f"json_schema 不是合法 JSON: {exc}")
+    if not isinstance(schema, dict):
+        raise RespectAPIError("json_schema 模式需要在 json_schema 里填一个 JSON Schema 对象")
+    return schema
+
+
+def _openai_response_format(response_format: str, schema_str: str, schema_name: str) -> Optional[dict]:
+    """OpenAI /v1/chat/completions 的 response_format。"""
+    if response_format == "json_object":
+        return {"type": "json_object"}
+    if response_format == "json_schema":
+        schema = _parsed_schema(schema_str)
+        # 用户可能直接填了完整 {name, schema, strict} 包装
+        if "schema" in schema and "name" in schema:
+            js = schema
+        else:
+            js = {"name": (schema_name or "response").strip() or "response", "schema": schema, "strict": True}
+        return {"type": "json_schema", "json_schema": js}
+    return None
+
+
+def _responses_text_format(response_format: str, schema_str: str, schema_name: str) -> Optional[dict]:
+    """OpenAI /v1/responses 的 text.format。"""
+    if response_format == "json_object":
+        return {"type": "json_object"}
+    if response_format == "json_schema":
+        schema = _parsed_schema(schema_str)
+        if "schema" in schema and "name" in schema:
+            fmt = {"type": "json_schema"}
+            fmt.update({k: schema[k] for k in ("name", "schema", "strict") if k in schema})
+            return fmt
+        return {"type": "json_schema", "name": (schema_name or "response").strip() or "response",
+                "schema": schema, "strict": True}
+    return None
+
+
+def _claude_json_instruction(response_format: str, schema_str: str) -> str:
+    """Anthropic 无原生 response_format，用系统提示强制 JSON。"""
+    if response_format not in ("json_object", "json_schema"):
+        return ""
+    instr = "You must respond with a single valid JSON value and nothing else. Do not use markdown code fences."
+    if response_format == "json_schema" and (schema_str or "").strip():
+        instr += " The JSON must conform to this JSON Schema:\n" + schema_str.strip()
+    return instr
+
+
+# ---------------------------------------------------------------------------
 # OpenAI Chat Completions —— 文本 / 代码 / 多模态
 # ---------------------------------------------------------------------------
 
@@ -198,6 +267,9 @@ class RespectChatLLM:
                 "system_prompt": ("STRING", {"default": "", "multiline": True}),
                 "temperature": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.1}),
                 "max_tokens": ("INT", {"default": 0, "min": 0, "max": 200000}),
+                "response_format": (RESPONSE_FORMATS, {"default": "text"}),
+                "json_schema": ("STRING", {"default": "", "multiline": True, "placeholder": "response_format=json_schema 时填 JSON Schema"}),
+                "schema_name": ("STRING", {"default": "response", "multiline": False}),
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
@@ -218,6 +290,9 @@ class RespectChatLLM:
         system_prompt: str = "",
         temperature: float = -1.0,
         max_tokens: int = 0,
+        response_format: str = "text",
+        json_schema: str = "",
+        schema_name: str = "response",
         image_1: Optional[torch.Tensor] = None,
         image_2: Optional[torch.Tensor] = None,
         image_3: Optional[torch.Tensor] = None,
@@ -239,6 +314,9 @@ class RespectChatLLM:
             body["temperature"] = float(temperature)
         if max_tokens > 0:
             body["max_tokens"] = int(max_tokens)
+        fmt = _openai_response_format(response_format, json_schema, schema_name)
+        if fmt:
+            body["response_format"] = fmt
 
         resp = api_request(
             cfg, "POST", "/v1/chat/completions",
@@ -276,6 +354,9 @@ class RespectResponsesLLM:
             "optional": {
                 "instructions": ("STRING", {"default": "", "multiline": True, "placeholder": "系统级指令，可留空"}),
                 "max_output_tokens": ("INT", {"default": 0, "min": 0, "max": 200000}),
+                "response_format": (RESPONSE_FORMATS, {"default": "text"}),
+                "json_schema": ("STRING", {"default": "", "multiline": True, "placeholder": "response_format=json_schema 时填 JSON Schema"}),
+                "schema_name": ("STRING", {"default": "response", "multiline": False}),
             },
         }
 
@@ -292,6 +373,9 @@ class RespectResponsesLLM:
         stream: bool,
         instructions: str = "",
         max_output_tokens: int = 0,
+        response_format: str = "text",
+        json_schema: str = "",
+        schema_name: str = "response",
     ) -> tuple[str]:
         cfg = ensure_config(api_config)
         body: dict = {
@@ -303,6 +387,9 @@ class RespectResponsesLLM:
             body["instructions"] = instructions
         if max_output_tokens > 0:
             body["max_output_tokens"] = int(max_output_tokens)
+        fmt = _responses_text_format(response_format, json_schema, schema_name)
+        if fmt:
+            body["text"] = {"format": fmt}
 
         resp = api_request(
             cfg, "POST", "/v1/responses",
@@ -322,11 +409,14 @@ class RespectResponsesLLM:
 # ---------------------------------------------------------------------------
 
 
-GPT_IMAGE_MODELS = ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]
+# gpt-image-1-direct：直连 openai_images，model_id 拼成 gpt-image-{res}-{aspect}（带内嵌尺寸）
+GPT_IMAGE_MODELS = ["gpt-image-2", "gpt-image-1-direct", "gpt-image-1.5", "gpt-image-1"]
 # image2 在 api.aicopy.top 上支持的宽高比（文档 §8）
 GPT_IMAGE2_ASPECTS = ["1:1", "5:4", "4:5", "9:16", "16:9", "21:9", "4:3", "3:4", "3:2", "2:3"]
 GPT_IMAGE2_RESOLUTIONS = ["1k", "2k", "4k"]
 _RES_LONG_EDGE = {"1k": 1024, "2k": 2048, "4k": 4096}
+# 带内嵌尺寸的 model_id（gpt-image-1-direct / firefly-*）用的长边档
+_EXPLICIT_LONG_EDGE = {"1k": 1536, "2k": 2048, "4k": 3840}
 
 
 def _aicopy_image2_size(aspect_ratio: str, resolution: str) -> str:
@@ -354,6 +444,34 @@ def _aicopy_image2_size(aspect_ratio: str, resolution: str) -> str:
         height = long_edge
         width = _round16(long_edge * wr / hr)
     return f"{width}x{height}"
+
+
+def _explicit_fallback_size(aspect_ratio: str, resolution: str) -> str:
+    """带内嵌尺寸的 model_id 用的尺寸（长边 1k=1536 / 2k=2048 / 4k=3840）。"""
+    long_edge = _EXPLICIT_LONG_EDGE.get((resolution or "").lower())
+    if not long_edge:
+        return _aicopy_image2_size(aspect_ratio, resolution)
+    try:
+        wr, hr = aspect_ratio.replace("x", ":").split(":")
+        wr, hr = float(wr), float(hr)
+    except Exception:
+        return _aicopy_image2_size(aspect_ratio, resolution)
+    if wr <= 0 or hr <= 0:
+        return _aicopy_image2_size(aspect_ratio, resolution)
+
+    def _round16(v: float) -> int:
+        return max(16, int(round(v / 16.0)) * 16)
+
+    if wr >= hr:
+        return f"{long_edge}x{_round16(long_edge * hr / wr)}"
+    return f"{_round16(long_edge * wr / hr)}x{long_edge}"
+
+
+def _image2_payload_size(model_id: str, aspect_ratio: str, resolution: str) -> str:
+    """镜像插件 _build_images_payload：内嵌尺寸 model_id 用 1536/2048/3840 档，否则 1024/2048/4096 档。"""
+    if re.search(r"-\d+k-\d+x\d+$", str(model_id).lower()):
+        return _explicit_fallback_size(aspect_ratio, resolution)
+    return _aicopy_image2_size(aspect_ratio, resolution)
 
 
 def _tensor_to_png_bytes(tensor: torch.Tensor, max_side: int = 1536) -> bytes:
@@ -424,13 +542,19 @@ class RespectOpenAIImage:
         image_4: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, str, str]:
         cfg = ensure_config(api_config)
-        model = (custom_model or "").strip() or model
+        aspect_x = aspect_to_x(aspect_ratio)
+        res = (resolution or "1k").lower()
+
+        custom_model = (custom_model or "").strip()
+        if custom_model:
+            model = custom_model
+        elif model == "gpt-image-1-direct":
+            # 直连：model_id 拼成 gpt-image-{res}-{aspect}
+            model = f"gpt-image-{res}-{aspect_x}"
         if not model:
             raise RespectAPIError("请选择模型或填写 custom_model")
 
-        size = (custom_size or "").strip() or _aicopy_image2_size(aspect_ratio, resolution)
-        aspect_x = aspect_to_x(aspect_ratio)
-        res = (resolution or "1k").lower()
+        size = (custom_size or "").strip() or _image2_payload_size(model, aspect_x, res)
 
         refs: list[bytes] = []
         for img in (image_1, image_2, image_3, image_4):
@@ -513,6 +637,8 @@ class RespectClaudeLLM:
             "optional": {
                 "system_prompt": ("STRING", {"default": "", "multiline": True}),
                 "temperature": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.1}),
+                "response_format": (RESPONSE_FORMATS, {"default": "text"}),
+                "json_schema": ("STRING", {"default": "", "multiline": True, "placeholder": "json_schema 模式：Anthropic 无原生支持，靠系统提示强制"}),
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
@@ -533,6 +659,8 @@ class RespectClaudeLLM:
         stream: bool,
         system_prompt: str = "",
         temperature: float = -1.0,
+        response_format: str = "text",
+        json_schema: str = "",
         image_1: Optional[torch.Tensor] = None,
         image_2: Optional[torch.Tensor] = None,
         image_3: Optional[torch.Tensor] = None,
@@ -545,14 +673,20 @@ class RespectClaudeLLM:
         if not content:
             content.append({"type": "text", "text": ""})
 
+        # Anthropic 无原生 response_format，用系统提示强制 JSON
+        sys_text = system_prompt or ""
+        json_instr = _claude_json_instruction(response_format, json_schema)
+        if json_instr:
+            sys_text = (sys_text + "\n\n" + json_instr).strip() if sys_text.strip() else json_instr
+
         body: dict = {
             "model": model,
             "max_tokens": int(max_tokens),
             "messages": [{"role": "user", "content": content}],
             "stream": bool(stream),
         }
-        if system_prompt.strip():
-            body["system"] = system_prompt
+        if sys_text.strip():
+            body["system"] = sys_text
         if temperature >= 0:
             body["temperature"] = float(temperature)
 

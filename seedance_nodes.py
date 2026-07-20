@@ -490,6 +490,160 @@ class RespectSeedanceFourRefVideo:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# grok-video 分支（新接口：单模型 grok-video + 公网图上传 + 分端点）
+# ---------------------------------------------------------------------------
+
+
+GROK_VIDEO_ASPECTS = ["16:9", "9:16", "3:2"]
+GROK_VIDEO_DURATIONS = ["6", "10", "15"]
+GROK_VIDEO_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
+
+
+def _tag_image_prompt(prompt: str, n: int) -> str:
+    p = prompt or ""
+    if "@image" in p.lower() or n <= 0:
+        return p
+    tags = " ".join(f"@image{i + 1}" for i in range(n))
+    return f"{p} {tags}".strip()
+
+
+def _grok_video_submit_poll(cfg, endpoint: str, body: dict, poll_interval: int, poll_timeout: int) -> tuple[str, str]:
+    """grok-video 专用：POST 后按 status_url > {endpoint}/{task_id} 轮询。"""
+    resp = api_request(cfg, "POST", endpoint, json_body=body, retries=2, timeout=max(cfg.timeout, 300))
+    data = resp.json() if resp.content else {}
+    direct = _async_extract_url(data)
+    task_id = _sd2_extract_task_id(data)
+    status_url = ""
+    if isinstance(data, dict):
+        status_url = data.get("status_url") or (data.get("data") or {}).get("status_url") or ""
+    if direct:
+        return direct, task_id
+    if status_url:
+        poll_path = status_url
+    elif task_id:
+        poll_path = f"{endpoint}/{task_id}"
+    else:
+        raise RespectAPIError(f"提交未返回 status_url / task_id / 视频URL: {json.dumps(data, ensure_ascii=False)[:400]}")
+
+    start = time.time()
+    last = ""
+    while time.time() - start < poll_timeout:
+        try:
+            r = api_request(cfg, "GET", poll_path, retries=1, timeout=60)
+        except RespectAPIError as exc:
+            print(f"[Respect] grok-video 轮询错误，继续重试: {exc}")
+            time.sleep(poll_interval)
+            continue
+        d = r.json() if r.content else {}
+        u = _async_extract_url(d)
+        status = _async_status(d)
+        if status and status != last:
+            print(f"[Respect] grok-video 任务 {task_id or poll_path} 状态: {status}")
+            last = status
+        if status in _ASYNC_FAIL:
+            raise RespectAPIError(f"任务失败: {json.dumps(d, ensure_ascii=False)[:400]}")
+        if u and (not status or status in _ASYNC_DONE):
+            return u, task_id
+        time.sleep(poll_interval)
+    raise RespectAPIError(f"任务超时: {task_id or poll_path}")
+
+
+class RespectGrokVideoNew:
+    """grok-video 新接口（单模型 `grok-video`，参考图先上传换公网 URL）。
+
+    - 文生视频 → `POST /v1/videos`：seconds(字符串)+size:"720p"+aspect_ratio
+    - 首帧生成视频 → `POST /v1/videos`：input_reference(公网URL)+seconds+size，不传 aspect_ratio
+    - 多参考图(2–5张) → `POST /v1/video/generations`：images:[urls]+duration(数字)+size+aspect_ratio
+    时长：文生/首帧 6/10/15；多参考 6/10（选 15 自动降到 10）。分辨率固定 720p。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "model": ("STRING", {"default": "grok-video", "multiline": False}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "generation_mode": (GROK_VIDEO_MODES, {"default": "文生视频"}),
+                "duration": (GROK_VIDEO_DURATIONS, {"default": "10"}),
+                "aspect_ratio": (GROK_VIDEO_ASPECTS, {"default": "16:9"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "ref_image_1": ("IMAGE",),
+                "ref_image_2": ("IMAGE",),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "ref_image_5": ("IMAGE",),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, generation_mode, duration, aspect_ratio,
+                 poll_interval, poll_timeout, auto_download,
+                 first_frame=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+                 ref_image_4=None, ref_image_5=None, save_dir="", filename=""):
+        cfg = ensure_config(api_config)
+        model = (model or "grok-video").strip() or "grok-video"
+        sec = int(duration)
+
+        if generation_mode == "文生视频":
+            endpoint = "/v1/videos"
+            body: dict = {
+                "model": model,
+                "prompt": prompt,
+                "seconds": str(sec),
+                "size": "720p",
+                "aspect_ratio": aspect_ratio,
+            }
+        elif generation_mode == "首帧生成视频":
+            if first_frame is None:
+                raise RespectAPIError("首帧生成视频需要提供 first_frame")
+            ref_url = _upload_reference(cfg, first_frame, 1)
+            endpoint = "/v1/videos"
+            body = {
+                "model": model,
+                "prompt": prompt,
+                "input_reference": ref_url,
+                "seconds": str(sec),
+                "size": "720p",
+            }
+        else:  # 多参考图生成视频
+            urls = _upload_all(cfg, [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5])[:5]
+            if len(urls) < 2:
+                raise RespectAPIError("多参考图生成视频需要 2–5 张参考图")
+            if sec == 15:
+                sec = 10  # 多参考仅支持 6/10
+            endpoint = "/v1/video/generations"
+            body = {
+                "model": model,
+                "prompt": _tag_image_prompt(prompt, len(urls)),
+                "images": urls,
+                "duration": sec,
+                "size": "720p",
+                "aspect_ratio": aspect_ratio,
+            }
+
+        url, task_id = _grok_video_submit_poll(cfg, endpoint, body, int(poll_interval), int(poll_timeout))
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="grokvideo", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] grok-video 下载失败: {exc}")
+        return (url, local, task_id or "")
+
+
 def _finalize_sd(cfg, direct, task_id, poll_interval, poll_timeout,
                  auto_download, prefix, save_dir, filename) -> tuple[str, str, str]:
     if direct:
@@ -507,14 +661,219 @@ def _finalize_sd(cfg, direct, task_id, poll_interval, poll_timeout,
     return (url, local, task_id or "")
 
 
+# ---------------------------------------------------------------------------
+# HappyHorse 快乐马 2.0 —— happyhorse
+# ---------------------------------------------------------------------------
+
+
+HAPPYHORSE_VARIANTS = [
+    "happyhorse-1.1-t2v-720p", "happyhorse-1.1-t2v-1080p",
+    "happyhorse-1.1-i2v-720p", "happyhorse-1.1-i2v-1080p",
+    "happyhorse-1.1-r2v-720p", "happyhorse-1.1-r2v-1080p",
+    "happyhorse-1.0-t2v-720p", "happyhorse-1.0-t2v-1080p",
+    "happyhorse-1.0-i2v-720p", "happyhorse-1.0-i2v-1080p",
+    "happyhorse-1.0-r2v-720p", "happyhorse-1.0-r2v-1080p",
+]
+HAPPYHORSE_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"]
+
+
+def _happyhorse_mode(variant: str) -> str:
+    v = str(variant or "")
+    if "-i2v-" in v:
+        return "首帧生成视频"
+    if "-r2v-" in v:
+        return "多参考图生成视频"
+    return "文生视频"
+
+
+class RespectHappyHorseVideo:
+    """HappyHorse 快乐马 2.0（`POST /v1/videos`，参考图先上传换公网 URL）。
+
+    模型变体名已编码 版本/模式/清晰度：t2v=文生、i2v=首帧、r2v=多参考(≤9)；-1080p/-720p 定清晰度。
+    生成模式由变体自动推断。节点最多接 7 张参考图（上游支持 9）。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "model_variant": (HAPPYHORSE_VARIANTS, {"default": "happyhorse-1.1-t2v-720p"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 5, "min": 4, "max": 15}),
+                "aspect_ratio": (HAPPYHORSE_ASPECTS, {"default": "16:9"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "ref_image_1": ("IMAGE",),
+                "ref_image_2": ("IMAGE",),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "ref_image_5": ("IMAGE",),
+                "ref_image_6": ("IMAGE",),
+                "ref_image_7": ("IMAGE",),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model_variant, prompt, duration, aspect_ratio,
+                 poll_interval, poll_timeout, auto_download,
+                 first_frame=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+                 ref_image_4=None, ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                 custom_model="", save_dir="", filename=""):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model_variant
+        mode = _happyhorse_mode(model_variant)
+        resolution = "1080P" if str(model).endswith("-1080p") else "720P"
+
+        refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
+        tensors = _collect_mode_tensors(mode, first_frame, None, refs)
+        image_urls = _upload_all(cfg, tensors)[:9]
+
+        parameters: dict = {"duration": int(duration), "resolution": resolution, "watermark": False}
+        if mode != "首帧生成视频":
+            parameters["ratio"] = aspect_ratio or "16:9"
+        body: dict = {"model": model, "prompt": prompt, "parameters": parameters}
+        if mode == "首帧生成视频":
+            if not image_urls:
+                raise RespectAPIError("HappyHorse 图生视频（i2v）必须提供首帧图片")
+            body["image_url"] = image_urls[0]
+        elif mode == "多参考图生成视频":
+            if not image_urls:
+                raise RespectAPIError("HappyHorse 参考生视频（r2v）必须提供至少一张参考图")
+            body["reference_images"] = image_urls[:9]
+
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        return _finalize_sd(cfg, direct, task_id, poll_interval, poll_timeout,
+                            auto_download, "happyhorse", save_dir, filename)
+
+
+# ---------------------------------------------------------------------------
+# 可灵+快乐马+omni 低价渠道（按次）—— low_cost_multi
+# ---------------------------------------------------------------------------
+
+
+LOW_COST_VARIANTS = ["kling", "happy-horse-1.1", "gemini-omni"]
+LOW_COST_MODES = {
+    "kling": ["文生视频", "首帧生成视频", "首尾帧生成视频"],
+    "happy-horse-1.1": ["文生视频", "多参考图生成视频"],
+    "gemini-omni": ["文生视频", "首帧生成视频"],
+}
+LOW_COST_LIMIT = {"kling": 2, "happy-horse-1.1": 9, "gemini-omni": 1}
+LOW_COST_ASPECTS = ["16:9", "9:16", "1:1"]
+LOW_COST_ALL_MODES = ["文生视频", "首帧生成视频", "首尾帧生成视频", "多参考图生成视频"]
+
+
+def _low_cost_size(aspect_ratio: str) -> str:
+    return {"16:9": "1280x720", "9:16": "720x1280", "1:1": "720x720"}.get(str(aspect_ratio or "").strip(), "1280x720")
+
+
+def _append_image_placeholders(prompt: str, n: int) -> str:
+    result = str(prompt or "").strip()
+    for i in range(1, int(n or 0) + 1):
+        if not re.search(rf"@Image\s*{i}(?!\d)", result, re.IGNORECASE):
+            result = f"{result} @Image{i}".strip()
+    return result
+
+
+class RespectLowCostMultiVideo:
+    """可灵+快乐马+omni 低价渠道（按次）。`POST /v1/videos`，固定 15 秒，参考图先上传换公网 URL。
+
+    - kling：文生/首帧/首尾帧，≤2 图
+    - happy-horse-1.1：文生/多参考，≤9 图
+    - gemini-omni：文生/首帧，≤1 图
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG",),
+                "model_variant": (LOW_COST_VARIANTS, {"default": "kling"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "generation_mode": (LOW_COST_ALL_MODES, {"default": "文生视频"}),
+                "aspect_ratio": (LOW_COST_ASPECTS, {"default": "16:9"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "last_frame": ("IMAGE",),
+                "ref_image_1": ("IMAGE",),
+                "ref_image_2": ("IMAGE",),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "ref_image_5": ("IMAGE",),
+                "ref_image_6": ("IMAGE",),
+                "ref_image_7": ("IMAGE",),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model_variant, prompt, generation_mode, aspect_ratio,
+                 poll_interval, poll_timeout, auto_download,
+                 first_frame=None, last_frame=None,
+                 ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
+                 ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                 save_dir="", filename=""):
+        cfg = ensure_config(api_config)
+        allowed = LOW_COST_MODES.get(model_variant, LOW_COST_ALL_MODES)
+        if generation_mode not in allowed:
+            raise RespectAPIError(f"{model_variant} 仅支持这些模式: {', '.join(allowed)}")
+
+        refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
+        tensors = _collect_mode_tensors(generation_mode, first_frame, last_frame, refs)
+        image_urls = _upload_all(cfg, tensors)
+        limit = LOW_COST_LIMIT.get(model_variant, 9)
+        if len(image_urls) > limit:
+            raise RespectAPIError(f"{model_variant} 最多支持 {limit} 张参考图")
+
+        body: dict = {
+            "model": model_variant,
+            "prompt": _append_image_placeholders(prompt, len(image_urls)),
+            "duration": 15,
+            "size": _low_cost_size(aspect_ratio),
+            "audio": True,
+        }
+        if image_urls:
+            body["image_refs"] = image_urls
+
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        return _finalize_sd(cfg, direct, task_id, poll_interval, poll_timeout,
+                            auto_download, "lowcost", save_dir, filename)
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectSD2AllVideo": RespectSD2AllVideo,
     "RespectSeedance9Video": RespectSeedance9Video,
     "RespectSeedanceFourRefVideo": RespectSeedanceFourRefVideo,
+    "RespectGrokVideoNew": RespectGrokVideoNew,
+    "RespectHappyHorseVideo": RespectHappyHorseVideo,
+    "RespectLowCostMultiVideo": RespectLowCostMultiVideo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectSD2AllVideo": "Respect SD2.0 全系列视频",
     "RespectSeedance9Video": "Respect Seedance9 九图/稳定版视频",
     "RespectSeedanceFourRefVideo": "Respect Seedance 四参考图视频",
+    "RespectGrokVideoNew": "Respect Grok-Video 视频（新接口）",
+    "RespectHappyHorseVideo": "Respect HappyHorse 快乐马视频",
+    "RespectLowCostMultiVideo": "Respect 低价多渠道视频（可灵/快乐马/omni）",
 }

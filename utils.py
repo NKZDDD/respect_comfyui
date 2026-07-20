@@ -536,7 +536,22 @@ def download_to_output(
 
     `save_dir` / `filename` 不空时优先按用户指定的目录与文件名保存；
     扩展名优先级：filename 自带 > url 推测 > 传入的 ext。
+    传入的是本地已存在文件时，直接复制到目标（供保存/改名本地视频用）。
     """
+    # 本地文件：复制而非下载（filename 无扩展名时补 .mp4）
+    if os.path.isfile(url):
+        import shutil
+        src_ext = os.path.splitext(url)[1] or ext
+        if not src_ext.startswith("."):
+            src_ext = "." + src_ext
+        out_path = _resolve_save_target(
+            save_dir=save_dir, filename=filename,
+            default_subdir=subdir, default_prefix=prefix, default_ext=src_ext,
+        )
+        if os.path.abspath(out_path) != os.path.abspath(url):
+            shutil.copy2(url, out_path)
+        return out_path
+
     if url.startswith("/v1/"):
         url = cfg.normalized_base().rsplit("/v1", 1)[0] + url
 
