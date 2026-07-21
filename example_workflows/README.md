@@ -108,6 +108,13 @@ Respect 视频拼接(folder=<root>/03_videos/<scene>, bgm_audio, bgm_stage) → 
 
 > 用前改：三个工作流的 `root_dir` 保持一致；A 的 base_url 用有 chat+image 的网关，B 的用 aicost（grok）；C 的 `folder`/`bgm_audio` 按实际填。
 
+### 循环运行 B（把整个队列一次跑完）
+B 每次运行只做 1 个任务。要一次跑完整批：
+- 在 ComfyUI 里开 **Auto Queue（自动队列）**：队列区的 `Extra options → Auto Queue`，勾上后每执行完会自动再排一次，直到队列空/你关闭。
+- `Respect 分镜取任务` 设了 `IS_CHANGED`（每次强制重扫目录），所以每次自动排队都会取到**下一个**未做任务；`01_pending` 清空后 `has_job=false`，此时再跑不产出（手动停 Auto Queue 即可）。
+
+> 注意：这个「循环」是 **ComfyUI 前端的 Auto Queue**，不是 Claude 的 `/loop`——`/loop` 跑在助手侧、驱动不了你本机的 ComfyUI。
+
 ## 文字合并接法（在 UI 里手接，2 步）
 
 分段/多路文字合成一段：
