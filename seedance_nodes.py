@@ -576,8 +576,8 @@ class RespectGrokVideoNew:
     """
 
     DESCRIPTION = (
-        "Grok 视频三模型统一接口。generation_mode 选『图生视频』时必须接 first_frame；"
-        "1.5-preview 只能图生。seconds：1.0/1.5-fast 用 6 或 10。预览/后续请用 local_path 输出。"
+        "Grok 视频三模型统一接口。图生视频接 first_frame（1.0-video / 1.5-fast 可再接 ref_image_2..4 传多张，"
+        "重复 input_reference[] 上传；1.5-preview 只用 1 张）。seconds：1.0/1.5-fast 用 6/10。预览/后续用 local_path。"
     )
 
     @classmethod
@@ -596,7 +596,10 @@ class RespectGrokVideoNew:
                 "auto_download": ("BOOLEAN", {"default": True, "tooltip": "完成后把视频下载到本地并输出 local_path"}),
             },
             "optional": {
-                "first_frame": ("IMAGE", {"tooltip": "图生视频的参考图（首帧），会以 multipart 上传"}),
+                "first_frame": ("IMAGE", {"tooltip": "参考图1（首帧），multipart input_reference[] 上传"}),
+                "ref_image_2": ("IMAGE", {"tooltip": "参考图2（仅 1.0-video / 1.5-fast 支持多张；1.5-preview 只用第1张）"}),
+                "ref_image_3": ("IMAGE", {"tooltip": "参考图3（仅 1.0-video / 1.5-fast）"}),
+                "ref_image_4": ("IMAGE", {"tooltip": "参考图4（仅 1.0-video / 1.5-fast）"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型", "tooltip": "手填任意 grok 视频模型名"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect", "tooltip": "本地保存目录"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳", "tooltip": "本地保存文件名"}),
@@ -611,7 +614,8 @@ class RespectGrokVideoNew:
 
     def generate(self, api_config, model, prompt, generation_mode, duration, aspect_ratio, resolution,
                  poll_interval, poll_timeout, auto_download,
-                 first_frame=None, custom_model="", save_dir="", filename=""):
+                 first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
+                 custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         sec = str(int(duration))
@@ -620,19 +624,24 @@ class RespectGrokVideoNew:
         need_image = (generation_mode == "图生视频") or ("1.5-preview" in model)
 
         if need_image:
-            if first_frame is None:
-                raise RespectAPIError("图生视频 / 1.5-preview 需要提供 first_frame（参考图）")
-            jpeg = _tensor_to_jpeg_bytes(first_frame, max_side=1536, quality=90)
-            if not jpeg:
-                raise RespectAPIError("参考图为空")
+            imgs = [t for t in (first_frame, ref_image_2, ref_image_3, ref_image_4)
+                    if t is not None and (not hasattr(t, "numel") or t.numel() > 0)]
+            if not imgs:
+                raise RespectAPIError("图生视频 / 1.5-preview 需要提供参考图（first_frame）")
+            if "1.5-preview" in model:
+                imgs = imgs[:1]  # 1.5-preview 只支持 1 张
             files = [
                 ("model", (None, model)),
                 ("prompt", (None, prompt)),
                 ("seconds", (None, sec)),
                 ("size", (None, aspect_ratio)),
                 ("resolution_name", (None, res_name)),
-                ("input_reference[]", ("ref.jpg", jpeg, "image/jpeg")),
             ]
+            for i, t in enumerate(imgs, start=1):
+                jpeg = _tensor_to_jpeg_bytes(t, max_side=1536, quality=90)
+                if jpeg:
+                    files.append(("input_reference[]", (f"ref_{i}.jpg", jpeg, "image/jpeg")))
+            print(f"[Respect] grok-video(aicost) {model} 图生: {len(imgs)} 张参考图")
             url, task_id = _grok_video_submit_poll(cfg, "/v1/videos", files=files,
                                                    poll_interval=int(poll_interval), poll_timeout=int(poll_timeout))
         else:
