@@ -506,9 +506,11 @@ class RespectSeedanceFourRefVideo:
 # ---------------------------------------------------------------------------
 
 
-GROK_VIDEO_ASPECTS = ["16:9", "9:16", "3:2"]
+GROK3_MODELS = ["grok-imagine-video-1.5-fast", "grok-imagine-1.0-video", "grok-imagine-video-1.5-preview"]
+GROK_VIDEO_ASPECTS = ["9:16", "16:9", "1:1", "2:3", "3:2"]
+GROK_VIDEO_RES = ["720P", "480P"]
 GROK_VIDEO_DURATIONS = ["6", "10", "15"]
-GROK_VIDEO_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
+GROK_VIDEO_MODES = ["文生视频", "图生视频"]
 
 
 def _tag_image_prompt(prompt: str, n: int) -> str:
@@ -519,9 +521,13 @@ def _tag_image_prompt(prompt: str, n: int) -> str:
     return f"{p} {tags}".strip()
 
 
-def _grok_video_submit_poll(cfg, endpoint: str, body: dict, poll_interval: int, poll_timeout: int) -> tuple[str, str]:
-    """grok-video 专用：POST 后按 status_url > {endpoint}/{task_id} 轮询。"""
-    resp = api_request(cfg, "POST", endpoint, json_body=body, retries=2, timeout=max(cfg.timeout, 300))
+def _grok_video_submit_poll(cfg, endpoint: str, body: dict = None, files=None,
+                            poll_interval: int = 5, poll_timeout: int = 1800) -> tuple[str, str]:
+    """grok-video 专用：POST(JSON 或 multipart) 后按 status_url > {endpoint}/{task_id} 轮询。"""
+    if files is not None:
+        resp = api_request(cfg, "POST", endpoint, files=files, retries=2, timeout=max(cfg.timeout, 300))
+    else:
+        resp = api_request(cfg, "POST", endpoint, json_body=body, retries=2, timeout=max(cfg.timeout, 300))
     data = resp.json() if resp.content else {}
     direct = _async_extract_url(data)
     task_id = _sd2_extract_task_id(data)
@@ -561,30 +567,129 @@ def _grok_video_submit_poll(cfg, endpoint: str, body: dict, poll_interval: int, 
 
 
 class RespectGrokVideoNew:
-    """grok-video 新接口（单模型 `grok-video`，参考图先上传换公网 URL）。
+    """Grok 视频（统一三模型接口，走 `/v1/videos` + `/v1/videos/{id}` 轮询）。
 
-    - 文生视频 → `POST /v1/videos`：seconds(字符串)+size:"720p"+aspect_ratio
-    - 首帧生成视频 → `POST /v1/videos`：input_reference(公网URL)+seconds+size，不传 aspect_ratio
-    - 多参考图(2–5张) → `POST /v1/video/generations`：images:[urls]+duration(数字)+size+aspect_ratio
-    时长：文生/首帧 6/10/15；多参考 6/10（选 15 自动降到 10）。分辨率固定 720p。
+    - grok-imagine-video-1.5-fast / grok-imagine-1.0-video：文生或图生，seconds 只支持 6/10
+    - grok-imagine-video-1.5-preview：必须图生，seconds 1~15
+    图生视频时参考图（first_frame，通常接 image2 出的图）直接以 multipart `input_reference[]` 上传，
+    无需公网图床。auto_download 会把结果下载到本地并输出 local_path（预览请连 local_path）。
     """
+
+    DESCRIPTION = (
+        "Grok 视频三模型统一接口。generation_mode 选『图生视频』时必须接 first_frame；"
+        "1.5-preview 只能图生。seconds：1.0/1.5-fast 用 6 或 10。预览/后续请用 local_path 输出。"
+    )
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "api_config": ("RESPECT_CONFIG",),
-                "model": ("STRING", {"default": "grok-video", "multiline": False}),
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "连 Respect API 设置"}),
+                "model": (GROK3_MODELS, {"default": "grok-imagine-video-1.5-fast", "tooltip": "1.5-preview 必须图生；1.0/1.5-fast 时长只支持 6/10"}),
+                "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "视频描述（英文更稳）"}),
+                "generation_mode": (GROK_VIDEO_MODES, {"default": "文生视频", "tooltip": "图生视频需接 first_frame 参考图"}),
+                "duration": (GROK_VIDEO_DURATIONS, {"default": "10", "tooltip": "秒数；1.0/1.5-fast 仅 6/10，1.5-preview 支持到 15"}),
+                "aspect_ratio": (GROK_VIDEO_ASPECTS, {"default": "16:9", "tooltip": "画幅比例"}),
+                "resolution": (GROK_VIDEO_RES, {"default": "720P", "tooltip": "清晰度"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60, "tooltip": "轮询间隔（秒）"}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200, "tooltip": "最长等待（秒）"}),
+                "auto_download": ("BOOLEAN", {"default": True, "tooltip": "完成后把视频下载到本地并输出 local_path"}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE", {"tooltip": "图生视频的参考图（首帧），会以 multipart 上传"}),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型", "tooltip": "手填任意 grok 视频模型名"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect", "tooltip": "本地保存目录"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳", "tooltip": "本地保存文件名"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/后续用这个）", "任务 ID")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, generation_mode, duration, aspect_ratio, resolution,
+                 poll_interval, poll_timeout, auto_download,
+                 first_frame=None, custom_model="", save_dir="", filename=""):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+        sec = str(int(duration))
+        res_name = "720p" if str(resolution).upper().startswith("720") else "480p"
+        res_hd = "HD" if res_name == "720p" else "SD"
+        need_image = (generation_mode == "图生视频") or ("1.5-preview" in model)
+
+        if need_image:
+            if first_frame is None:
+                raise RespectAPIError("图生视频 / 1.5-preview 需要提供 first_frame（参考图）")
+            jpeg = _tensor_to_jpeg_bytes(first_frame, max_side=1536, quality=90)
+            if not jpeg:
+                raise RespectAPIError("参考图为空")
+            files = [
+                ("model", (None, model)),
+                ("prompt", (None, prompt)),
+                ("seconds", (None, sec)),
+                ("size", (None, aspect_ratio)),
+                ("resolution_name", (None, res_name)),
+                ("input_reference[]", ("ref.jpg", jpeg, "image/jpeg")),
+            ]
+            url, task_id = _grok_video_submit_poll(cfg, "/v1/videos", files=files,
+                                                   poll_interval=int(poll_interval), poll_timeout=int(poll_timeout))
+        else:
+            body = {"model": model, "prompt": prompt, "seconds": sec,
+                    "aspect_ratio": aspect_ratio, "resolution": res_hd}
+            url, task_id = _grok_video_submit_poll(cfg, "/v1/videos", body=body,
+                                                   poll_interval=int(poll_interval), poll_timeout=int(poll_timeout))
+
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="grokvideo", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] grok-video 下载失败: {exc}")
+        return (url, local, task_id or "")
+
+
+# ---------------------------------------------------------------------------
+# Grok-Video 小裴分支（单模型 grok-video，公网图上传，多参考走 /v1/video/generations）
+# ---------------------------------------------------------------------------
+
+
+GROK_XP_ASPECTS = ["16:9", "9:16", "3:2"]
+GROK_XP_DURATIONS = ["6", "10", "15"]
+GROK_XP_MODES = ["文生视频", "首帧生成视频", "多参考图生成视频"]
+
+
+class RespectGrokVideoXiaopei:
+    """Grok-Video 小裴分支（aicopy 后端，单模型 grok-video，参考图先上传换公网 URL）。
+
+    - 文生视频 → POST /v1/videos：seconds(字符串)+size:720p+aspect_ratio
+    - 首帧生成视频 → POST /v1/videos：input_reference(公网URL)+seconds+size（不传 aspect_ratio）
+    - 多参考图(2–5张) → POST /v1/video/generations：images:[urls]+duration(数字)+size+aspect_ratio
+    时长：文生/首帧 6/10/15；多参考 6/10（选 15 自动降 10）。分辨率固定 720p。
+    """
+
+    DESCRIPTION = (
+        "小裴 grok-video 分支（aicopy 后端）。参考图走『公网URL上传』；多参考图(2-5张)用 "
+        "/v1/video/generations。与 aicost 分支不通用——用哪个看你的 API key 对应哪个后端。"
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "连 Respect API 设置（aicopy 后端）"}),
+                "model": ("STRING", {"default": "grok-video", "multiline": False, "tooltip": "小裴 grok-video 模型名"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
-                "generation_mode": (GROK_VIDEO_MODES, {"default": "文生视频"}),
-                "duration": (GROK_VIDEO_DURATIONS, {"default": "10"}),
-                "aspect_ratio": (GROK_VIDEO_ASPECTS, {"default": "16:9"}),
+                "generation_mode": (GROK_XP_MODES, {"default": "文生视频", "tooltip": "首帧/多参考图需接参考图"}),
+                "duration": (GROK_XP_DURATIONS, {"default": "10", "tooltip": "秒数；多参考图仅 6/10"}),
+                "aspect_ratio": (GROK_XP_ASPECTS, {"default": "16:9"}),
                 "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
             },
             "optional": {
-                "first_frame": ("IMAGE",),
+                "first_frame": ("IMAGE", {"tooltip": "首帧模式的参考图"}),
                 "ref_image_1": ("IMAGE",),
                 "ref_image_2": ("IMAGE",),
                 "ref_image_3": ("IMAGE",),
@@ -597,6 +702,7 @@ class RespectGrokVideoNew:
 
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("video_url", "local_path", "task_id")
+    OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/后续用这个）", "任务 ID")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
@@ -610,25 +716,13 @@ class RespectGrokVideoNew:
 
         if generation_mode == "文生视频":
             endpoint = "/v1/videos"
-            body: dict = {
-                "model": model,
-                "prompt": prompt,
-                "seconds": str(sec),
-                "size": "720p",
-                "aspect_ratio": aspect_ratio,
-            }
+            body = {"model": model, "prompt": prompt, "seconds": str(sec), "size": "720p", "aspect_ratio": aspect_ratio}
         elif generation_mode == "首帧生成视频":
             if first_frame is None:
                 raise RespectAPIError("首帧生成视频需要提供 first_frame")
             ref_url = _upload_reference(cfg, first_frame, 1)
             endpoint = "/v1/videos"
-            body = {
-                "model": model,
-                "prompt": prompt,
-                "input_reference": ref_url,
-                "seconds": str(sec),
-                "size": "720p",
-            }
+            body = {"model": model, "prompt": prompt, "input_reference": ref_url, "seconds": str(sec), "size": "720p"}
         else:  # 多参考图生成视频
             urls = _upload_all(cfg, [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5])[:5]
             if len(urls) < 2:
@@ -636,22 +730,17 @@ class RespectGrokVideoNew:
             if sec == 15:
                 sec = 10  # 多参考仅支持 6/10
             endpoint = "/v1/video/generations"
-            body = {
-                "model": model,
-                "prompt": _tag_image_prompt(prompt, len(urls)),
-                "images": urls,
-                "duration": sec,
-                "size": "720p",
-                "aspect_ratio": aspect_ratio,
-            }
+            body = {"model": model, "prompt": _tag_image_prompt(prompt, len(urls)),
+                    "images": urls, "duration": sec, "size": "720p", "aspect_ratio": aspect_ratio}
 
-        url, task_id = _grok_video_submit_poll(cfg, endpoint, body, int(poll_interval), int(poll_timeout))
+        url, task_id = _grok_video_submit_poll(cfg, endpoint, body=body,
+                                               poll_interval=int(poll_interval), poll_timeout=int(poll_timeout))
         local = ""
         if auto_download and url:
             try:
-                local = download_to_output(url, cfg, prefix="grokvideo", save_dir=save_dir, filename=filename)
+                local = download_to_output(url, cfg, prefix="grokvideo_xp", save_dir=save_dir, filename=filename)
             except Exception as exc:
-                print(f"[Respect] grok-video 下载失败: {exc}")
+                print(f"[Respect] grok-video(小裴) 下载失败: {exc}")
         return (url, local, task_id or "")
 
 
@@ -876,6 +965,7 @@ NODE_CLASS_MAPPINGS = {
     "RespectSeedance9Video": RespectSeedance9Video,
     "RespectSeedanceFourRefVideo": RespectSeedanceFourRefVideo,
     "RespectGrokVideoNew": RespectGrokVideoNew,
+    "RespectGrokVideoXiaopei": RespectGrokVideoXiaopei,
     "RespectHappyHorseVideo": RespectHappyHorseVideo,
     "RespectLowCostMultiVideo": RespectLowCostMultiVideo,
 }
@@ -884,7 +974,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectSD2AllVideo": "Respect SD2.0 全系列视频",
     "RespectSeedance9Video": "Respect Seedance9 九图/稳定版视频",
     "RespectSeedanceFourRefVideo": "Respect Seedance 四参考图视频",
-    "RespectGrokVideoNew": "Respect Grok-Video 视频（新接口）",
+    "RespectGrokVideoNew": "Respect Grok-Video 视频（aicost分支）",
+    "RespectGrokVideoXiaopei": "Respect Grok-Video 视频（小裴分支）",
     "RespectHappyHorseVideo": "Respect HappyHorse 快乐马视频",
     "RespectLowCostMultiVideo": "Respect 低价多渠道视频（可灵/快乐马/omni）",
 }

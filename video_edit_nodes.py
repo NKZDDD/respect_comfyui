@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from typing import Any, Optional
 
 import torch
@@ -89,13 +90,20 @@ class RespectSelectFrames:
     `select` 支持 1-10 / 3-7 / 3,7 / 1-1 / 1-3,8-10 / 5- / -5 / 7-3（逆序）/ 留空=全部。
     """
 
+    DESCRIPTION = (
+        "对帧序列(IMAGE)按帧号选取。select 写法：1-10 连续 / 3,7 单帧 / 1-3,8-10 组合 / "
+        "5- 到末尾 / -5 从头 / 7-3 逆序 / 留空=全部。删首帧填 2-。one_based=第1帧记作1。"
+    )
+
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "frames": ("IMAGE",),
-                "select": ("STRING", {"default": "", "multiline": False, "placeholder": "如 1-10 或 3,7 或 1-3,8-10 或 5- ；留空=全部"}),
-                "one_based": ("BOOLEAN", {"default": True}),
+                "frames": ("IMAGE", {"tooltip": "输入帧序列（IMAGE 批次）"}),
+                "select": ("STRING", {"default": "", "multiline": False,
+                                       "placeholder": "如 1-10 或 3,7 或 1-3,8-10 或 5- ；留空=全部",
+                                       "tooltip": "帧号：1-10/3,7/5-(到末尾)/-5(从头)/7-3(逆序)/留空=全部。删首帧填 2-"}),
+                "one_based": ("BOOLEAN", {"default": True, "tooltip": "开=第1帧记作1；关=从0起"}),
             },
         }
 
@@ -238,25 +246,57 @@ def _trim_with_imageio(path: str, select: str, one_based: bool, out_fps: float, 
     return written
 
 
+def _transcode_to_h264(path: str) -> bool:
+    """把视频转成 H.264 + yuv420p（浏览器/ComfyUI 预览兼容），无 ffmpeg 则跳过。
+
+    cv2 写出的是 mpeg4(Simple Profile)，很多预览器会黑屏/0:00，转 H.264 后正常。
+    """
+    ff = _find_ffmpeg()
+    if not ff:
+        return False
+    tmp = path + ".h264.mp4"
+    ok, _err = _run_ffmpeg([ff, "-y", "-i", path, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                            "-movflags", "+faststart", "-an", tmp])
+    if ok and os.path.isfile(tmp):
+        try:
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            pass
+    try:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    except Exception:
+        pass
+    return False
+
+
 class RespectTrimVideoFile:
     """把 mp4 文件按帧号裁成新 mp4（无音轨）。用 cv2 或 imageio，任装其一。
 
     `video_path` 可接上游视频节点的 local_path。`select` 写法同帧选择节点。
-    `out_fps=0` 表示沿用原视频帧率。
+    `out_fps=0` 表示沿用原视频帧率。有 ffmpeg 时会转 H.264 以便预览。
     """
+
+    DESCRIPTION = (
+        "把 mp4 按帧号裁成新 mp4（无音轨）。select 写法同帧选择：1-100/30-90/1-10,50-60/"
+        "5-(到末尾)/2-(删首帧)/留空=全部。装了 ffmpeg 会自动转 H.264，避免预览黑屏。"
+    )
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "video_path": ("STRING", {"default": "", "multiline": False, "forceInput": True}),
-                "select": ("STRING", {"default": "", "multiline": False, "placeholder": "如 1-100 或 30-90 或 1-10,50-60 ；留空=全部"}),
-                "one_based": ("BOOLEAN", {"default": True}),
+                "video_path": ("STRING", {"default": "", "multiline": False, "forceInput": True, "tooltip": "输入 mp4 路径（接上游 local_path）"}),
+                "select": ("STRING", {"default": "", "multiline": False,
+                                       "placeholder": "如 1-100 或 30-90 或 1-10,50-60 ；留空=全部",
+                                       "tooltip": "帧号：1-100/30-90/2-(删首帧)/留空=全部"}),
+                "one_based": ("BOOLEAN", {"default": True, "tooltip": "开=第1帧记作1"}),
             },
             "optional": {
-                "out_fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 1.0}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
-                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "out_fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 1.0, "tooltip": "输出帧率；0=沿用原视频"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect", "tooltip": "输出目录"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳", "tooltip": "输出文件名"}),
             },
         }
 
@@ -282,7 +322,11 @@ class RespectTrimVideoFile:
                 "  pip install opencv-python\n"
                 "  pip install imageio imageio-ffmpeg"
             )
-        print(f"[Respect] 视频裁剪: {written} 帧 -> {out_path}")
+        # cv2 写出的是 mpeg4(SP)，预览常黑屏 → 转 H.264（有 ffmpeg 时）
+        if _transcode_to_h264(out_path):
+            print(f"[Respect] 视频裁剪: {written} 帧 -> {out_path}（已转 H.264）")
+        else:
+            print(f"[Respect] 视频裁剪: {written} 帧 -> {out_path}（未转码，若预览黑屏请装 imageio-ffmpeg）")
         return (out_path, written)
 
 
@@ -477,6 +521,8 @@ def _ffmpeg_concat_reencode(ff: str, paths: list[str], out_path: str,
 
 
 CONCAT_MODES = ["auto", "copy(无损保音轨)", "reencode(缩放保音轨)", "frames(逐帧无音轨)"]
+CONCAT_BGM_STAGES = ["none", "after_merge(合并后加)", "per_video(每个视频各加)"]
+_CONCAT_VIDEO_EXTS = (".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi")
 
 
 class RespectConcatVideos:
@@ -493,13 +539,23 @@ class RespectConcatVideos:
     `out_fps` / `width` / `height` = 0 表示按第一个视频自动取。
     """
 
+    DESCRIPTION = (
+        "把多个 mp4 顺序拼接。顺序=video_1..8(接各视频节点 local_path)+extra_paths(每行一个)。"
+        "mode：auto(有ffmpeg→保音轨重编码)/copy(无损快,需同参)/reencode(缩放保音轨)/frames(无音轨)。"
+    )
+
     @classmethod
     def INPUT_TYPES(cls) -> dict:
-        optional = {f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True}) for i in range(8)}
+        optional = {f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True, "tooltip": f"第{i+1}个视频路径（接 local_path）"}) for i in range(8)}
         optional.update({
-            "extra_paths": ("STRING", {"default": "", "multiline": True, "placeholder": "追加视频路径，每行一个（数量不限）"}),
-            "mode": (CONCAT_MODES, {"default": "auto"}),
-            "keep_audio": ("BOOLEAN", {"default": True}),
+            "folder": ("STRING", {"default": "", "multiline": False, "placeholder": "可选：读取该文件夹内所有视频(按名排序)", "tooltip": "填分镜的 03_videos/<scene> 即可整批拼接"}),
+            "extra_paths": ("STRING", {"default": "", "multiline": True, "placeholder": "追加视频路径，每行一个（数量不限）", "tooltip": "超过8个时每行填一个路径"}),
+            "mode": (CONCAT_MODES, {"default": "auto", "tooltip": "auto=保音轨重编码；copy=无损快(需同参)；frames=无音轨无需ffmpeg"}),
+            "keep_audio": ("BOOLEAN", {"default": True, "tooltip": "reencode/auto 时是否保留音轨"}),
+            "bgm_audio": ("STRING", {"default": "", "multiline": False, "placeholder": "可选：BGM 音频路径", "tooltip": "填了才加 BGM，配合 bgm_stage"}),
+            "bgm_stage": (CONCAT_BGM_STAGES, {"default": "none", "tooltip": "none=不加；after_merge=合并后统一加；per_video=每个视频各加再合并"}),
+            "bgm_mode": (["mix(叠加原声)", "replace(替换原声)"], {"default": "mix(叠加原声)", "tooltip": "叠加或替换原声"}),
+            "bgm_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1, "tooltip": "BGM 音量倍数"}),
             "out_fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 1.0}),
             "width": ("INT", {"default": 0, "min": 0, "max": 8192}),
             "height": ("INT", {"default": 0, "min": 0, "max": 8192}),
@@ -514,10 +570,21 @@ class RespectConcatVideos:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
 
-    def concat(self, extra_paths: str = "", mode: str = "auto", keep_audio: bool = True,
+    def concat(self, folder: str = "", extra_paths: str = "", mode: str = "auto", keep_audio: bool = True,
+               bgm_audio: str = "", bgm_stage: str = "none", bgm_mode: str = "mix(叠加原声)", bgm_volume: float = 1.0,
                out_fps: float = 0.0, width: int = 0, height: int = 0,
                save_dir: str = "", filename: str = "", **kwargs):
         paths: list[str] = []
+        # 文件夹优先（按文件名排序）
+        folder = (folder or "").strip().strip('"')
+        if folder:
+            fdir = os.path.expanduser(os.path.expandvars(folder))
+            if not os.path.isabs(fdir):
+                fdir = os.path.join(_comfy_output_base(), fdir)
+            if os.path.isdir(fdir):
+                for fn in sorted(os.listdir(fdir)):
+                    if fn.lower().endswith(_CONCAT_VIDEO_EXTS):
+                        paths.append(os.path.join(fdir, fn))
         for i in range(8):
             v = kwargs.get(f"video_{i + 1}")
             if v:
@@ -532,51 +599,76 @@ class RespectConcatVideos:
         if missing:
             raise FileNotFoundError(f"以下视频不存在: {missing}")
         if not paths:
-            raise ValueError("没有可拼接的视频（请连 video_1.. 或在 extra_paths 填路径）")
+            raise ValueError("没有可拼接的视频（请连 video_1.. / 填 folder / extra_paths）")
+
+        # per_video：先给每个视频各加 BGM
+        bgm_audio = (bgm_audio or "").strip().strip('"')
+        stage = bgm_stage.split("(")[0]
+        bmode = bgm_mode.split("(")[0]
+        ff_bgm = _find_ffmpeg()
+        if stage == "per_video" and bgm_audio and os.path.isfile(bgm_audio) and ff_bgm:
+            new_paths = []
+            for p in paths:
+                tmp = os.path.join(_comfy_output_base(), "respect", f"bgmtmp_{uuid.uuid4().hex[:8]}.mp4")
+                os.makedirs(os.path.dirname(tmp), exist_ok=True)
+                ok, _e = _add_bgm_ffmpeg(ff_bgm, p, bgm_audio, tmp, mode=bmode,
+                                         bgm_volume=bgm_volume, original_volume=1.0, loop_bgm=True)
+                new_paths.append(tmp if ok and os.path.isfile(tmp) else p)
+            paths = new_paths
 
         out_path = _resolve_out_path(save_dir, filename, prefix="concat")
-        key = mode.split("(")[0]  # auto / copy / reencode / frames
+        key = mode.split("(")[0]
         ff = _find_ffmpeg() if key in ("auto", "copy", "reencode") else None
 
-        # 1) ffmpeg copy（无损快速）
-        if key == "copy":
-            if not ff:
-                raise RuntimeError("copy 模式需要 ffmpeg（可 pip install imageio-ffmpeg）")
-            ok, err = _ffmpeg_concat_copy(ff, paths, out_path)
-            if not ok:
-                raise RuntimeError(f"ffmpeg copy 拼接失败（各片参数可能不一致，试试 reencode）：{err}")
-            print(f"[Respect] 视频拼接(copy 无损): {len(paths)} 个 -> {out_path}")
-            return (out_path, len(paths))
+        def _run_concat():
+            if key == "copy":
+                if not ff:
+                    raise RuntimeError("copy 模式需要 ffmpeg（可 pip install imageio-ffmpeg）")
+                ok, err = _ffmpeg_concat_copy(ff, paths, out_path)
+                if not ok:
+                    raise RuntimeError(f"ffmpeg copy 拼接失败（各片参数可能不一致，试试 reencode）：{err}")
+                print(f"[Respect] 视频拼接(copy 无损): {len(paths)} 个 -> {out_path}")
+                return
+            if key == "reencode" or (key == "auto" and ff):
+                if not ff:
+                    raise RuntimeError("reencode 模式需要 ffmpeg（可 pip install imageio-ffmpeg）")
+                probe = _probe_video(paths[0]) or (1280, 720, 30.0)
+                tw = width if width > 0 else probe[0]
+                th = height if height > 0 else probe[1]
+                tfps = out_fps if out_fps and out_fps > 0 else probe[2]
+                ok, err = _ffmpeg_concat_reencode(ff, paths, out_path, tw, th, tfps, with_audio=keep_audio)
+                if not ok and keep_audio:
+                    print(f"[Respect] 带音轨拼接失败，回退无音轨重试：{err[:200]}")
+                    ok, err = _ffmpeg_concat_reencode(ff, paths, out_path, tw, th, tfps, with_audio=False)
+                if ok:
+                    print(f"[Respect] 视频拼接(reencode {tw}x{th}@{tfps:g}, 音轨={keep_audio}): {len(paths)} 个 -> {out_path}")
+                    return
+                if key == "reencode":
+                    raise RuntimeError(f"ffmpeg reencode 拼接失败：{err}")
+                print(f"[Respect] ffmpeg 拼接失败，回退逐帧模式：{err[:200]}")
+            written = _concat_with_cv2(paths, out_fps, out_path)
+            if written is None:
+                written = _concat_with_imageio(paths, out_fps, out_path)
+            if written is None:
+                raise RuntimeError(
+                    "无可用后端：装 ffmpeg（pip install imageio-ffmpeg，可保音轨）"
+                    "或 opencv-python / imageio（逐帧无音轨）任一即可"
+                )
+            print(f"[Respect] 视频拼接(逐帧无音轨): {len(paths)} 个 -> {written} 帧 -> {out_path}")
 
-        # 2) ffmpeg reencode（缩放 + 保音轨）
-        if key == "reencode" or (key == "auto" and ff):
-            if not ff:
-                raise RuntimeError("reencode 模式需要 ffmpeg（可 pip install imageio-ffmpeg）")
-            probe = _probe_video(paths[0]) or (1280, 720, 30.0)
-            tw = width if width > 0 else probe[0]
-            th = height if height > 0 else probe[1]
-            tfps = out_fps if out_fps and out_fps > 0 else probe[2]
-            ok, err = _ffmpeg_concat_reencode(ff, paths, out_path, tw, th, tfps, with_audio=keep_audio)
-            if not ok and keep_audio:
-                print(f"[Respect] 带音轨拼接失败，回退无音轨重试：{err[:200]}")
-                ok, err = _ffmpeg_concat_reencode(ff, paths, out_path, tw, th, tfps, with_audio=False)
-            if ok:
-                print(f"[Respect] 视频拼接(reencode {tw}x{th}@{tfps:g}, 音轨={keep_audio}): {len(paths)} 个 -> {out_path}")
-                return (out_path, len(paths))
-            if key == "reencode":
-                raise RuntimeError(f"ffmpeg reencode 拼接失败：{err}")
-            print(f"[Respect] ffmpeg 拼接失败，回退逐帧模式：{err[:200]}")
+        _run_concat()
 
-        # 3) 逐帧（cv2/imageio，无音轨）
-        written = _concat_with_cv2(paths, out_fps, out_path)
-        if written is None:
-            written = _concat_with_imageio(paths, out_fps, out_path)
-        if written is None:
-            raise RuntimeError(
-                "无可用后端：装 ffmpeg（pip install imageio-ffmpeg，可保音轨）"
-                "或 opencv-python / imageio（逐帧无音轨）任一即可"
-            )
-        print(f"[Respect] 视频拼接(逐帧无音轨): {len(paths)} 个 -> {written} 帧 -> {out_path}")
+        # after_merge：合并后统一加 BGM
+        if stage == "after_merge" and bgm_audio and os.path.isfile(bgm_audio) and ff_bgm:
+            final = out_path + ".bgm.mp4"
+            ok, err = _add_bgm_ffmpeg(ff_bgm, out_path, bgm_audio, final, mode=bmode,
+                                      bgm_volume=bgm_volume, original_volume=1.0, loop_bgm=True)
+            if ok and os.path.isfile(final):
+                os.replace(final, out_path)
+                print(f"[Respect] 合并后加 BGM 完成 -> {out_path}")
+            else:
+                print(f"[Respect] 合并后加 BGM 失败，输出无 BGM：{err[:200]}")
+
         return (out_path, len(paths))
 
 
@@ -617,20 +709,25 @@ class RespectAddBGM:
     需要 ffmpeg（pip install imageio-ffmpeg 即可，无需系统装）。
     """
 
+    DESCRIPTION = (
+        "给视频加背景音乐。mix=叠加原声(原视频无声时自动纯BGM)；replace=替换原声。"
+        "loop_bgm=BGM 短则循环铺满，输出对齐视频长度。视频不重编码(-c:v copy)，快。需要 ffmpeg。"
+    )
+
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
-                "video_path": ("STRING", {"default": "", "multiline": False, "forceInput": True}),
-                "audio_path": ("STRING", {"default": "", "multiline": False, "placeholder": "BGM 音频文件路径 mp3/wav/m4a/aac"}),
-                "mode": (BGM_MODES, {"default": "mix(叠加原声)"}),
-                "bgm_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1}),
+                "video_path": ("STRING", {"default": "", "multiline": False, "forceInput": True, "tooltip": "输入视频路径（接 local_path）"}),
+                "audio_path": ("STRING", {"default": "", "multiline": False, "placeholder": "BGM 音频文件路径 mp3/wav/m4a/aac", "tooltip": "本地 BGM 音频文件路径"}),
+                "mode": (BGM_MODES, {"default": "mix(叠加原声)", "tooltip": "mix=叠加原声；replace=替换原声"}),
+                "bgm_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1, "tooltip": "BGM 音量倍数"}),
             },
             "optional": {
-                "original_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1}),
-                "loop_bgm": ("BOOLEAN", {"default": True}),
-                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
-                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "original_volume": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 8.0, "step": 0.1, "tooltip": "mix 时原声音量倍数"}),
+                "loop_bgm": ("BOOLEAN", {"default": True, "tooltip": "BGM 比视频短时循环铺满"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect", "tooltip": "输出目录"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳", "tooltip": "输出文件名"}),
             },
         }
 

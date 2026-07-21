@@ -138,6 +138,27 @@ class RespectPreviewVideo:
         if not first:
             return {"ui": {"videos": []}, "result": (raw,)}
 
+        # 传进来的是 http(s) URL：先下载到 output/respect_preview 再预览
+        if first.lower().startswith(("http://", "https://")) and folder_paths is not None:
+            try:
+                import requests
+                dst_dir = os.path.join(folder_paths.get_output_directory(), "respect_preview")
+                os.makedirs(dst_dir, exist_ok=True)
+                name = first.split("?")[0].split("/")[-1] or "video.mp4"
+                if not os.path.splitext(name)[1]:
+                    name += ".mp4"
+                dst = os.path.join(dst_dir, f"{_rand_suffix()}_{name}")
+                r = requests.get(first, timeout=600, stream=True)
+                r.raise_for_status()
+                with open(dst, "wb") as f:
+                    for chunk in r.iter_content(64 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                first = dst
+            except Exception as exc:
+                print(f"[Respect] 下载视频 URL 失败，无法预览: {exc}")
+                return {"ui": {"videos": []}, "result": (first,)}
+
         ref = _to_view_ref(first)
         if ref is None:
             print(f"[Respect] 无法预览视频（文件不存在或不可访问）: {first}")

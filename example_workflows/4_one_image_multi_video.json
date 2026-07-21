@@ -722,31 +722,6 @@
           "link": 16
         },
         {
-          "name": "ref_image_1",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_2",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_3",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_4",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_5",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
           "name": "prompt",
           "type": "STRING",
           "link": 19,
@@ -781,13 +756,15 @@
         "Node name for S&R": "RespectGrokVideoNew"
       },
       "widgets_values": [
-        "grok-video",
-        "首帧生成视频",
+        "grok-imagine-video-1.5-fast",
+        "图生视频",
         "10",
         "16:9",
+        "720P",
         5,
         1800,
         true,
+        "",
         "",
         ""
       ]
@@ -930,31 +907,6 @@
           "link": 17
         },
         {
-          "name": "ref_image_1",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_2",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_3",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_4",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "ref_image_5",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
           "name": "prompt",
           "type": "STRING",
           "link": 21,
@@ -989,13 +941,15 @@
         "Node name for S&R": "RespectGrokVideoNew"
       },
       "widgets_values": [
-        "grok-video",
-        "首帧生成视频",
+        "grok-imagine-video-1.5-fast",
+        "图生视频",
         "10",
         "16:9",
+        "720P",
         5,
         1800,
         true,
+        "",
         "",
         ""
       ]
@@ -1462,7 +1416,7 @@
       11,
       0,
       12,
-      7,
+      2,
       "STRING"
     ],
     [
@@ -1478,7 +1432,7 @@
       14,
       0,
       15,
-      7,
+      2,
       "STRING"
     ],
     [
