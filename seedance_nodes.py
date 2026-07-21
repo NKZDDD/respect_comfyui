@@ -588,7 +588,7 @@ class RespectGrokVideoNew:
                 "model": (GROK3_MODELS, {"default": "grok-imagine-video-1.5-fast", "tooltip": "1.5-preview 必须图生；1.0/1.5-fast 时长只支持 6/10"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "视频描述（英文更稳）"}),
                 "generation_mode": (GROK_VIDEO_MODES, {"default": "文生视频", "tooltip": "图生视频需接 first_frame 参考图"}),
-                "duration": (GROK_VIDEO_DURATIONS, {"default": "10", "tooltip": "秒数；1.0/1.5-fast 仅 6/10，1.5-preview 支持到 15"}),
+                "duration": ("INT", {"default": 10, "min": 1, "max": 15, "tooltip": "秒数：1.5-preview 支持 1~15；1.0-video/1.5-fast 仅 6/10（非法会就近取）"}),
                 "aspect_ratio": (GROK_VIDEO_ASPECTS, {"default": "16:9", "tooltip": "画幅比例"}),
                 "resolution": (GROK_VIDEO_RES, {"default": "720P", "tooltip": "清晰度"}),
                 "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60, "tooltip": "轮询间隔（秒）"}),
@@ -618,7 +618,10 @@ class RespectGrokVideoNew:
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
-        sec = str(int(duration))
+        sec_i = int(duration)
+        if "1.5-preview" not in model and sec_i not in (6, 10):
+            sec_i = 6 if sec_i < 8 else 10  # 1.0-video / 1.5-fast 仅支持 6/10，就近取
+        sec = str(sec_i)
         res_name = "720p" if str(resolution).upper().startswith("720") else "480p"
         res_hd = "HD" if res_name == "720p" else "SD"
         need_image = (generation_mode == "图生视频") or ("1.5-preview" in model)
