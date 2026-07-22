@@ -644,7 +644,7 @@ class RespectGrokVideoNew:
                 jpeg = _tensor_to_jpeg_bytes(t, max_side=1536, quality=90)
                 if jpeg:
                     files.append(("input_reference[]", (f"ref_{i}.jpg", jpeg, "image/jpeg")))
-            print(f"[Respect] grok-video(aicost) {model} 图生: {len(imgs)} 张参考图")
+            print(f"[Respect] grok-video(坤鸡) {model} 图生: {len(imgs)} 张参考图")
             url, task_id = _grok_video_submit_poll(cfg, "/v1/videos", files=files,
                                                    poll_interval=int(poll_interval), poll_timeout=int(poll_timeout))
         else:
@@ -683,7 +683,7 @@ class RespectGrokVideoXiaopei:
 
     DESCRIPTION = (
         "小裴 grok-video 分支（aicopy 后端）。参考图走『公网URL上传』；多参考图(2-5张)用 "
-        "/v1/video/generations。与 aicost 分支不通用——用哪个看你的 API key 对应哪个后端。"
+        "/v1/video/generations。与坤鸡分支不通用——用哪个看你的 API key 对应哪个后端。"
     )
 
     @classmethod
@@ -986,7 +986,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectSD2AllVideo": "Respect SD2.0 全系列视频",
     "RespectSeedance9Video": "Respect Seedance9 九图/稳定版视频",
     "RespectSeedanceFourRefVideo": "Respect Seedance 四参考图视频",
-    "RespectGrokVideoNew": "Respect Grok-Video 视频（aicost分支）",
+    "RespectGrokVideoNew": "Respect Grok-Video 视频（坤鸡分支）",
     "RespectGrokVideoXiaopei": "Respect Grok-Video 视频（小裴分支）",
     "RespectHappyHorseVideo": "Respect HappyHorse 快乐马视频",
     "RespectLowCostMultiVideo": "Respect 低价多渠道视频（可灵/快乐马/omni）",

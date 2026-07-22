@@ -724,6 +724,21 @@
           "link": 18
         },
         {
+          "name": "ref_image_2",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image_3",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image_4",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
           "name": "prompt",
           "type": "STRING",
           "link": 20,
@@ -760,7 +775,7 @@
       "widgets_values": [
         "grok-imagine-video-1.5-fast",
         "图生视频",
-        "10",
+        10,
         "16:9",
         "720P",
         5,
@@ -1104,6 +1119,21 @@
           "link": 24
         },
         {
+          "name": "ref_image_2",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image_3",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "ref_image_4",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
           "name": "prompt",
           "type": "STRING",
           "link": 26,
@@ -1140,7 +1170,7 @@
       "widgets_values": [
         "grok-imagine-video-1.5-fast",
         "图生视频",
-        "10",
+        10,
         "16:9",
         "720P",
         5,
@@ -1621,7 +1651,7 @@
       11,
       0,
       12,
-      2,
+      5,
       "STRING"
     ],
     [
@@ -1669,7 +1699,7 @@
       17,
       0,
       18,
-      2,
+      5,
       "STRING"
     ],
     [

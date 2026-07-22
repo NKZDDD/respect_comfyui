@@ -126,7 +126,7 @@
         "Node name for S&R": "RespectTextInput"
       },
       "widgets_values": [
-        "根据下面剧本，输出一个主体画面提示词 image，和多个不同运镜/动作的视频提示词数组 videos（英文）。"
+        "根据下面剧本，输出一个主体画面提示词 image；和多个视频提示词数组 videos。videos 每条都必须以「N秒 | 」开头标明该镜头时长(6~10秒的整数)，后面接英文运镜/动作描述，例如「8秒 | camera slowly pushes in, natural motion」。"
       ]
     },
     {

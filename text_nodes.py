@@ -304,11 +304,94 @@ class RespectMergeText:
         return (sep.join(parts), len(parts))
 
 
+# ---------------------------------------------------------------------------
+# 从文本提取镜头秒数 + 偏移
+# ---------------------------------------------------------------------------
+
+
+def _extract_seconds_value(text: str, pattern: str = "") -> Optional[float]:
+    """从文本抠出秒数：自定义 pattern(group1) > 数字+秒/s > 关键词+数字 > 时间段(取时长) > 第一个数字。"""
+    s = (text or "").strip()
+    if not s:
+        return None
+    if (pattern or "").strip():
+        m = re.search(pattern, s)
+        if m:
+            try:
+                return float(m.group(1) if m.groups() else m.group(0))
+            except Exception:
+                return None
+        return None
+    # 1) 数字紧跟 秒/s/sec/seconds
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s(?:ec(?:onds?)?)?)\b", s, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    # 2) 关键词后跟数字（时长/时间/秒数/duration/seconds）
+    m = re.search(r"(?:时长|时间|秒数|duration|seconds?)[^\d]{0,8}(\d+(?:\.\d+)?)", s, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    # 3) 时间段 m:ss-m:ss → 时长(end-start)
+    m = re.search(r"(\d+):(\d{1,2})\s*[-~至到]\s*(\d+):(\d{1,2})", s)
+    if m:
+        start = int(m.group(1)) * 60 + int(m.group(2))
+        end = int(m.group(3)) * 60 + int(m.group(4))
+        if end > start:
+            return float(end - start)
+    # 4) 兜底：第一个整数
+    m = re.search(r"(\d+(?:\.\d+)?)", s)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+class RespectExtractSeconds:
+    """从文本里抠出镜头秒数，加偏移后夹到范围，输出 INT（接视频节点 duration）。
+
+    识别 `8秒` / `8s` / `时长:8` / `[0:00-0:08]`（取时长）/ 纯数字 `8`；也可填自定义 `pattern`(group1)。
+    `offset` 用来补被删的帧（比如删首帧后 +1 秒）。没抠到用 `default_seconds`。
+    """
+
+    DESCRIPTION = "抠镜头秒数+偏移→INT。识别 8秒/8s/时长:8/时间段/纯数字；offset 补删帧秒数；结果夹到 min~max，接 grok.duration。"
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "text": ("STRING", {"default": "", "multiline": True, "forceInput": False, "tooltip": "含秒数的文本或纯数字（接分段/取字段输出）"}),
+                "offset": ("INT", {"default": 1, "min": -60, "max": 60, "tooltip": "在抠到的秒数上加这个值，补被删的帧（如删首帧 +1）"}),
+                "default_seconds": ("INT", {"default": 5, "min": 0, "max": 600, "tooltip": "文本里没抠到秒数时用这个"}),
+                "min_seconds": ("INT", {"default": 1, "min": 0, "max": 600, "tooltip": "结果下限（grok 一般 1）"}),
+                "max_seconds": ("INT", {"default": 15, "min": 1, "max": 600, "tooltip": "结果上限（grok 一般 15）"}),
+            },
+            "optional": {
+                "pattern": ("STRING", {"default": "", "multiline": False, "placeholder": "可选正则，group1=数字", "tooltip": "填了用它抠数字，覆盖内置规则"}),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "INT", "STRING")
+    RETURN_NAMES = ("seconds", "base_seconds", "note")
+    FUNCTION = "extract"
+    CATEGORY = CATEGORY
+
+    def extract(self, text: str, offset: int = 1, default_seconds: int = 5,
+                min_seconds: int = 1, max_seconds: int = 15, pattern: str = "") -> tuple[int, int, str]:
+        val = _extract_seconds_value(text, pattern)
+        found = val is not None
+        base = int(round(val)) if found else int(default_seconds)
+        result = base + int(offset)
+        lo, hi = int(min_seconds), max(int(min_seconds), int(max_seconds))
+        result = max(lo, min(hi, result))
+        note = (f"抠到 {base}s" if found else f"没抠到，用默认 {base}s") + f" + offset {offset} → 夹到 {result}s"
+        print(f"[Respect] 提取秒数: {note}")
+        return (result, base, note)
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectSplitSegments": RespectSplitSegments,
     "RespectPickSegment": RespectPickSegment,
     "RespectTextInput": RespectTextInput,
     "RespectMergeText": RespectMergeText,
+    "RespectExtractSeconds": RespectExtractSeconds,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -316,4 +399,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectPickSegment": "Respect 取第N段",
     "RespectTextInput": "Respect 文字输入",
     "RespectMergeText": "Respect 文字合并",
+    "RespectExtractSeconds": "Respect 提取镜头秒数",
 }

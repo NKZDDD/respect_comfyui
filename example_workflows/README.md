@@ -93,10 +93,14 @@ Chat 按 schema 返回「一个画面提示词 image + 多个视频提示词 vid
 ### B. `B_video_produce.json` —— 视频制作（消费者，每次跑 1 个任务）
 ```
 Respect 分镜取任务(root) → image + prompt + scene_id + seq
-  → Grok-Video(aicost, 图生视频, first_frame=image, prompt=prompt) → 视频文件裁剪(select=2- 删首帧)
-  → Respect 分镜完成归档(scene_id, seq, video_path)
+  ├ prompt → Respect 提取镜头秒数(offset=1 补删帧) → seconds ─┐
+  └ image + prompt ──────────────────────────────────────────┤
+  → Grok-Video(坤鸡分支, 图生视频, first_frame=image, prompt=prompt, duration=seconds)
+  → 视频文件裁剪(select=2- 删首帧) → Respect 分镜完成归档(scene_id, seq, video_path)
 ```
-每次运行处理**一个** (图,提示词)：出视频→删首帧→归档到 `03_videos/<scene>`，提示词移到 `02_done_prompts`；该 scene 提示词全做完，图片才移到 `04_done_scenes`。**重复运行/挂 `/loop` 就能把整个队列跑完**（`has_job=false` 表示空了）。做完即移走，不会重复。
+每次运行处理**一个** (图,提示词)：从提示词里抠出镜头秒数、+1 秒补删帧 → 作为 grok 的 `duration`；出视频→删首帧→归档到 `03_videos/<scene>`，提示词移到 `02_done_prompts`；该 scene 提示词全做完，图片才移到 `04_done_scenes`。**开 Auto Queue 就能把整个队列跑完**（`has_job=false` 表示空了）。做完即移走，不会重复。
+
+> 让 A 的 LLM 在每条视频提示词里带上秒数（如 `8秒 | 人物走动…`），B 的「提取镜头秒数」就能抠到；抠不到用 default。`duration` 需在 grok 节点上右键把它转为输入再连。
 
 ### C. `C_merge_bgm_save.json` —— 合并 + BGM + 保存
 ```
@@ -106,7 +110,7 @@ Respect 视频拼接(folder=<root>/03_videos/<scene>, bgm_audio, bgm_stage) → 
 - `bgm_stage`：`none` 不加 / `after_merge` 合并后统一加 / `per_video` 每个视频各加再合并（这就是「单视频 or 合并后」的**开关**）
 - 拼好 → 预览 + 保存
 
-> 用前改：三个工作流的 `root_dir` 保持一致；A 的 base_url 用有 chat+image 的网关，B 的用 aicost（grok）；C 的 `folder`/`bgm_audio` 按实际填。
+> 用前改：三个工作流的 `root_dir` 保持一致；A 的 base_url 用有 chat+image 的网关，B 的用坤鸡（grok）；C 的 `folder`/`bgm_audio` 按实际填。
 
 ### 循环运行 B（把整个队列一次跑完）
 B 每次运行只做 1 个任务。要一次跑完整批：
@@ -114,6 +118,35 @@ B 每次运行只做 1 个任务。要一次跑完整批：
 - `Respect 分镜取任务` 设了 `IS_CHANGED`（每次强制重扫目录），所以每次自动排队都会取到**下一个**未做任务；`01_pending` 清空后 `has_job=false`，此时再跑不产出（手动停 Auto Queue 即可）。
 
 > 注意：这个「循环」是 **ComfyUI 前端的 Auto Queue**，不是 Claude 的 `/loop`——`/loop` 跑在助手侧、驱动不了你本机的 ComfyUI。
+
+## 章鱼哥 API（统一异步）—— `D_octopus_async.json`
+
+章鱼哥所有生成都走同一套异步：`POST /v1/videos` 创建 → 拿 `task_id` → `GET /v1/videos/{id}` 轮询 → `completed` 后取 `url`/`video_url`。三个节点（分类 `Respect/章鱼哥`）：
+- **Respect 章鱼哥 异步图片**：gpt-image-2 / -2K / -4K、nano_banana_2 / nano_banana_pro-1K/2K/4K → 提交+轮询+下载成 IMAGE
+- **Respect 章鱼哥 异步视频**：sora-2-12s、omni_flash-10s、veo_3_1-fast/-fl/-hd/-4K/-lite、veo_3_1 → 提交+轮询+下载本地 mp4
+- **Respect 章鱼哥 任务查询**：给 `task_id` 轮询取结果（「先提交、稍后查询」的真异步用；接创建节点的 `task_id` 输出）
+
+demo（`D_octopus_async.json`）：
+```
+Respect API 设置(base_url=章鱼哥网关) ─┬─▶ 章鱼哥 异步图片(gpt-image-2) → 预览图像
+                                      └─▶ 章鱼哥 异步视频(sora-2-12s) → 查看视频
+```
+- 创建/图生：参考图接 `image_1..4`（走 images[] base64，图片≤8、omni≤7）
+- 图片 `size` 填了用像素、否则用 `aspect_ratio`；视频用 `size`（如 1280x720 横 / 720x1280 竖）
+- 节点内部已做「提交→轮询到 completed」，所以直接接预览即可；要「提交后稍后再查」就用 `task_id` → 任务查询 节点
+- 章鱼哥这套**没有 grok**（视频是 Sora/Omni/Veo）
+
+## `E_extract_seconds_demo.json` —— 提取镜头秒数 独立 demo
+
+单独演示「从文本抠镜头秒数 → 驱动视频时长」：
+```
+文字输入("8秒 | 人物走动…") ─┬─▶ Respect 提取镜头秒数(offset=1) → seconds ┐
+加载图像 ────────────────────┼──▶ first_frame                              │
+                             └──▶ grok.prompt                              ├─▶ Grok-Video(坤鸡, duration=seconds) → 查看视频
+```
+- 「提取镜头秒数」从文本抠出 8，+offset(1) 补删帧 → 9 → 作为 grok `duration`
+- 也内置在 `B_video_produce.json`（分镜取任务.prompt → 提取镜头秒数 → grok.duration）
+- 控制台会打印 `[Respect] 提取秒数: 抠到 8s + offset 1 → 夹到 9s` 便于核对
 
 ## 文字合并接法（在 UI 里手接，2 步）
 
