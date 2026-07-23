@@ -177,6 +177,20 @@ def _sd_mode_type(mode: str, has_image: bool) -> str:
     return "text2video"
 
 
+def _clean_urls(url_list) -> list:
+    """保序去空的 URL 列表。"""
+    return [u.strip() for u in (url_list or []) if isinstance(u, str) and u.strip()]
+
+
+def _seedance_image_urls(cfg, url_list, mode, first_frame, last_frame, refs, cap=9):
+    """填了公网 URL 就直接用（跳过上传）；否则收集 tensor 上传换 URL。"""
+    urls = _clean_urls(url_list)
+    if urls:
+        return urls[:cap]
+    tensors = _collect_mode_tensors(mode, first_frame, last_frame, refs)[:cap]
+    return _upload_all(cfg, tensors)
+
+
 class RespectSD2AllVideo:
     """SD2.0 全系列(按秒)。`POST /v1/videos`，参考图先上传换公网 URL。
 
@@ -207,6 +221,15 @@ class RespectSD2AllVideo:
                 "ref_image_5": ("IMAGE",),
                 "ref_image_6": ("IMAGE",),
                 "ref_image_7": ("IMAGE",),
+                "ref_url_1": ("STRING", {"default": "", "multiline": False, "placeholder": "参考图公网URL(接对象存储上传的url)", "tooltip": "填了任一URL就用URL跳过上传"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_5": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_6": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_7": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_8": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_9": ("STRING", {"default": "", "multiline": False}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
@@ -223,12 +246,14 @@ class RespectSD2AllVideo:
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
+                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
-        tensors = _collect_mode_tensors(generation_mode, first_frame, last_frame, refs)[:9]
-        image_urls = _upload_all(cfg, tensors)
+        url_inputs = [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5, ref_url_6, ref_url_7, ref_url_8, ref_url_9]
+        image_urls = _seedance_image_urls(cfg, url_inputs, generation_mode, first_frame, last_frame, refs, 9)
         final_prompt = _tag_prompt(prompt, generation_mode, len(image_urls))
 
         body: dict = {
@@ -292,6 +317,15 @@ class RespectSeedance9Video:
                 "ref_image_5": ("IMAGE",),
                 "ref_image_6": ("IMAGE",),
                 "ref_image_7": ("IMAGE",),
+                "ref_url_1": ("STRING", {"default": "", "multiline": False, "placeholder": "参考图公网URL(接对象存储上传的url)", "tooltip": "填了任一URL就用URL跳过上传"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_5": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_6": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_7": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_8": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_9": ("STRING", {"default": "", "multiline": False}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
@@ -308,13 +342,15 @@ class RespectSeedance9Video:
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
+                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         official = model.startswith("官方稳定")
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
-        tensors = _collect_mode_tensors(generation_mode, first_frame, last_frame, refs)[:9]
-        image_urls = _upload_all(cfg, tensors)
+        url_inputs = [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5, ref_url_6, ref_url_7, ref_url_8, ref_url_9]
+        image_urls = _seedance_image_urls(cfg, url_inputs, generation_mode, first_frame, last_frame, refs, 9)
         final_prompt = _tag_prompt(prompt, generation_mode, len(image_urls))
         vl = int(duration or 15)
 
@@ -436,6 +472,10 @@ class RespectSeedanceFourRefVideo:
                 "ref_image_2": ("IMAGE",),
                 "ref_image_3": ("IMAGE",),
                 "ref_image_4": ("IMAGE",),
+                "ref_url_1": ("STRING", {"default": "", "multiline": False, "placeholder": "参考图/首帧公网URL(接对象存储上传)", "tooltip": "填了URL就用URL跳过上传"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False, "placeholder": "第2张/尾帧URL"}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
@@ -451,6 +491,7 @@ class RespectSeedanceFourRefVideo:
                  poll_interval, poll_timeout, auto_download,
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
+                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
@@ -465,20 +506,28 @@ class RespectSeedanceFourRefVideo:
             "async": True,
         }
 
+        url_list = _clean_urls([ref_url_1, ref_url_2, ref_url_3, ref_url_4])
+
         if generation_mode == "首帧生成视频":
-            if first_frame is None:
-                raise RespectAPIError("首帧生成视频需要提供 first_frame")
-            body["start_image_url"] = _upload_reference(cfg, first_frame, 1)
+            if url_list:
+                body["start_image_url"] = url_list[0]
+            elif first_frame is not None:
+                body["start_image_url"] = _upload_reference(cfg, first_frame, 1)
+            else:
+                raise RespectAPIError("首帧生成视频需要提供 first_frame 或 ref_url_1")
         elif generation_mode == "首尾帧生成视频":
-            if first_frame is None or last_frame is None:
-                raise RespectAPIError("首尾帧生成视频需要同时提供 first_frame 和 last_frame")
-            body["start_image_url"] = _upload_reference(cfg, first_frame, 1)
-            body["end_image_url"] = _upload_reference(cfg, last_frame, 2)
+            start = url_list[0] if len(url_list) >= 1 else (
+                _upload_reference(cfg, first_frame, 1) if first_frame is not None else "")
+            end = url_list[1] if len(url_list) >= 2 else (
+                _upload_reference(cfg, last_frame, 2) if last_frame is not None else "")
+            if not start or not end:
+                raise RespectAPIError("首尾帧生成视频需要提供首帧和尾帧（图片或 ref_url_1/ref_url_2）")
+            body["start_image_url"] = start
+            body["end_image_url"] = end
         elif generation_mode == "多参考图生成视频":
-            refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4]
-            urls = _upload_all(cfg, refs)[:4]
+            urls = url_list[:4] if url_list else _upload_all(cfg, [ref_image_1, ref_image_2, ref_image_3, ref_image_4])[:4]
             if not urls:
-                raise RespectAPIError("多参考图生成视频需要至少一张参考图（最多 4 张）")
+                raise RespectAPIError("多参考图生成视频需要至少一张参考图（最多 4 张，图片或 ref_url_*）")
             if len(urls) == 1:
                 body["image_url"] = urls[0]
             else:
@@ -1029,8 +1078,16 @@ class RespectSeedanceUniversal:
                 "ref_image_7": ("IMAGE",),
                 "ref_image_8": ("IMAGE",),
                 "ref_image_9": ("IMAGE",),
-                "image_url": ("STRING", {"default": "", "multiline": False, "placeholder": "可选公网URL，填了覆盖 first_frame"}),
-                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图公网URL，每行一个（连同 tensor 共≤9）"}),
+                "image_url": ("STRING", {"default": "", "multiline": False, "placeholder": "@Image1 公网URL，填了覆盖 first_frame(接对象存储上传)", "tooltip": "第1张参考图的URL，对应 @Image1"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False, "placeholder": "@Image2 URL(接对象存储上传)", "tooltip": "填了就用URL；否则用 ref_image_2 转 base64"}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False, "placeholder": "@Image3 URL"}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_5": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_6": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_7": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_8": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_9": ("STRING", {"default": "", "multiline": False}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图公网URL，每行一个（连同上面共≤9）"}),
                 "extra_video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤3）"}),
                 "extra_audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤3）"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
@@ -1048,7 +1105,9 @@ class RespectSeedanceUniversal:
     def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout, auto_download,
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None, ref_image_8=None, ref_image_9=None,
-                 image_url="", extra_image_urls="", extra_video_urls="", extra_audio_urls="",
+                 image_url="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
+                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
+                 extra_image_urls="", extra_video_urls="", extra_audio_urls="",
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
@@ -1059,14 +1118,25 @@ class RespectSeedanceUniversal:
             body["image_url"] = main
 
         extras: list[str] = []
-        for t in (ref_image_2, ref_image_3, ref_image_4, ref_image_5,
-                  ref_image_6, ref_image_7, ref_image_8, ref_image_9):
-            r = _uni_ref(t)
+        for t, u in zip(
+            (ref_image_2, ref_image_3, ref_image_4, ref_image_5,
+             ref_image_6, ref_image_7, ref_image_8, ref_image_9),
+            (ref_url_2, ref_url_3, ref_url_4, ref_url_5,
+             ref_url_6, ref_url_7, ref_url_8, ref_url_9),
+        ):
+            r = _uni_ref(t, u)
             if r:
                 extras.append(r)
         extras += _uni_lines(extra_image_urls)
+        extras = extras[:9]
         if extras:
-            body["extra_images"] = extras[:9]
+            body["extra_images"] = extras
+
+        # 该 API 靠 prompt 里的 @Image1..@ImageN 引用参考图；没写就自动补
+        n_imgs = min(9, (1 if main else 0) + len(extras))
+        if n_imgs and "@image" not in (prompt or "").lower():
+            tags = " ".join(f"@Image{i + 1}" for i in range(n_imgs))
+            body["prompt"] = f"{prompt} {tags}".strip()
 
         vids = _uni_lines(extra_video_urls)[:3]
         if vids:
