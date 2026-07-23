@@ -1024,8 +1024,13 @@ class RespectSeedanceUniversal:
                 "ref_image_2": ("IMAGE", {"tooltip": "追加参考图 → extra_images(@Image2)"}),
                 "ref_image_3": ("IMAGE",),
                 "ref_image_4": ("IMAGE",),
+                "ref_image_5": ("IMAGE",),
+                "ref_image_6": ("IMAGE",),
+                "ref_image_7": ("IMAGE",),
+                "ref_image_8": ("IMAGE",),
+                "ref_image_9": ("IMAGE",),
                 "image_url": ("STRING", {"default": "", "multiline": False, "placeholder": "可选公网URL，填了覆盖 first_frame"}),
-                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图公网URL，每行一个（≤9）"}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图公网URL，每行一个（连同 tensor 共≤9）"}),
                 "extra_video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤3）"}),
                 "extra_audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤3）"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
@@ -1042,6 +1047,7 @@ class RespectSeedanceUniversal:
 
     def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout, auto_download,
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
+                 ref_image_5=None, ref_image_6=None, ref_image_7=None, ref_image_8=None, ref_image_9=None,
                  image_url="", extra_image_urls="", extra_video_urls="", extra_audio_urls="",
                  custom_model="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
@@ -1052,11 +1058,13 @@ class RespectSeedanceUniversal:
         if main:
             body["image_url"] = main
 
-        extras: list[str] = _uni_lines(extra_image_urls)
-        for t in (ref_image_2, ref_image_3, ref_image_4):
+        extras: list[str] = []
+        for t in (ref_image_2, ref_image_3, ref_image_4, ref_image_5,
+                  ref_image_6, ref_image_7, ref_image_8, ref_image_9):
             r = _uni_ref(t)
             if r:
                 extras.append(r)
+        extras += _uni_lines(extra_image_urls)
         if extras:
             body["extra_images"] = extras[:9]
 
