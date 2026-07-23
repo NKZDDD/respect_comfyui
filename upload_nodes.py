@@ -139,10 +139,69 @@ class RespectCloudUpload:
         return (url, key)
 
 
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif", ".flv", ".wmv")
+
+
+class RespectLoadVideoPath:
+    """选择/上传本地视频，输出其绝对路径（接对象存储上传的 file_path）。
+
+    节点上有「选择视频上传」按钮（前端 respect_upload.js 提供）：点它选本地 mp4 →
+    上传到 ComfyUI 的 input/ 文件夹 → 下拉框选中它 → 输出绝对路径。
+    """
+
+    DESCRIPTION = "选择/上传本地视频，输出绝对路径。点『选择视频上传』按钮选文件，接到对象存储上传的 file_path。"
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        files: list[str] = []
+        try:
+            import folder_paths
+
+            input_dir = folder_paths.get_input_directory()
+            files = [f for f in os.listdir(input_dir)
+                     if os.path.isfile(os.path.join(input_dir, f)) and f.lower().endswith(VIDEO_EXTS)]
+        except Exception:
+            files = []
+        return {
+            "required": {
+                "video": (sorted(files), {"video_upload": True, "tooltip": "选择/上传本地视频；点上方按钮上传"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("file_path",)
+    FUNCTION = "load"
+    CATEGORY = CATEGORY
+
+    def load(self, video):
+        import folder_paths
+
+        if hasattr(folder_paths, "get_annotated_filepath"):
+            path = folder_paths.get_annotated_filepath(video)
+        else:
+            path = os.path.join(folder_paths.get_input_directory(), video)
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError(f"找不到视频文件：{path}（先点『选择视频上传』按钮上传）")
+        return (path,)
+
+    @classmethod
+    def IS_CHANGED(cls, video):
+        try:
+            import folder_paths
+            p = (folder_paths.get_annotated_filepath(video)
+                 if hasattr(folder_paths, "get_annotated_filepath")
+                 else os.path.join(folder_paths.get_input_directory(), video))
+            return os.path.getmtime(p)
+        except Exception:
+            return video
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectCloudUpload": RespectCloudUpload,
+    "RespectLoadVideoPath": RespectLoadVideoPath,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectCloudUpload": "Respect 对象存储上传（图床/S3）",
+    "RespectLoadVideoPath": "Respect 选择/上传本地视频",
 }
