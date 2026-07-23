@@ -560,9 +560,12 @@ class RespectOpenAIImage:
         for img in (image_1, image_2, image_3, image_4):
             if img is None or (hasattr(img, "numel") and img.numel() == 0):
                 continue
-            data = _tensor_to_png_bytes(img)
-            if data:
-                refs.append(data)
+            # 展开一个 IMAGE 批次里的每一帧（角色库可能一次返回多张）
+            n = img.shape[0] if getattr(img, "ndim", 3) == 4 else 1
+            for i in range(n):
+                data = _tensor_to_png_bytes(img[i:i + 1])
+                if data:
+                    refs.append(data)
 
         if refs:
             # 图生图 / 多图编辑：multipart 上传到 /v1/images/edits

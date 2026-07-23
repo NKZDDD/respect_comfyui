@@ -22,6 +22,7 @@ from .utils import (
     api_request,
     download_to_output,
     ensure_config,
+    tensor_to_b64,
 )
 from .video_nodes import (
     _async_extract_url,
@@ -972,10 +973,116 @@ class RespectLowCostMultiVideo:
                             auto_download, "lowcost", save_dir, filename)
 
 
+# ---------------------------------------------------------------------------
+# 通用异步视频（统一 /v1/videos：image_url + extra_images，URL/base64，不用图床）
+# ---------------------------------------------------------------------------
+
+
+UNI_VIDEO_MODELS = ["seedance-2-0", "seedance-2-0-fast", "video1-pro-720p", "grok-imagine-video-1.5-fast"]
+UNI_VIDEO_ASPECTS = ["16:9", "9:16", "1:1", "21:9", "3:4", "4:3", "2:3", "3:2"]
+
+
+def _uni_ref(tensor, url_text: str = "") -> str:
+    """优先用填的公网 URL；否则把 tensor 转 base64 data URL（内联，不用图床）。"""
+    if (url_text or "").strip():
+        return url_text.strip()
+    if tensor is not None and (not hasattr(tensor, "numel") or tensor.numel() > 0):
+        b = tensor_to_b64(tensor[:1], fmt="JPEG", quality=90, max_side=1536)
+        return b[0] if b else ""
+    return ""
+
+
+def _uni_lines(s: str) -> list[str]:
+    return [ln.strip() for ln in (s or "").splitlines() if ln.strip()]
+
+
+class RespectSeedanceUniversal:
+    """通用异步视频（统一 `/v1/videos` 提交 + `/v1/videos/{id}` 轮询）。
+
+    适配「章鱼哥式」通用网关：seedance-2-0 / -fast、video1-pro-720p、grok-imagine-video-1.5-fast 等。
+    参考图走 `image_url` + `extra_images`：优先用你填的公网 URL，否则把接入的 IMAGE 转 base64 内联（**不经图床，不会 401**）。
+    """
+
+    DESCRIPTION = ("通用异步视频 /v1/videos（seedance-2-0 等）。参考图 image_url+extra_images：填了 URL 用 URL，"
+                   "否则接入的 IMAGE 自动转 base64 内联，不用图床。duration 4-15。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "连 Respect API 设置（base_url 填该通用网关）"}),
+                "model": (UNI_VIDEO_MODELS, {"default": "seedance-2-0"}),
+                "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "≤2500 字；多参考用 @Image1/@Image2 引用"}),
+                "duration": ("INT", {"default": 8, "min": 4, "max": 15}),
+                "aspect_ratio": (UNI_VIDEO_ASPECTS, {"default": "16:9"}),
+                "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE", {"tooltip": "主参考图/首帧 → image_url(@Image1)；转 base64 内联"}),
+                "ref_image_2": ("IMAGE", {"tooltip": "追加参考图 → extra_images(@Image2)"}),
+                "ref_image_3": ("IMAGE",),
+                "ref_image_4": ("IMAGE",),
+                "image_url": ("STRING", {"default": "", "multiline": False, "placeholder": "可选公网URL，填了覆盖 first_frame"}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图公网URL，每行一个（≤9）"}),
+                "extra_video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤3）"}),
+                "extra_audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤3）"}),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/后续用这个）", "任务 ID")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout, auto_download,
+                 first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
+                 image_url="", extra_image_urls="", extra_video_urls="", extra_audio_urls="",
+                 custom_model="", save_dir="", filename=""):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+        body: dict = {"model": model, "prompt": prompt, "duration": int(duration), "aspect_ratio": aspect_ratio}
+
+        main = _uni_ref(first_frame, image_url)
+        if main:
+            body["image_url"] = main
+
+        extras: list[str] = _uni_lines(extra_image_urls)
+        for t in (ref_image_2, ref_image_3, ref_image_4):
+            r = _uni_ref(t)
+            if r:
+                extras.append(r)
+        if extras:
+            body["extra_images"] = extras[:9]
+
+        vids = _uni_lines(extra_video_urls)[:3]
+        if vids:
+            body["extra_videos"] = vids
+        auds = _uni_lines(extra_audio_urls)[:3]
+        if auds:
+            body["extra_audios"] = auds
+
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        url = direct or _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="uni_video", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] 通用视频下载失败: {exc}")
+        return (url, local, task_id or "")
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectSD2AllVideo": RespectSD2AllVideo,
     "RespectSeedance9Video": RespectSeedance9Video,
     "RespectSeedanceFourRefVideo": RespectSeedanceFourRefVideo,
+    "RespectSeedanceUniversal": RespectSeedanceUniversal,
     "RespectGrokVideoNew": RespectGrokVideoNew,
     "RespectGrokVideoXiaopei": RespectGrokVideoXiaopei,
     "RespectHappyHorseVideo": RespectHappyHorseVideo,
@@ -986,6 +1093,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectSD2AllVideo": "Respect SD2.0 全系列视频",
     "RespectSeedance9Video": "Respect Seedance9 九图/稳定版视频",
     "RespectSeedanceFourRefVideo": "Respect Seedance 四参考图视频",
+    "RespectSeedanceUniversal": "Respect Seedance 通用异步视频",
     "RespectGrokVideoNew": "Respect Grok-Video 视频（坤鸡分支）",
     "RespectGrokVideoXiaopei": "Respect Grok-Video 视频（小裴分支）",
     "RespectHappyHorseVideo": "Respect HappyHorse 快乐马视频",

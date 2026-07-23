@@ -148,6 +148,21 @@ Respect API 设置(base_url=章鱼哥网关) ─┬─▶ 章鱼哥 异步图片
 - 也内置在 `B_video_produce.json`（分镜取任务.prompt → 提取镜头秒数 → grok.duration）
 - 控制台会打印 `[Respect] 提取秒数: 抠到 8s + offset 1 → 夹到 9s` 便于核对
 
+## `F_asset_library_demo.json` —— 关键词取素材（角色库）→ 输入到生成
+
+演示「按名字从角色库调素材 → 喂给生图」：
+```
+文字输入("出场人物：小白，小黑") → Respect 关键词取素材（角色库, file_type=图片）
+   ├ images ─▶ 预览图像（看取到的角色）
+   └ images ─▶ image2.image_1（参考图）→ 生成 → 预览图像（看结果）
+```
+- 「关键词取素材」按 `keyword=出场人物` 抠出 `小白,小黑` → 去 `library_dir` 找 `小白.*/小黑.*`（`file_type` 决定后缀）
+- 输出 `images`(图片批次) / `text`(文本文件内容) / `paths`(所有路径) / `names` / `count`
+- image2 的参考图输入现在会**自动展开一个 IMAGE 批次里的每一张**，所以多角色都会当参考
+- 换用途：`file_type=文本` → `text` 输出接 Chat 的 prompt（历史背景）；`file_type=视频` → `paths` 接视频节点
+
+用前改：`library_dir` 填你的角色库目录，里面放 `小白.png`、`小黑.png`（或 `小白.txt` 历史背景等）。
+
 ## 文字合并接法（在 UI 里手接，2 步）
 
 分段/多路文字合成一段：
