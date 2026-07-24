@@ -528,7 +528,8 @@ _CONCAT_VIDEO_EXTS = (".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi")
 class RespectConcatVideos:
     """把任意个 mp4 按顺序拼接成一个 mp4。
 
-    顺序 = `video_1..video_8`（非空的，接各视频节点的 local_path）+ `extra_paths`（每行一个路径，数量不限）。
+    顺序 = `video_1..video_N`（非空的，接各视频节点的 local_path；N 由 inputcount + 「更新输入口」按钮动态增减）
+    + `extra_paths`（每行一个路径，数量不限）。
 
     mode：
     - auto（默认）：有 ffmpeg → reencode 保音轨（缩放对齐，最稳）；否则逐帧无音轨
@@ -540,13 +541,14 @@ class RespectConcatVideos:
     """
 
     DESCRIPTION = (
-        "把多个 mp4 顺序拼接。顺序=video_1..8(接各视频节点 local_path)+extra_paths(每行一个)。"
+        "把多个 mp4 顺序拼接。顺序=video_1..N(接各视频节点 local_path;数量填 inputcount 后点『更新输入口』)+extra_paths(每行一个)。"
         "mode：auto(有ffmpeg→保音轨重编码)/copy(无损快,需同参)/reencode(缩放保音轨)/frames(无音轨)。"
     )
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
-        optional = {f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True, "tooltip": f"第{i+1}个视频路径（接 local_path）"}) for i in range(8)}
+        optional = {"inputcount": ("INT", {"default": 2, "min": 1, "max": 200, "step": 1, "tooltip": "视频接口数量；改完点节点上的『更新输入口』按钮增减 video_N 槽"})}
+        optional.update({f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True, "tooltip": f"第{i+1}个视频路径（接 local_path）"}) for i in range(2)})
         optional.update({
             "folder": ("STRING", {"default": "", "multiline": False, "placeholder": "可选：读取该文件夹内所有视频(按名排序)", "tooltip": "填分镜的 03_videos/<scene> 即可整批拼接"}),
             "extra_paths": ("STRING", {"default": "", "multiline": True, "placeholder": "追加视频路径，每行一个（数量不限）", "tooltip": "超过8个时每行填一个路径"}),
@@ -585,8 +587,12 @@ class RespectConcatVideos:
                 for fn in sorted(os.listdir(fdir)):
                     if fn.lower().endswith(_CONCAT_VIDEO_EXTS):
                         paths.append(os.path.join(fdir, fn))
-        for i in range(8):
-            v = kwargs.get(f"video_{i + 1}")
+        vid_keys = sorted(
+            (k for k in kwargs if k.startswith("video_") and k[6:].isdigit()),
+            key=lambda k: int(k[6:]),
+        )
+        for k in vid_keys:
+            v = kwargs.get(k)
             if v:
                 paths.append(str(v).strip().strip('"'))
         for line in (extra_paths or "").splitlines():
