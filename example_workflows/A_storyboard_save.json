@@ -35,7 +35,8 @@
         "",
         "https://llm.xxttt.com",
         600,
-        ""
+        "",
+        "https://api.aione.help"
       ]
     },
     {
@@ -85,7 +86,6 @@
         "Node name for S&R": "RespectLoadPdfText"
       },
       "widgets_values": [
-        "(input 根目录)",
         1,
         "increment",
         0,
@@ -269,6 +269,7 @@
       },
       "widgets_values": [
         "gpt-5.5",
+        "",
         false,
         "",
         -1.0,
@@ -370,6 +371,7 @@
         "Node name for S&R": "RespectSplitSegments"
       },
       "widgets_values": [
+        "",
         "json",
         "",
         "image",
@@ -456,6 +458,7 @@
       },
       "widgets_values": [
         "gpt-image-2",
+        "",
         "16:9",
         "2k",
         1,
@@ -555,6 +558,7 @@
         "Node name for S&R": "RespectSplitSegments"
       },
       "widgets_values": [
+        "",
         "json",
         "",
         "videos",

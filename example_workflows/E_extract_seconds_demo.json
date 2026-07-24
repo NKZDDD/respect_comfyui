@@ -34,7 +34,8 @@
         "",
         "https://YOUR_API_HOST",
         600,
-        ""
+        "",
+        "https://api.aione.help"
       ]
     },
     {
@@ -120,6 +121,7 @@
         "Node name for S&R": "RespectExtractSeconds"
       },
       "widgets_values": [
+        "",
         1,
         5,
         1,
@@ -250,7 +252,9 @@
       },
       "widgets_values": [
         "grok-imagine-video-1.5-fast",
+        "",
         "图生视频",
+        10,
         "16:9",
         "720P",
         5,

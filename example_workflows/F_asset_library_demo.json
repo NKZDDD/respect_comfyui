@@ -34,7 +34,8 @@
         "",
         "https://api.aicopy.top",
         600,
-        ""
+        "",
+        "https://api.aione.help"
       ]
     },
     {
@@ -132,6 +133,7 @@
         "Node name for S&R": "RespectAssetLibrary"
       },
       "widgets_values": [
+        "",
         "出场人物",
         "D:\\角色库",
         "图片",

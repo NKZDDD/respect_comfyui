@@ -34,7 +34,8 @@
         "",
         "https://YOUR_API_HOST",
         600,
-        ""
+        "",
+        "https://api.aione.help"
       ]
     },
     {
