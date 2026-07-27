@@ -8,8 +8,8 @@
 - regex_findall：正则逐个匹配，每个匹配（或第一个捕获组）= 一段
 - json         ：把文字当 JSON 解析（自动去 ```json 代码围栏），按 json_path 定位到数组，每个元素 = 一段
 
-输出：seg_1..seg_8 八个段插槽 + count + all_json（完整 JSON 数组）。
-超过 8 段或想动态选段，用配套的「取第N段」节点（吃 all_json + index）。
+输出：seg_1..seg_N（N 由 outputcount +「更新输出口」动态增减，默认 8）+ count + all_json。
+想按 index 动态选段，用配套的「取第N段」节点（吃 all_json + index）。
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from typing import Any, Optional
 CATEGORY = "Respect"
 
 SPLIT_METHODS = ["delimiter", "regex_split", "regex_findall", "json"]
-_MAX_SEG_OUTPUTS = 8
+_DEFAULT_SEG_OUTPUTS = 8
+_MAX_SEG_OUTPUTS = 200
 
 
 # ---------------------------------------------------------------------------
@@ -137,14 +138,20 @@ def _split_segments(
 
 
 class RespectSplitSegments:
-    """把文字切成多份，输出 seg_1..seg_8 + count + all_json。
+    """把文字切成多份，输出 seg_1..seg_N + count + all_json。
 
     - method=json：GPT 用 json_schema 返回后，`json_path` 定位到数组（如 `segments`、`data.items`，
       留空=根就是数组）；元素是对象时用 `json_field` 取字段。
     - method=regex_split / regex_findall：填 `pattern`；regex_findall 每个匹配（或第一个捕获组）= 一段。
     - method=delimiter：`pattern` 填分隔符（默认空行 \\n\\n，支持 \\n \\t 转义）。
-    超过 8 段时用 all_json 接「取第N段」节点。
+    - 段口数量：填 `outputcount` 后点节点上的「更新输出口」增减 seg_N（与视频拼接的 inputcount 同款）。
+      也可用 all_json 接「取第N段」按 index 动态取。
     """
+
+    DESCRIPTION = (
+        "文字切成多段。seg_1..N 数量填 outputcount 后点『更新输出口』增减；"
+        "另有 count + all_json。method=json/delimiter/regex。"
+    )
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -154,6 +161,13 @@ class RespectSplitSegments:
                 "method": (SPLIT_METHODS, {"default": "json"}),
             },
             "optional": {
+                "outputcount": ("INT", {
+                    "default": _DEFAULT_SEG_OUTPUTS,
+                    "min": 1,
+                    "max": _MAX_SEG_OUTPUTS,
+                    "step": 1,
+                    "tooltip": "段输出口数量；改完点节点上的『更新输出口』按钮增减 seg_N 槽",
+                }),
                 "pattern": ("STRING", {"default": "", "multiline": False, "placeholder": "regex 或分隔符；json 模式忽略"}),
                 "json_path": ("STRING", {"default": "", "multiline": False, "placeholder": "json 模式：如 segments / data.items，留空=根"}),
                 "json_field": ("STRING", {"default": "", "multiline": False, "placeholder": "json 元素是对象时取的字段名，可留空"}),
@@ -164,8 +178,8 @@ class RespectSplitSegments:
             },
         }
 
-    RETURN_TYPES = ("STRING",) * _MAX_SEG_OUTPUTS + ("INT", "STRING")
-    RETURN_NAMES = tuple(f"seg_{i + 1}" for i in range(_MAX_SEG_OUTPUTS)) + ("count", "all_json")
+    RETURN_TYPES = ("STRING",) * _DEFAULT_SEG_OUTPUTS + ("INT", "STRING")
+    RETURN_NAMES = tuple(f"seg_{i + 1}" for i in range(_DEFAULT_SEG_OUTPUTS)) + ("count", "all_json")
     FUNCTION = "split"
     CATEGORY = CATEGORY
 
@@ -173,6 +187,7 @@ class RespectSplitSegments:
         self,
         text: str,
         method: str,
+        outputcount: int = _DEFAULT_SEG_OUTPUTS,
         pattern: str = "",
         json_path: str = "",
         json_field: str = "",
@@ -187,14 +202,15 @@ class RespectSplitSegments:
         if drop_empty:
             segs = [s for s in segs if s != ""]
 
+        n = max(1, min(_MAX_SEG_OUTPUTS, int(outputcount or _DEFAULT_SEG_OUTPUTS)))
         all_json = json.dumps(segs, ensure_ascii=False)
-        padded = (segs + [""] * _MAX_SEG_OUTPUTS)[:_MAX_SEG_OUTPUTS]
-        print(f"[Respect] 分段提取 method={method} -> {len(segs)} 段")
+        padded = (segs + [""] * n)[:n]
+        print(f"[Respect] 分段提取 method={method} -> {len(segs)} 段 (输出口 {n})")
         return tuple(padded) + (len(segs), all_json)
 
 
 class RespectPickSegment:
-    """从「分段提取」的 all_json 里取第 N 段（1 起）。用于超过 8 段或动态选段。
+    """从「分段提取」的 all_json 里取第 N 段（1 起）。用于动态选段或不想拉一堆 seg 口时。
 
     index 超出范围 → 返回 default_text（默认空）。
     """
