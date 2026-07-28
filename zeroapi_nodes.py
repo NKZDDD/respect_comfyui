@@ -31,8 +31,12 @@ def _ref_b64_or_url(tensor, url: str = "") -> str:
     return ""
 
 
-def _collect_refs(image_tensors, url_texts) -> list[str]:
-    """图片 tensor(转base64) 在前、公网 URL 在后，保序去空。"""
+def _zero_lines(s: str) -> list[str]:
+    return [ln.strip() for ln in (s or "").splitlines() if ln.strip()]
+
+
+def _collect_refs(image_tensors, url_texts, cap: int = 9) -> list[str]:
+    """图片 tensor(转base64) 在前、公网 URL 在后，保序去空，最多 cap 张。"""
     refs: list[str] = []
     for t in image_tensors:
         r = _ref_b64_or_url(t)
@@ -41,7 +45,7 @@ def _collect_refs(image_tensors, url_texts) -> list[str]:
     for u in url_texts:
         if isinstance(u, str) and u.strip():
             refs.append(u.strip())
-    return refs
+    return refs[:cap]
 
 
 ZERO_SIZES = ["1280x720", "1920x1080", "720x1280", "1080x1920", "1024x1024", "1280x960", "960x1280", "832x480", "480x832"]
@@ -129,7 +133,7 @@ class RespectZeroSoraVeo:
 # 零视工坊 图生视频 (vad3 / seedance_2 / omni_flash / grok-1.5)
 # ---------------------------------------------------------------------------
 
-ZERO_I2V_MODELS = ["seedance_2_fast_480p", "vad3", "omni_flash", "grok-1.5"]
+ZERO_I2V_MODELS = ["seedance_2_fast_480p", "vad3", "omni_flash", "grok-1.5", "sd2-fast", "sd2-pro"]
 
 
 class RespectZeroImg2Video:
@@ -139,8 +143,9 @@ class RespectZeroImg2Video:
     单张 → image；多张 → images[]。参考图优先公网 URL，否则 IMAGE 转 base64。
     """
 
-    DESCRIPTION = ("零视工坊 图生视频(base_url=zeroapi.ai-ren.cn)。model=seedance_2_fast_480p/vad3/omni_flash/grok-1.5，"
-                   "duration 4-20(seedance 4-15，其它多为10/20)，size=WxH，单图 image/多图 images[]。")
+    DESCRIPTION = ("零视工坊 图生视频(base_url=zeroapi.ai-ren.cn)。model=seedance_2_fast_480p/vad3/omni_flash/"
+                   "grok-1.5/sd2-fast/sd2-pro，duration(seedance 4-15，sd2 仅5/10/15，其它多为10/20)，"
+                   "size=WxH，单图 image/多图 images[](≤9)。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -149,7 +154,7 @@ class RespectZeroImg2Video:
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://zeroapi.ai-ren.cn"}),
                 "model": (ZERO_I2V_MODELS, {"default": "seedance_2_fast_480p"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
-                "duration": ("INT", {"default": 10, "min": 4, "max": 20, "tooltip": "秒数；seedance 4-15，其它常见 10/20"}),
+                "duration": ("INT", {"default": 10, "min": 4, "max": 20, "tooltip": "秒数；seedance 4-15，sd2 只支持 5/10/15，其它常见 10/20"}),
                 "size": (ZERO_SIZES, {"default": "1280x720"}),
                 "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
@@ -164,6 +169,12 @@ class RespectZeroImg2Video:
                 "ref_url_2": ("STRING", {"default": "", "multiline": False}),
                 "ref_url_3": ("STRING", {"default": "", "multiline": False}),
                 "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_5": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_6": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_7": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_8": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_9": ("STRING", {"default": "", "multiline": False}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图URL，每行一个（连同上面共≤9）"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，自定义 宽x高"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
@@ -178,14 +189,19 @@ class RespectZeroImg2Video:
 
     def generate(self, api_config, model, prompt, duration, size, poll_interval, poll_timeout, auto_download,
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
+                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
+                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="", extra_image_urls="",
                  custom_model="", custom_size="", save_dir="", filename=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
 
-        imgs = _collect_refs([first_frame, ref_image_2, ref_image_3, ref_image_4],
-                             [ref_url_1, ref_url_2, ref_url_3, ref_url_4])
+        imgs = _collect_refs(
+            [first_frame, ref_image_2, ref_image_3, ref_image_4],
+            [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5,
+             ref_url_6, ref_url_7, ref_url_8, ref_url_9] + _zero_lines(extra_image_urls),
+            cap=9,
+        )
         body: dict = {"model": model, "prompt": prompt, "size": size, "duration": int(duration), "stream": False}
         if len(imgs) == 1:
             body["image"] = imgs[0]

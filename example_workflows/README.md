@@ -163,6 +163,30 @@ Respect API 设置(base_url=章鱼哥网关) ─┬─▶ 章鱼哥 异步图片
 
 用前改：`library_dir` 填你的角色库目录，里面放 `小白.png`、`小黑.png`（或 `小白.txt` 历史背景等）。
 
+## `G_split_json_items_demo.json` —— JSON 字段里的「1xxx，2xxx，3xxx」拆成每一项
+
+**不需要 API Key 就能跑**（数据是节点里写死的示例文本），用来验证分段工具的两步取法。
+
+```
+Respect 文字输入（示例 JSON）
+   └─▶ ① Respect 分段提取  method=json, json_path=关键物品
+            └ seg_1 = "1染血白婚纱，2主卧手机，3露台护栏"
+                 └─▶ ② Respect 分段提取  method=regex_findall, pattern=\d+\s*([^，,]+)
+                          ├ seg_1 ─▶ Respect 显示文字   染血白婚纱
+                          ├ seg_2 ─▶ Respect 显示文字   主卧手机
+                          ├ seg_3 ─▶ Respect 显示文字   露台护栏
+                          └ all_json ─▶ Respect 显示文字   ["染血白婚纱","主卧手机","露台护栏"]
+```
+
+**为什么要两步**：`"关键物品"` 的值是**一个字符串**，不是 JSON 数组。
+① 先用 `json` 模式把字段值取出来；② 再用正则把里面的条目拆开。
+`([^，,]+)` 是捕获组，节点取第一个非空捕获组，所以序号 `\d+` 被自动去掉（想保留序号就用 `delimiter`，`pattern` 填 `，`）。
+
+> ⚠️ **不要**直接在完整 JSON 文本上跑 `\d+...` —— 会把别处的数字也匹配进来。必须先取字段。
+
+换成你自己的数据：把「文字输入」换成 **Chat 对话** 的输出接到 ①.text 即可，其余不用改。
+条目数不固定时，用 ②.`all_json` 接 **取第N段**，按 `index` 动态取。
+
 ## 文字合并接法（在 UI 里手接，2 步）
 
 分段/多路文字合成一段：
@@ -173,9 +197,25 @@ Respect 文字输入 ──text──▶ Respect 文字合并.text_2   ──tex
 ```
 或把 `Respect 分段提取` 的 `seg_1 / seg_2 / seg_3` 分别接到 `Respect 文字合并` 的 `text_1 / text_2 / text_3`，`separator` 填 `\n\n`。
 
-超过 8 段：用 `Respect 分段提取` 的 `all_json` 接多个 `Respect 取第N段`（各填不同 `index`，1 起），分别路由到不同下游。
+段数不固定：用 `Respect 分段提取` 的 `all_json` 接多个 `Respect 取第N段`（各填不同 `index`，1 起），分别路由到不同下游。
+或者填 `outputcount` 后点节点上的 **「更新输出口」** 按钮，直接把 `seg_1..seg_N` 开到需要的数量（1–200）。
+
+## 导入前必读：版本要对上
+
+这些示例 JSON 里存的控件值是**按当前代码的节点结构**排的。如果你运行的 ComfyUI 加载的是**旧版插件**，
+导入后会出现**控件值整体错位一格**，典型症状：
+
+- `pattern` 框里出现数字 `8`、`json_field` 里出现本该填 `json_path` 的内容
+- 下拉框报 `Value not in list: match_mode: 'True' not in [...]`
+- 分段跑完全是空的、`all_json` 显示 `[]`
+
+**解决**：把插件目录同步到 **ComfyUI 实际加载的那个位置** → **完全重启 ComfyUI** → **Ctrl+F5** 强刷 → 重新导入 JSON。
+（判断依据：新版分段节点有 `outputcount` 控件和「更新输出口」按钮；没有就是旧版。）
 
 ## 提示
 - OpenAI 系（Chat/Responses）的 `json_schema` 严格模式要求 schema 带 `"additionalProperties": false` 且 `required` 覆盖所有字段（示例已满足）。
 - Claude（Anthropic）无原生 `response_format`，节点会自动往 system 注入「只输出 JSON」的强制指令。
 - 这些 JSON 是图格式；若你的 ComfyUI 版本较老载入异常，按上面的连线关系手接即可（节点都在 `Respect` 分类下）。
+- 示例里的路径（PDF 目录、角色库、保存目录）都要改成你自己的；带 API 的示例还要在「Respect API 设置」里填对
+  `base_url`（见主 README 的[网关对照表](../README.md#网关对照表)）。
+- 参考图尽量走**公网 URL**（接「对象存储上传」）——部分网关会静默忽略 base64，表现为「出了视频但没参考图」。

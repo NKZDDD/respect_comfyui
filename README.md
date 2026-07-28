@@ -1,15 +1,21 @@
 # Respect ComfyUI 扩展
 
-把 `https://api.aicopy.top` 中转 API 封装成 ComfyUI 节点，并附带一组基础工具节点。
-所有节点都在 ComfyUI 的 **`Respect`** 分类下。
+把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭），
+并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **54 个节点**，全部在 ComfyUI 的 **`Respect`** 分类下。
 
 覆盖能力：
 
-- **图片**：文生图、单图参考、多图参考、GPT 本地版/应急通道、多模态对话兜底
-- **视频**：Firefly Sora2、Firefly VEO3.1、Firefly Runway 4.5、即梦 SD2（异步轮询、首尾帧、多参考图）
-- **基础**：ZIP 批量加载图片 / 视频，支持递增 / 递减 / 随机 / 固定取样
+- **图片**：文生图、单图/多图参考、image2（含 4K）、GPT 本地版、多模态对话兜底、章鱼哥/灵感鸭异步图片
+- **视频**：Firefly Sora2 / VEO3.1 / Runway4.5 / 可灵3.0、Sora V3、即梦 SD2、Seedance 全系（含九图）、
+  Grok（小裴 / 坤鸡 双分支）、快乐马、低价多渠道、章鱼哥、零视工坊 Sora2/VEO + 图生视频、灵感鸭统一视频
+- **LLM**：Chat(OpenAI) / Responses(Codex) / Claude(Anthropic)，都带 `response_format` + `json_schema`
+- **文本**：分段提取（动态输出口）、取第N段、文字输入 / 合并 / 显示、提取镜头秒数
+- **素材**：PDF 批量转文字、关键词取素材（角色库）、ZIP 批量加载图片/视频
+- **剪辑**：帧选择裁剪、mp4 裁剪、视频拼接（动态输入口）、加 BGM
+- **流水线**：分镜存储 / 取任务 / 完成归档（文件系统队列，可断点续跑）
+- **上传**：对象存储上传（R2 / OSS / COS / S3 / MinIO）、选择/上传本地视频
 
-> 本项目仅用于学习与个人创作，请遵守上游 `api.aicopy.top` 的使用条款。不写入任何明文密钥。
+> 本项目仅用于学习与个人创作，请遵守各上游网关的使用条款。不写入任何明文密钥。
 
 ---
 
@@ -17,10 +23,19 @@
 
 - [安装](#安装)
 - [鉴权配置](#鉴权配置)
+- [网关对照表](#网关对照表)
 - [节点总览](#节点总览)
 - [基础加载节点](#基础加载节点)
 - [图片节点](#图片节点)
 - [视频节点](#视频节点)
+- [多网关视频节点](#多网关视频节点)
+- [LLM 对话节点](#llm-对话节点)
+- [文本工具节点](#文本工具节点)
+- [PDF 与素材节点](#pdf-与素材节点)
+- [视频剪辑节点](#视频剪辑节点)
+- [分镜流水线节点](#分镜流水线节点)
+- [对象存储上传](#对象存储上传)
+- [预览节点](#预览节点)
 - [模型 ID 速查](#模型-id-速查)
 - [工作流示例](#工作流示例)
 - [常见问题](#常见问题)
@@ -79,6 +94,7 @@ pip install -r respect_comfyui/requirements.txt
 | `base_url` | 默认 `https://api.aicopy.top`，会自动补 `/v1` |
 | `timeout` | 默认 600 秒（图片）；视频节点内部会进一步放宽 |
 | `proxy` | 可选，如 `http://127.0.0.1:7890`，国内访问海外通常需要 |
+| `upload_base_url` | 参考图上传地址，默认 `https://api.aione.help`。**只有小裴系 Seedance / grok-video 节点会用**；用别家 Key 时这里会 401，改用「填公网 URL」的方式 |
 
 > 强烈建议把 Key 放到环境变量，不要写进工作流再分享出去。
 
@@ -88,25 +104,113 @@ pip install -r respect_comfyui/requirements.txt
 [Environment]::SetEnvironmentVariable("RESPECT_API_KEY", "你的Key", "User")
 ```
 
+## 网关对照表
+
+**同一个模型在不同网关的名字/字段都不一样，跨网关混用会 503 或参数丢失。** 先按这张表选对节点和 `base_url`：
+
+| 网关 | `base_url` | 配套节点 | 备注 |
+|---|---|---|---|
+| 小裴 / aicopy | `https://api.aicopy.top` | image2、Seedance 全系、Grok-Video（小裴分支）、快乐马、低价多渠道、Firefly 系、即梦 SD2 | 参考图走 `upload_base_url` 上传换 URL |
+| 一花 Codex | `https://llm.xxttt.com` | Chat 对话 / Responses 代码 / Claude 对话 | 纯文本/代码，图片走各自图片节点 |
+| 坤鸡 | 你的坤鸡网关地址 | Grok-Video（坤鸡分支） | 参考图 **multipart 直传**，不经图床 |
+| 章鱼哥 | 你的章鱼哥网关地址 | 章鱼哥 异步图片 / 视频 / 任务查询 | 参考图 `images[]` base64 |
+| 零视工坊 | `https://zeroapi.ai-ren.cn` | 零视工坊 Sora2/VEO、零视工坊 图生视频 | `POST /v1/videos` + 轮询；sd2-fast/pro 支持九图 |
+| 灵感鸭 | `https://www.lingganyaapi.com` | 灵感鸭 统一视频 / 统一图片 | 三步式：提交 → 查询 → `/content` 取成品 |
+
+**模型名典型坑**：
+
+| 想要 | 小裴叫 | 坤鸡 / 零视工坊叫 |
+|---|---|---|
+| Grok 视频 | `grok-video` | `grok-imagine-video-1.5-fast` / `grok-imagine-1.0-video` / `grok-imagine-video-1.5-preview` |
+| SD2 | `sd2-720p-fast` / `sd2-1080p` … | 零视工坊：`sd2-fast` / `sd2-pro`；灵感鸭：`sd-2.0` / `sd-fast` |
+
+> 填错就会看到 `503 No available channel for model xxx under group default` —— 那是网关没这个模型，不是插件的错。
+
 ## 节点总览
 
-| 节点 | 显示名 | 接口 / 功能 |
+**配置 / 基础**
+
+| 节点 | 显示名 | 功能 |
 |---|---|---|
 | `RespectApiSettings` | Respect API 设置 | 输出 `RESPECT_CONFIG`，所有 API 节点入口 |
 | `RespectLoadModels` | Respect 加载模型列表 | `GET /v1/models`，按关键字过滤 |
+| `RespectLoadImagesFromZip` | Respect ZIP批量加载图片 | 从 ZIP 按批次取 IMAGE |
+| `RespectLoadVideosFromZip` | Respect ZIP批量加载视频 | 从 ZIP 按批次取视频 |
+| `RespectPreviewImage` | Respect 查看图像 | 节点内预览 IMAGE |
+| `RespectPreviewVideo` | Respect 查看视频 | 节点内 `<video>` 播放（http URL 会先下载） |
+
+**图片**
+
+| 节点 | 显示名 | 功能 |
+|---|---|---|
 | `RespectImageGenerate` | Respect 图片生成 | `POST /v1/images/generations` |
 | `RespectImageMultiRef` | Respect 多参考图编辑 | `POST /v1/responses`，最多 7 张 |
 | `RespectGPTLocalImage` | Respect GPT本地版生图 | `/responses` → 失败降级 `/images/generations` |
 | `RespectImageChat` | Respect 多模态对话生图 | `POST /v1/chat/completions` (stream) |
+| `RespectOpenAIImage` | Respect image2 文生图/图生图 (aicopy) | gpt-image-2 / gpt-image-1-direct，支持 1k/2k/4k、参考图 |
+| `RespectOctopusImage` | Respect 章鱼哥 异步图片 | gpt-image-2 / nano_banana，异步 → IMAGE |
+| `RespectLingganyaImage` | Respect 灵感鸭 统一图片 | `POST /v1/images/generations?async=true` 三步式 |
+
+**视频（小裴 / Firefly 系）**
+
+| 节点 | 显示名 | 功能 |
+|---|---|---|
 | `RespectFireflySora2` | Respect Firefly Sora2 视频 | chat stream，4/8/12 秒 |
 | `RespectFireflyVeo31` | Respect Firefly VEO3.1 视频 | chat stream，4/6/8 秒，720p/1080p |
 | `RespectFireflyRunway45` | Respect Firefly Runway 4.5 视频 | chat stream，5/10 秒 |
-| `RespectSD2Video` | Respect 即梦/SD2 视频 | `POST /v1/videos` + 轮询，异步 |
+| `RespectFireflyKling3` | Respect Firefly 可灵3.0 视频 | chat stream |
+| `RespectSoraV3Video` | Respect Sora V3 视频 | 异步 `/v1/videos` + `video_config` |
+| `RespectSD2Video` | Respect 即梦/SD2 视频 | 异步 `/v1/videos`，有参考图自动 multipart |
+| `RespectGrokVideo` | Respect Grok 视频 | 1.0 体 / 1.5 体两种 body，最多 7 张参考图 |
+| `RespectSD2AllVideo` | Respect SD2.0 全系列视频 | 按秒计费全系，九图，支持 `ref_url_1..9` 直填 URL |
+| `RespectSeedance9Video` | Respect Seedance9 九图/稳定版视频 | fast / 官方稳定，九图，支持 `ref_url_1..9` |
+| `RespectSeedanceFourRefVideo` | Respect Seedance 四参考图视频 | `/v1/video/generations`，四图，支持 `ref_url_1..4` |
+| `RespectSeedanceUniversal` | Respect Seedance 通用异步视频 | 通用 `/v1/videos`，9 图（IMAGE 或 URL），自动补 `@ImageN` |
+| `RespectGrokVideoXiaopei` | Respect Grok-Video 视频（小裴分支） | 模型 `grok-video`，上传换公网 URL |
+| `RespectGrokVideoNew` | Respect Grok-Video 视频（坤鸡分支） | `grok-imagine-*` 三模型，multipart 直传参考图 |
+| `RespectHappyHorseVideo` | Respect HappyHorse 快乐马视频 | `/v1/videos`，`parameters` + 参考图 |
+| `RespectLowCostMultiVideo` | Respect 低价多渠道视频 | 可灵 / 快乐马 / gemini-omni，含音频 |
 | `RespectSaveVideo` | Respect 保存视频 | 下载视频 URL 到本地 |
-| `RespectLoadImagesFromZip` | Respect ZIP批量加载图片 | 从 ZIP 按批次取 IMAGE |
-| `RespectLoadVideosFromZip` | Respect ZIP批量加载视频 | 从 ZIP 按批次取视频 |
-| `RespectPreviewImage` | Respect 查看图像 | 节点内预览 IMAGE |
-| `RespectPreviewVideo` | Respect 查看视频 | 节点内渲染 `<video>` 播放本地视频 |
+
+**视频（其它网关）**
+
+| 节点 | 显示名 | 功能 |
+|---|---|---|
+| `RespectOctopusVideo` | Respect 章鱼哥 异步视频 | sora / omni / veo，异步提交 |
+| `RespectOctopusQuery` | Respect 章鱼哥 任务查询 | 用 `task_id` 单独查结果 |
+| `RespectZeroSoraVeo` | Respect 零视工坊 Sora2/VEO 视频 | `size=WxH`，`input_reference` 多图 `\|` 分隔，`remix_id` 续 15 秒 |
+| `RespectZeroImg2Video` | Respect 零视工坊 图生视频 | vad3 / omni_flash / grok-1.5 / seedance_2 / sd2-fast / sd2-pro，**九图** |
+| `RespectLingganyaVideo` | Respect 灵感鸭 统一视频（sora/SD） | `size`=比例、`seconds`=时长；SD 带顶层 `resolution` + `extra{}` |
+
+**LLM / 文本**
+
+| 节点 | 显示名 | 功能 |
+|---|---|---|
+| `RespectChatLLM` | Respect Chat 对话 (OpenAI) | `response_format` + `json_schema` |
+| `RespectResponsesLLM` | Respect Responses 代码 (Codex) | 同上 |
+| `RespectClaudeLLM` | Respect Claude 对话 (Anthropic) | 无原生 json_schema，用系统提示强制 JSON |
+| `RespectSplitSegments` | Respect 分段提取 | json / regex_split / regex_findall / delimiter，**`outputcount` 动态输出口** |
+| `RespectPickSegment` | Respect 取第N段 | 吃 `all_json` + `index`，动态取段 |
+| `RespectTextInput` | Respect 文字输入 | 多行文本常量源 |
+| `RespectShowText` | Respect 显示文字 | 把文字显示在节点上并透传 |
+| `RespectMergeText` | Respect 文字合并 | 最多 8 路按分隔符拼接 |
+| `RespectExtractSeconds` | Respect 提取镜头秒数 | 从文本抠出秒数 + 可填偏移（补删帧） |
+
+**素材 / 剪辑 / 流水线 / 上传**
+
+| 节点 | 显示名 | 功能 |
+|---|---|---|
+| `RespectLoadPdfText` | Respect PDF批量转文字 | 文件夹按序批量，pymupdf/pdfplumber/pypdf |
+| `RespectAssetLibrary` | Respect 关键词取素材（角色库） | 「出场人物：小白，小黑」→ 按名字到素材库取图/视频/文本 |
+| `RespectSelectFrames` | Respect 帧选择裁剪 (IMAGE) | 支持 `1-10` / `3,7` / `5-` / `-5` / 倒序 |
+| `RespectTrimVideoFile` | Respect 视频文件裁剪 (mp4) | 删帧 + 自动转 H.264（避免预览黑屏） |
+| `RespectConcatVideos` | Respect 视频拼接 (mp4) | **`inputcount` 动态输入口** + `folder` + `extra_paths`，可加 BGM |
+| `RespectAddBGM` | Respect 视频加BGM (mp4) | mix / replace，音量可调 |
+| `RespectStoryboardSave` | Respect 分镜存储 | 一图多提示词落盘成任务队列 |
+| `RespectStoryboardNext` | Respect 分镜取任务 | 取一个待办（可配 Auto Queue 连跑） |
+| `RespectStoryboardComplete` | Respect 分镜完成归档 | 提示词/图片按完成度归档，断点续跑 |
+| `RespectCloudUpload` | Respect 对象存储上传（图床/S3） | R2 / OSS / COS / S3 / MinIO → 公网 URL |
+| `RespectLoadVideoPath` | Respect 选择/上传本地视频 | 节点上「选择视频上传」按钮 → 输出本地路径 |
 
 ## 基础加载节点
 
@@ -185,6 +289,151 @@ pip install -r respect_comfyui/requirements.txt
 
 输出统一为 `video_url`（远端）+ `local_path`（本地）+ `model_used` / `task_id`。
 
+## 多网关视频节点
+
+### 参考图怎么传（最关键）
+
+三种传法，**优先用公网 URL**：
+
+| 传法 | 节点上的入口 | 说明 |
+|---|---|---|
+| **公网 URL（推荐）** | `ref_url_1..N` / `extra_image_urls` / `image_url` | 接 **对象存储上传** 的 `url`。所有网关都能拉，不会 401 |
+| 上传换 URL | 接 IMAGE 槽（小裴系） | 自动传到 `upload_base_url`（默认 api.aione.help）。**非 aicopy 的 Key 会 401** |
+| base64 内联 | 接 IMAGE 槽（通用/章鱼哥/零视/灵感鸭） | 不经图床。但**部分网关会静默忽略 base64** → 表现为「生成了但没参考图片」 |
+
+> `ref_url_*` 默认是文本框；要连线得先**右键节点 → Convert `ref_url_N` to input**。
+> 不想连一堆线，就把 URL 每行一个贴进 `extra_image_urls`。
+
+### 九图支持
+
+| 网关 / 模型 | 参考图上限 |
+|---|---|
+| 小裴 SD2.0 全系 / Seedance9 | 9 |
+| Seedance 通用异步 | 9（`image_url` + `ref_url_2..9`，自动补 `@Image1..N`） |
+| 零视工坊 `sd2-fast` / `sd2-pro` | 9 |
+| 灵感鸭 `sd-2.0` / `sd-fast` | 9 |
+| 零视工坊 grok **preview** | **只能 1 张**，且必须在 `images` 数组 |
+| 零视工坊 sora / veo | `input_reference` 多图用 `\|` 分隔 |
+
+### 零视工坊（`base_url=https://zeroapi.ai-ren.cn`）
+
+- **Sora2/VEO 视频**：`{model, prompt, size(WxH), input_reference, remix_id}`。`remix_id` 填已有 veo 任务 ID 可续到 15 秒。
+- **图生视频**：`{model, prompt, size, duration, image / images[]}`。`sd2` 只支持 **5/10/15 秒**；seedance 4–15。
+- 统一 `POST /v1/videos` 提交 → `GET /v1/videos/{id}` 轮询，`completed` 时 `url` 为无水印地址。
+
+### 灵感鸭（`base_url=https://www.lingganyaapi.com`）
+
+三步式：`POST /v1/videos?async=true` → `GET /v1/videos/{id}` → 没直链再 `GET /v1/videos/{id}/content`。
+
+- `size` 是**宽高比**（16:9），`seconds` 才是时长（sora 传字符串、SD 传整数，节点自动区分）
+- SD（`sd-2.0`/`sd-fast`）额外带**顶层 `resolution`**（sd-2.0=1080p/720p，sd-fast=720p/480p），
+  参考视频/音频/参考模式/是否生成音频只能放 `extra{}` —— 节点已按模型自动处理，sora 不会被污染
+- 模型 / 尺寸 / 分辨率都是「下拉 + `custom_*` 可填覆盖」，上新模型自己填即可
+
+## LLM 对话节点
+
+`Chat 对话 (OpenAI)`、`Responses 代码 (Codex)`、`Claude 对话 (Anthropic)` 三个节点参数一致：
+
+| 参数 | 说明 |
+|---|---|
+| `response_format` | `text` / `json_object` / `json_schema` |
+| `json_schema` | 选 `json_schema` 时填 JSON Schema，强约束返回结构 |
+| `schema_name` | schema 名称（如 `scenes`） |
+| `system_prompt` / `temperature` / `max_tokens` | 常规参数；`temperature=-1` 表示不传 |
+
+> Claude 没有原生 `json_schema`，节点通过系统提示强制输出合法 JSON。
+> 配合 **分段提取（method=json）** 即可把 JSON 数组直接拆到多个输出口。
+
+## 文本工具节点
+
+### Respect 分段提取（动态输出口）
+
+四种切法：`json`（自动去 ```json 围栏，`json_path` 定位数组、`json_field` 取字段）、
+`regex_split`、`regex_findall`（每个匹配或第一个捕获组=一段）、`delimiter`（默认空行，支持 `\n` `\t` 转义）。
+
+**输出口数量可变**：填 `outputcount` → 点节点上的 **「更新输出口」** 按钮 → `seg_1..seg_N`（1–200），后面固定跟 `count`、`all_json`。
+
+嵌套内容分两步取。例如 `"关键物品": "1染血白婚纱，2主卧手机，3露台护栏"`：
+
+```text
+① method=json, json_path=关键物品     → seg_1 = "1染血白婚纱，2主卧手机，3露台护栏"
+② method=regex_findall,
+   pattern=\d+\s*([^，,]+)            → seg_1=染血白婚纱  seg_2=主卧手机  seg_3=露台护栏
+```
+
+段数不固定时用 `all_json` 接 **取第N段**，按 `index` 动态取。
+
+### Respect 提取镜头秒数
+
+从 LLM 文本里抠出秒数（认 `8秒` / `8s` / 时间段 / 纯数字），`offset` 可填 `+1` 补被删掉的首帧，
+输出 `seconds` / `base_seconds` / `note`，直接接视频节点的时长。
+
+### Respect 显示文字
+
+把上游 STRING 显示在节点上（并原样输出），调 LLM / 分段结果不用翻控制台。依赖 `web/respect_showtext.js`。
+
+## PDF 与素材节点
+
+- **PDF批量转文字**：选文件夹**按顺序**批量取，`batch_size` / `mode(increment…)` / `index` 控制取哪一批；
+  引擎 pymupdf → pdfplumber → pypdf 自动降级；输出 `text` / `filenames` / `count` / `stem`（可当保存文件名）。
+- **关键词取素材（角色库）**：文本里写 `出场人物：小白，小黑，小红`，节点按 `keyword` 定位这段、
+  在 `library_dir` 里按名字找文件（精确 / 前缀 / 包含），`file_type` 选图片 / 视频 / 文本 / 任意，
+  输出 `images` / `text` / `paths` / `names` / `count`。
+
+## 视频剪辑节点
+
+- **帧选择裁剪 (IMAGE)**：帧区间语法 `1-10`（第1到10帧）、`3,7`、`5-`（第5帧到末尾）、`-5`、`7-3`（倒序）。
+- **视频文件裁剪 (mp4)**：按帧裁剪并**自动转 H.264**（`libx264 + yuv420p + faststart`）；
+  否则 cv2 写出的 mpeg4 在浏览器预览会黑屏 / 显示 0:00。
+- **视频拼接 (mp4)**：三个入口可混用，顺序 = `folder`（按文件名排序）→ `video_1..N` → `extra_paths`。
+  - **`inputcount` 动态输入口**：填数量 → 点「更新输入口」→ `video_1..video_N`（1–200）
+  - `mode`：`auto`（有 ffmpeg 就重编码保音轨）/ `copy`（无损快，需同参）/ `reencode`（缩放对齐）/ `frames`（无音轨，免 ffmpeg）
+  - `bgm_stage`：`none` / `after_merge`（合并后统一加）/ `per_video`（每段各加再合并）
+- **视频加BGM (mp4)**：`mix` 叠加原声 / `replace` 替换，`bgm_volume` 可调，BGM 自动循环。
+
+> ffmpeg 来源：优先 `imageio-ffmpeg`（`pip install imageio-ffmpeg`），否则找 PATH 里的 `ffmpeg`。
+
+## 分镜流水线节点
+
+文件系统任务队列，**关掉 ComfyUI 也能续跑**。目录结构：
+
+```text
+<root>/
+├── 01_pending/<场景>/image.png + prompts/001.txt 002.txt ...
+├── 02_done_prompts/     # 做完的提示词移到这里
+├── 03_videos/<场景>/     # 产出的视频
+└── 04_done_scenes/      # 该图所有提示词都做完，图片才归档
+```
+
+1. **分镜存储**：一张图 + 多条提示词（接分段的 `all_json`）落盘成任务。
+2. **分镜取任务**：每次取 1 条待办，输出图片 / 提示词 / `scene_id` / `seq`。配 ComfyUI 的 **Auto Queue** 就能自动连跑。
+3. **分镜完成归档**：提示词做完即移走；**该图的提示词全做完后图片才归档** —— 所以中断后重跑不会重复出片。
+
+## 对象存储上传
+
+**Respect 对象存储上传（图床/S3）** —— 一个节点覆盖 S3 兼容存储，把本地图片/视频变成公网 URL 喂给需要链接的接口。
+
+| 存储 | `endpoint_url` | `region` |
+|---|---|---|
+| Cloudflare R2 | `https://<账户ID>.r2.cloudflarestorage.com` | `auto` |
+| 阿里云 OSS | `https://oss-cn-<区域>.aliyuncs.com` | 如 `oss-cn-hangzhou` |
+| 腾讯云 COS | `https://cos.<区域>.myqcloud.com` | 如 `ap-guangzhou` |
+| AWS S3 | 留空 | 如 `us-east-1` |
+| MinIO / 自建 | 你的地址 | 视情况 |
+
+- 需要 `pip install boto3`
+- **`file_path` 填了就上传该文件（视频等），优先于 `image`**；只接 `image` 时上传 JPEG
+- **`public_base_url` 必须填**能公开访问的域名，否则返回的 URL 打不开：
+  R2 要在桶设置里开 **R2.dev 子域**（得到 `https://pub-xxxx.r2.dev`）或绑定自定义域名
+- R2 不支持 ACL → `set_public_acl=false`（带 ACL 失败会自动退回重试）
+- ⚠️ 密钥会存进工作流 JSON，**别把带密钥的工作流分享出去**
+
+> r2.dev 是**测试用**域名，有「每秒数百请求」的可变限流，超了返 429；正式用请绑自定义域名。
+
+**Respect 选择/上传本地视频**：节点上有「选择视频上传」按钮 → 选本地 mp4 → 上传到 ComfyUI `input/` → 输出绝对路径 →
+接到对象存储上传的 `file_path`，即可得到视频的公网 URL（用于「参考视频」）。
+ComfyUI 官方只给图片做了上传按钮，视频这个按钮由 `web/respect_upload.js` 提供。
+
 ## 预览节点
 
 ### Respect 查看图像
@@ -245,6 +494,36 @@ LoadImage(尾) →  ref_image_2
 model = sd2-720p, aspect_ratio = 16:9, duration = 5
 ```
 
+### 本地视频 / 图片 → 公网 URL → 参考
+
+```text
+Respect 选择/上传本地视频 (点按钮选 mp4)
+        │ file_path
+        ▼
+Respect 对象存储上传 (file_path，不要接 image)
+        │ url
+        ▼
+Seedance 通用异步视频 / 零视工坊 图生视频 的 参考视频URL / ref_url_N
+```
+
+### 现成示例文件
+
+`example_workflows/` 目录（导入即用，详见该目录下的 `README.md`）：
+
+| 文件 | 内容 |
+|---|---|
+| `1_image2_4k_text2img.json` | image2 出 4K 图 |
+| `2_llm_jsonschema_split_to_image.json` | LLM(json_schema) → 分段 → 生图 |
+| `3_pdf_to_video_pipeline.json` | PDF → LLM → 分段 → 生图 → 出视频 → 保存 |
+| `4_one_image_multi_video.json` | 一张图 + 多条提示词 → 多个视频 |
+| `A_storyboard_save.json` | 分镜存储（生产者） |
+| `B_video_produce.json` | 分镜取任务 → 提取秒数 → 出视频 → 归档（消费者，配 Auto Queue） |
+| `C_merge_bgm_save.json` | 拼接 + BGM + 按 PDF 名保存 |
+| `D_octopus_async.json` | 章鱼哥异步调用 |
+| `E_extract_seconds_demo.json` | 提取镜头秒数 → 视频时长 |
+| `F_asset_library_demo.json` | 关键词取素材 → 生图 |
+| `G_split_json_items_demo.json` | JSON 字段 → 拆出每个物品（**不需要 API Key 就能跑**） |
+
 ## 常见问题
 
 - **节点没出现**：确认目录在 `custom_nodes` 下，启动日志里搜 `Respect` / `ImportError`，多半是依赖没装到 ComfyUI 用的那个 Python。
@@ -255,14 +534,44 @@ model = sd2-720p, aspect_ratio = 16:9, duration = 5
 - **网络 / 443 错误**：海外接口，国内通常需要代理，在 API 设置节点填 `proxy`。
 - **SD2 任务一直 processing**：异步任务，调大节点 `poll_timeout`（默认 1800 秒）。
 - **视频链接失效**：保持 `auto_download=True`，立即下载到本地。
+- **`503 No available channel for model xxx`**：网关没上架/没通道/分组无权限。多半是**跨网关混用模型名**
+  （如把小裴的 `grok-video` 填给坤鸡/零视工坊）。见 [网关对照表](#网关对照表)。
+- **参数错位（下拉框里出现 `true`、`pattern` 里出现数字）**：节点结构变了但工作流里存的是旧值。
+  **重启 ComfyUI + Ctrl+F5，然后把该节点删掉重新拖一个**；用示例工作流的话重新导入最新 JSON。
+  报错样式如 `Value not in list: match_mode: 'True' not in [...]`。
+- **改了节点却没变化 / 新节点找不到**：确认改的是 ComfyUI **实际加载的那份目录**（多机同步时最常见），
+  然后**完全重启**（不是刷新）；带前端 JS 的功能还要 **Ctrl+F5** 强刷浏览器。
+- **生成了但没参考我的图片**：该网关**忽略了 base64**。改用公网 URL —— 用**对象存储上传**拿 URL 填 `ref_url_*` / `image_url`。
+  另外部分接口要在 prompt 里用 `@Image1`、`@Image2` 引用（通用 Seedance 节点会自动补）。
+- **上传参考图 401（`upstream_key_not_valid`）**：小裴系节点会传到 `upload_base_url`（默认 api.aione.help），
+  非 aicopy 的 Key 在那边不通。改用「填公网 URL」的入口，或换 aicopy 的 Key。
+- **R2 上传成功但链接打不开**：`<账户ID>.r2.cloudflarestorage.com` 只是 S3 接口、不能公开读。
+  去 R2 桶设置开 **R2.dev 子域**或绑自定义域名，把它填进 `public_base_url`。
+- **视频怎么上传**：上传节点的 `image` 只收图片；**视频要走 `file_path`**（接「选择/上传本地视频」的输出、
+  接视频节点的 `local_path`，或直接粘贴本地 mp4 路径）。
+- **裁剪后的视频预览黑屏 / 显示 0:00**：cv2 写出的是 mpeg4 Simple Profile。节点已自动转 H.264，
+  需要 ffmpeg：`pip install imageio-ffmpeg`。
+- **拼接/分段的口不够用**：视频拼接填 `inputcount` 点「更新输入口」；分段提取填 `outputcount` 点「更新输出口」。
+  拼接也可以用 `folder`（整个文件夹）或 `extra_paths`（每行一个），无上限。
 
 ## 开源与贡献
 
 - 代码结构：
   - `utils.py`：HTTP 客户端（重试 / UTF-8 / 代理）、tensor↔base64↔URL 转换、SSE 解析、文件下载、尺寸表
   - `api_settings.py`：配置与模型列表
-  - `image_nodes.py` / `video_nodes.py`：图片 / 视频生成
+  - `image_nodes.py` / `video_nodes.py`：图片 / 视频生成（含异步 `/v1/videos` 提交+轮询公用逻辑）
   - `loader_nodes.py`：ZIP 批量加载基础节点
+  - `llm_nodes.py`：Chat / Responses / Claude 对话 + image2 生图
+  - `seedance_nodes.py`：Seedance 全系 / Grok 双分支 / 快乐马 / 低价多渠道
+  - `octopus_nodes.py`：章鱼哥；`zeroapi_nodes.py`：零视工坊；`lingganya_nodes.py`：灵感鸭
+  - `text_nodes.py`：分段 / 取段 / 输入 / 合并 / 显示 / 提取秒数
+  - `pdf_nodes.py`：PDF 批量转文字；`asset_nodes.py`：关键词取素材
+  - `video_edit_nodes.py`：帧选择 / 裁剪 / 拼接 / BGM（ffmpeg 封装）
+  - `storyboard_nodes.py`：分镜文件系统队列
+  - `upload_nodes.py`：对象存储上传 + 选择/上传本地视频
+  - `preview_nodes.py`：图像 / 视频预览
+  - `web/`：前端脚本 —— `respect_preview.js`（视频播放器）、`respect_upload.js`（视频上传按钮）、
+    `respect_concat.js`（动态输入口）、`respect_split.js`（动态输出口）、`respect_showtext.js`（显示文字）
 - 内部节点 ID 统一为 `Respect*`，配置类型为 `RESPECT_CONFIG`。
 - 欢迎 issue / PR。提交前请确保 `python -m py_compile *.py` 通过。
 - 发布到 ComfyUI Registry：`pyproject.toml` 已含 `[tool.comfy]` 字段，配合 `comfy-cli` 即可发布。
