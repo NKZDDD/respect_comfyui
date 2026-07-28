@@ -277,6 +277,36 @@ class RespectTextInput:
         return (text or "",)
 
 
+class RespectShowText:
+    """显示文字：把上游 STRING 直接显示在节点上（也原样透传给下游）。
+
+    用来看分段/LLM 的结果，不用去翻控制台。前端由 `web/respect_showtext.js` 渲染。
+    """
+
+    DESCRIPTION = "把接入的文字显示在节点上（并原样输出），用于查看分段/LLM 结果。"
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "text": ("STRING", {"default": "", "multiline": True, "forceInput": True, "tooltip": "接任意 STRING 输出"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "show"
+    CATEGORY = CATEGORY
+    OUTPUT_NODE = True
+
+    def show(self, text):
+        values = text if isinstance(text, list) else [text]
+        values = ["" if v is None else str(v) for v in values]
+        for v in values:
+            print(f"[Respect] 显示文字: {v[:200]}")
+        return {"ui": {"text": values}, "result": (values[0] if values else "",)}
+
+
 _MAX_MERGE_INPUTS = 8
 
 
@@ -406,6 +436,7 @@ NODE_CLASS_MAPPINGS = {
     "RespectSplitSegments": RespectSplitSegments,
     "RespectPickSegment": RespectPickSegment,
     "RespectTextInput": RespectTextInput,
+    "RespectShowText": RespectShowText,
     "RespectMergeText": RespectMergeText,
     "RespectExtractSeconds": RespectExtractSeconds,
 }
@@ -414,6 +445,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectSplitSegments": "Respect 分段提取",
     "RespectPickSegment": "Respect 取第N段",
     "RespectTextInput": "Respect 文字输入",
+    "RespectShowText": "Respect 显示文字",
     "RespectMergeText": "Respect 文字合并",
     "RespectExtractSeconds": "Respect 提取镜头秒数",
 }
