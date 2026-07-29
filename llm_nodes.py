@@ -494,7 +494,9 @@ class RespectOpenAIImage:
 
     按 api.aicopy.top 文档发送 `size` + `aspect_ratio` + `resolution(1k/2k/4k)`：
     - 不接参考图 → `POST /v1/images/generations`（纯文生图）
-    - 接了 1~4 张参考图 → `POST /v1/images/edits`（multipart，每张参考图作为一个 `image` 字段）
+    - 接了参考图 → `POST /v1/images/edits`（multipart，每张参考图作为一个 `image` 字段）
+      参考图接口数量可变：填 `inputcount` 后点节点上的「更新输入口」增减 `image_N`；
+      每个槽接 IMAGE **批次**时会自动展开成多张（如角色库一次返回 5 张）。
 
     尺寸按文档换算：长边 1k=1024 / 2k=2048 / 4k=4096（如 2k 16:9 → 2048x1152）。
     `custom_model` / `custom_size` 填了优先使用。返回 IMAGE。
@@ -518,6 +520,8 @@ class RespectOpenAIImage:
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
+                # 新控件一律加在最后：这样已保存的工作流(7个值)不会错位
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减 image_N 槽"}),
             },
         }
 
@@ -536,10 +540,8 @@ class RespectOpenAIImage:
         n: int,
         custom_model: str = "",
         custom_size: str = "",
-        image_1: Optional[torch.Tensor] = None,
-        image_2: Optional[torch.Tensor] = None,
-        image_3: Optional[torch.Tensor] = None,
-        image_4: Optional[torch.Tensor] = None,
+        inputcount: int = 4,
+        **kwargs: Any,
     ) -> tuple[torch.Tensor, str, str]:
         cfg = ensure_config(api_config)
         aspect_x = aspect_to_x(aspect_ratio)
@@ -556,13 +558,19 @@ class RespectOpenAIImage:
 
         size = (custom_size or "").strip() or _image2_payload_size(model, aspect_x, res)
 
+        # 动态收集 image_1..image_N（数量由 inputcount + 前端「更新输入口」决定）
+        img_keys = sorted(
+            (k for k in kwargs if k.startswith("image_") and k[6:].isdigit()),
+            key=lambda k: int(k[6:]),
+        )
         refs: list[bytes] = []
-        for img in (image_1, image_2, image_3, image_4):
+        for key in img_keys:
+            img = kwargs.get(key)
             if img is None or (hasattr(img, "numel") and img.numel() == 0):
                 continue
             # 展开一个 IMAGE 批次里的每一帧（角色库可能一次返回多张）
-            n = img.shape[0] if getattr(img, "ndim", 3) == 4 else 1
-            for i in range(n):
+            frames = img.shape[0] if getattr(img, "ndim", 3) == 4 else 1
+            for i in range(frames):
                 data = _tensor_to_png_bytes(img[i:i + 1])
                 if data:
                     refs.append(data)
