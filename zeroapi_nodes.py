@@ -76,6 +76,7 @@ class RespectZeroSoraVeo:
                 "model": (ZERO_SORA_MODELS, {"default": "veo_3_1-fast"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "size": (ZERO_SIZES, {"default": "1280x720", "tooltip": "输出尺寸 宽x高"}),
+                "seconds": ("INT", {"default": 0, "min": 0, "max": 60, "tooltip": "时长；0=不传该字段(用服务端默认)。sd2 只支持 5/10/15；veo/sora 一般不需要填"}),
                 "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
@@ -102,7 +103,7 @@ class RespectZeroSoraVeo:
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
-    def generate(self, api_config, model, prompt, size, poll_interval, poll_timeout, auto_download,
+    def generate(self, api_config, model, prompt, size, seconds, poll_interval, poll_timeout, auto_download,
                  first_frame=None, last_frame=None, ref_image_3=None, ref_image_4=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
                  remix_id="", custom_model="", custom_size="", save_dir="", filename=""):
@@ -113,8 +114,14 @@ class RespectZeroSoraVeo:
         refs = _collect_refs([first_frame, last_frame, ref_image_3, ref_image_4],
                              [ref_url_1, ref_url_2, ref_url_3, ref_url_4])
         body: dict = {"model": model, "prompt": prompt, "size": size}
+        if int(seconds) > 0:
+            body["seconds"] = int(seconds)
         if refs:
-            body["input_reference"] = "|".join(refs)
+            # sd2 系走 images 数组；sora/veo 用 input_reference（多图 | 分隔）
+            if model.lower().startswith("sd"):
+                body["images"] = refs[:9]
+            else:
+                body["input_reference"] = "|".join(refs)
         if (remix_id or "").strip():
             body["remix_id"] = remix_id.strip()
 

@@ -643,26 +643,48 @@ def _img_data_urls(images: list[Optional[torch.Tensor]], max_side: int = 1536, q
 # --- 异步 /v1/videos 通用：URL / 状态提取 + 提交 + 轮询 --------------------
 
 
+_MEDIA_EXTS = (".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi", ".mp3", ".wav", ".m4a", ".aac", ".flac")
+_URL_KEYS = ("video_url", "url", "download_url", "file_url", "result_url", "output_url", "cdn_url", "play_url")
+
+
+def _collect_http_urls(node: Any, out: list) -> None:
+    """递归遍历 dict/list，收集所有 (字段名, http URL)。"""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str) and v.startswith("http"):
+                out.append((str(k).lower(), v))
+            else:
+                _collect_http_urls(v, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_http_urls(item, out)
+
+
 def _async_extract_url(data: Any) -> str:
-    """从异步视频响应中尽量提取直链视频 URL（兼容多字段与嵌套）。"""
-    if not isinstance(data, dict):
+    """从异步视频响应中提取**真正的**直链视频 URL（兼容任意嵌套 dict/list）。
+
+    优先级：真实媒体文件(.mp4 等) > 常见 URL 字段 > 其它；
+    自家网关的 `/v1/videos/{id}/content` 这类 API 端点排最后
+    （零视工坊会把它放在 `result_url`，而真链在 `data.data[0].url`）。
+    """
+    found: list = []
+    _collect_http_urls(data, found)
+    if not found:
         return ""
-    for k in ("result_url", "video_url", "url", "download_url", "file_url"):
-        v = data.get(k)
-        if isinstance(v, str) and v.startswith("http"):
-            return v
-    video = data.get("video")
-    if isinstance(video, dict):
-        v = video.get("url")
-        if isinstance(v, str) and v.startswith("http"):
-            return v
-    for parent in ("data", "output", "result"):
-        inner = data.get(parent)
-        if isinstance(inner, dict):
-            u = _async_extract_url(inner)
-            if u:
-                return u
-    return ""
+
+    def rank(item) -> int:
+        key, url = item
+        base = url.split("?", 1)[0].lower()
+        score = 0
+        if base.endswith(_MEDIA_EXTS):
+            score -= 100                      # 真实媒体文件，最优
+        if key in _URL_KEYS:
+            score -= 10
+        if base.rstrip("/").endswith("/content") and not base.endswith(_MEDIA_EXTS):
+            score += 50                       # API 端点，兜底才用
+        return score
+
+    return min(found, key=rank)[1]
 
 
 _ASYNC_DONE = ("completed", "succeeded", "success", "done", "finished", "complete", "generated")
