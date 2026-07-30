@@ -148,6 +148,38 @@ def tensor_to_b64(tensor: torch.Tensor, fmt: str = "JPEG", quality: int = 90, ma
     return results
 
 
+def dynamic_image_inputs(kwargs: dict, prefix: str = "image_") -> list:
+    """取出动态输入口接进来的 IMAGE，按 `image_1, image_2, … image_10` 的**数字顺序**排列。
+
+    配合前端 `web/respect_dynamic_ports.js` 的「更新输入口」按钮使用：
+    节点只声明少量 `image_N`，多出来的槽由前端加，后端从 **kwargs 里动态取。
+    """
+    n = len(prefix)
+    keys = sorted(
+        (k for k in kwargs if k.startswith(prefix) and k[n:].isdigit()),
+        key=lambda k: int(k[n:]),
+    )
+    out = []
+    for k in keys:
+        t = kwargs.get(k)
+        if t is None or (hasattr(t, "numel") and t.numel() == 0):
+            continue
+        out.append(t)
+    return out
+
+
+def expand_image_frames(tensors: list) -> list:
+    """把每个 IMAGE 批次拆成单帧列表（角色库/ZIP 一次给多张时，每张都要当参考图）。"""
+    frames = []
+    for t in tensors:
+        if t is None or (hasattr(t, "numel") and t.numel() == 0):
+            continue
+        count = t.shape[0] if getattr(t, "ndim", 3) == 4 else 1
+        for i in range(count):
+            frames.append(t[i:i + 1])
+    return frames
+
+
 def bytes_to_tensor(content: bytes) -> torch.Tensor:
     return pil_to_tensor(Image.open(io.BytesIO(content)))
 

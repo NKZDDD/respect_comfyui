@@ -27,7 +27,9 @@ from .utils import (
     RespectAPIError,
     api_request,
     download_to_output,
+    dynamic_image_inputs,
     ensure_config,
+    expand_image_frames,
     extract_image_payloads,
     resolve_image_to_tensor,
     tensor_to_b64,
@@ -45,16 +47,15 @@ LG_IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"]
 
 
 def _lg_refs(tensors, urls, cap: int = 9) -> list[str]:
-    """参考图：公网 URL 优先（官方 images[] 要 URL），IMAGE 兜底转 base64。"""
+    """参考图：公网 URL 优先（官方 images[] 要 URL），IMAGE 兜底转 base64（批次会展开成多张）。"""
     refs: list[str] = []
     for u in urls:
         if isinstance(u, str) and u.strip():
             refs.append(u.strip())
-    for t in tensors:
-        if t is not None and (not hasattr(t, "numel") or t.numel() > 0):
-            b = tensor_to_b64(t[:1], fmt="JPEG", quality=90, max_side=1536)
-            if b:
-                refs.append(b[0])
+    for frame in expand_image_frames(tensors):
+        b = tensor_to_b64(frame, fmt="JPEG", quality=90, max_side=1536)
+        if b:
+            refs.append(b[0])
     return refs[:cap]
 
 
@@ -273,6 +274,8 @@ class RespectLingganyaImage:
                 "image_4": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖 size，如 2048x2048"}),
+                # 新控件加在最后：已保存的工作流不会错位
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减 image_N 槽"}),
             },
         }
 
@@ -284,14 +287,13 @@ class RespectLingganyaImage:
 
     def generate(self, api_config, model, prompt, size, n, poll_interval, poll_timeout,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", extra_image_urls="",
-                 image_1=None, image_2=None, image_3=None, image_4=None,
-                 custom_model="", custom_size=""):
+                 custom_model="", custom_size="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
 
         body: dict = {"model": model, "prompt": prompt, "size": size, "n": int(n)}
-        refs = _lg_refs([image_1, image_2, image_3, image_4],
+        refs = _lg_refs(dynamic_image_inputs(kwargs),
                         [ref_url_1, ref_url_2, ref_url_3, ref_url_4] + _lg_lines(extra_image_urls))
         if refs:
             body["images"] = refs

@@ -20,7 +20,9 @@ import torch
 from .utils import (
     RespectAPIError,
     api_request,
+    dynamic_image_inputs,
     ensure_config,
+    expand_image_frames,
     resolve_image_to_tensor,
     tensor_to_b64,
     tensors_concat,
@@ -43,12 +45,10 @@ OCTOPUS_VIDEO_SIZES = ["1280x720", "720x1280", "1920x1080", "1080x1920", "1024x1
 
 
 def _octopus_image_refs(images: list[Optional[torch.Tensor]], max_side: int = 1536) -> list[str]:
-    """多张 IMAGE -> base64 data URL 列表（章鱼哥 images[] 用）。"""
+    """多张 IMAGE -> base64 data URL 列表（章鱼哥 images[] 用）。批次会展开成每一帧。"""
     out: list[str] = []
-    for img in images:
-        if img is None or (hasattr(img, "numel") and img.numel() == 0):
-            continue
-        b64 = tensor_to_b64(img[:1], fmt="JPEG", quality=90, max_side=max_side)
+    for frame in expand_image_frames(images):
+        b64 = tensor_to_b64(frame, fmt="JPEG", quality=90, max_side=max_side)
         if b64:
             out.append(b64[0])
     return out
@@ -62,7 +62,8 @@ def _octopus_image_refs(images: list[Optional[torch.Tensor]], max_side: int = 15
 class RespectOctopusImage:
     """章鱼哥 异步图片（POST /v1/videos 创建 + 轮询）。返回 IMAGE。
 
-    - 有参考图（image_1..4）→ 图生图（images[] base64，最多 8 张）
+    - 有参考图 → 图生图（`images[]` base64）。参考图接口数量可变：填 `inputcount`
+      后点节点上的「更新输入口」增减 `image_N`；每个槽接 IMAGE **批次**时会展开成多张
     - `size` 填了用 size（如 1456x816），否则用 `aspect_ratio`（auto=自动）
     """
 
@@ -86,6 +87,8 @@ class RespectOctopusImage:
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
+                # 新控件加在最后：已保存的工作流不会错位
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减 image_N 槽"}),
             },
         }
 
@@ -95,7 +98,7 @@ class RespectOctopusImage:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, aspect_ratio, poll_interval, poll_timeout,
-                 size="", image_1=None, image_2=None, image_3=None, image_4=None, custom_model=""):
+                 size="", custom_model="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         body: dict = {"model": model, "prompt": prompt}
@@ -104,7 +107,7 @@ class RespectOctopusImage:
             body["size"] = size
         elif aspect_ratio:
             body["aspect_ratio"] = aspect_ratio
-        refs = _octopus_image_refs([image_1, image_2, image_3, image_4])
+        refs = _octopus_image_refs(dynamic_image_inputs(kwargs))
         if refs:
             body["images"] = refs
 

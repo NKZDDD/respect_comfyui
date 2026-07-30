@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import time
 from typing import Any, Optional
 
 import torch
@@ -25,7 +26,9 @@ from .utils import (
     RespectAPIError,
     api_request,
     aspect_to_x,
+    dynamic_image_inputs,
     ensure_config,
+    expand_image_frames,
     extract_image_payloads,
     iter_sse_lines,
     resolve_image_to_tensor,
@@ -489,6 +492,91 @@ def _tensor_to_png_bytes(tensor: torch.Tensor, max_side: int = 1536) -> bytes:
     return buf.getvalue()
 
 
+_IMG_DONE = ("completed", "succeeded", "success", "done", "finished", "complete", "generated")
+_IMG_FAIL = ("failed", "cancelled", "canceled", "error", "fail")
+# 有的网关图片接口是异步的（返回 task_id + status=queued），查询端点各家不同 → 逐个探测
+_IMG_TASK_PATHS = (
+    "/v1/images/{tid}",
+    "/v1/images/generations/{tid}",
+    "/v1/images/{tid}/content",
+    "/v1/tasks/{tid}",
+    "/v1/videos/{tid}",
+)
+
+
+def _img_task_id(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for k in ("task_id", "id", "request_id"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        return _img_task_id(inner)
+    return ""
+
+
+def _img_status(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for k in ("status", "state", "task_status"):
+        v = data.get(k)
+        if isinstance(v, str) and v:
+            return v.lower()
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        return _img_status(inner)
+    return ""
+
+
+def _poll_image_task(cfg, task_id: str, interval: int = 5, timeout: int = 900) -> list:
+    """异步图片任务轮询：自动探测查询端点，返回图片资源列表（URL 或 data:base64）。"""
+    start, last, good_path = time.time(), "", ""
+    while time.time() - start < timeout:
+        data: Any = None
+        paths = (good_path,) if good_path else _IMG_TASK_PATHS
+        for tpl in paths:
+            path = tpl.format(tid=task_id)
+            try:
+                resp = api_request(cfg, "GET", path, retries=1, timeout=60)
+            except RespectAPIError:
+                continue
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                continue
+            good_path = tpl
+            break
+        if data is None:
+            raise RespectAPIError(
+                f"异步图片任务 {task_id} 查不到状态：试过 {[p.format(tid='<id>') for p in _IMG_TASK_PATHS]}，"
+                "请把该网关的『查询图片任务』端点发我以便适配"
+            )
+
+        items = extract_image_payloads(data)
+        status = _img_status(data)
+        if status and status != last:
+            print(f"[Respect] 图片任务 {task_id} 状态: {status}")
+            last = status
+        if status in _IMG_FAIL:
+            raise RespectAPIError(f"图片任务失败: {json.dumps(data, ensure_ascii=False)[:400]}")
+        if items and (not status or status in _IMG_DONE):
+            return items
+        if status in _IMG_DONE:
+            # 完成但这个端点没带图 → 再试取成品
+            try:
+                r2 = api_request(cfg, "GET", f"/v1/images/{task_id}/content", retries=1, timeout=60)
+                items = extract_image_payloads(r2.json() if r2.content else {})
+            except RespectAPIError:
+                items = []
+            if items:
+                return items
+            raise RespectAPIError(f"任务已完成但未取到图片: {task_id}")
+        time.sleep(interval)
+    raise RespectAPIError(f"图片任务超时: {task_id}（可调大 poll_timeout）")
+
+
 class RespectOpenAIImage:
     """aicopy image2（gpt-image-2）文生图 / 图生图。
 
@@ -522,6 +610,8 @@ class RespectOpenAIImage:
                 "image_4": ("IMAGE",),
                 # 新控件一律加在最后：这样已保存的工作流(7个值)不会错位
                 "inputcount": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减 image_N 槽"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60, "tooltip": "异步网关轮询间隔（秒）"}),
+                "poll_timeout": ("INT", {"default": 900, "min": 60, "max": 7200, "tooltip": "异步网关最长等待（秒）"}),
             },
         }
 
@@ -541,6 +631,8 @@ class RespectOpenAIImage:
         custom_model: str = "",
         custom_size: str = "",
         inputcount: int = 4,
+        poll_interval: int = 5,
+        poll_timeout: int = 900,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, str, str]:
         cfg = ensure_config(api_config)
@@ -558,22 +650,12 @@ class RespectOpenAIImage:
 
         size = (custom_size or "").strip() or _image2_payload_size(model, aspect_x, res)
 
-        # 动态收集 image_1..image_N（数量由 inputcount + 前端「更新输入口」决定）
-        img_keys = sorted(
-            (k for k in kwargs if k.startswith("image_") and k[6:].isdigit()),
-            key=lambda k: int(k[6:]),
-        )
+        # 动态收集 image_1..image_N（数量由 inputcount + 前端「更新输入口」决定），批次展开成每一帧
         refs: list[bytes] = []
-        for key in img_keys:
-            img = kwargs.get(key)
-            if img is None or (hasattr(img, "numel") and img.numel() == 0):
-                continue
-            # 展开一个 IMAGE 批次里的每一帧（角色库可能一次返回多张）
-            frames = img.shape[0] if getattr(img, "ndim", 3) == 4 else 1
-            for i in range(frames):
-                data = _tensor_to_png_bytes(img[i:i + 1])
-                if data:
-                    refs.append(data)
+        for frame in expand_image_frames(dynamic_image_inputs(kwargs)):
+            data = _tensor_to_png_bytes(frame)
+            if data:
+                refs.append(data)
 
         if refs:
             # 图生图 / 多图编辑：multipart 上传到 /v1/images/edits
@@ -603,7 +685,21 @@ class RespectOpenAIImage:
             }
             resp = api_request(cfg, "POST", "/v1/images/generations", json_body=body, retries=3)
 
-        return (_images_to_tensor(resp.json(), cfg), model, size)
+        data = resp.json() if resp.content else {}
+
+        # 有的网关是异步的：只回 task_id + status=queued，没有图 → 自动轮询
+        if not extract_image_payloads(data):
+            task_id = _img_task_id(data)
+            status = _img_status(data)
+            if task_id and (not status or status not in _IMG_DONE):
+                print(f"[Respect] image2 检测到异步任务 {task_id}（status={status or 'n/a'}），开始轮询…")
+                items = _poll_image_task(cfg, task_id, int(poll_interval), int(poll_timeout))
+                tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
+                if not tensors:
+                    raise RespectAPIError(f"异步任务取到结果但无法解析为图片: {str(items)[:300]}")
+                return (tensors_concat(tensors), model, size)
+
+        return (_images_to_tensor(data, cfg), model, size)
 
 
 # ---------------------------------------------------------------------------

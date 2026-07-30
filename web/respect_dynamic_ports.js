@@ -2,15 +2,19 @@ import { app } from "/scripts/app.js";
 
 // 动态输入口：按 countWidget 的数字增/减 `<prefix><N>` 输入槽
 // 以后要给别的节点加，只需在 TABLE 里加一行
+const IMAGE_PORTS = {
+    countWidget: "inputcount",
+    prefix: "image_",
+    type: "IMAGE",
+    label: "更新输入口",
+    fallback: 4,
+    max: 64,
+};
+
 const TABLE = {
-    RespectOpenAIImage: {
-        countWidget: "inputcount",
-        prefix: "image_",
-        type: "IMAGE",
-        label: "更新输入口",
-        fallback: 4,
-        max: 64,
-    },
+    RespectOpenAIImage: IMAGE_PORTS,     // image2 文生图/图生图
+    RespectOctopusImage: IMAGE_PORTS,    // 章鱼哥 异步图片
+    RespectLingganyaImage: IMAGE_PORTS,  // 灵感鸭 统一图片
 };
 
 app.registerExtension({
