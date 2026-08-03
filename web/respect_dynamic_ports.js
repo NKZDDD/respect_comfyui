@@ -15,6 +15,10 @@ const TABLE = {
     RespectOpenAIImage: IMAGE_PORTS,     // image2 文生图/图生图
     RespectOctopusImage: IMAGE_PORTS,    // 章鱼哥 异步图片
     RespectLingganyaImage: IMAGE_PORTS,  // 灵感鸭 统一图片
+    RespectZeroImage: IMAGE_PORTS,       // 零视工坊 图片
+    RespectHeVideo: IMAGE_PORTS,         // 鹤 视频（参考图）
+    RespectHeImageEdit: IMAGE_PORTS,     // 鹤 图生图/多图融合（≤16）
+    RespectKunjiImage: IMAGE_PORTS,      // 坤鸡 图片
 };
 
 app.registerExtension({

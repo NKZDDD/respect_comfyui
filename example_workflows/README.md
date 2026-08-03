@@ -187,6 +187,38 @@ Respect 文字输入（示例 JSON）
 换成你自己的数据：把「文字输入」换成 **Chat 对话** 的输出接到 ①.text 即可，其余不用改。
 条目数不固定时，用 ②.`all_json` 接 **取第N段**，按 `index` 动态取。
 
+## 各服务商「图片 → 视频」demo（H ~ M）
+
+每个接入的服务商都有一个，结构完全一致，方便横向对比：
+
+```
+[Respect API 设置(base_url 已预填)] ──api_config──┬─▶ [该家 图片节点] ──image──┬─▶ [预览图像]
+                                                 │                          └─▶ [该家 视频节点].参考图
+                                                 └────────api_config───────────▶       │ local_path
+                                                                                       ▼
+                                                                             [Respect 查看视频]
+```
+
+| 文件 | 服务商 | base_url | 图片 → 视频 |
+|---|---|---|---|
+| `H_xiaopei_image_video_demo.json` | 小裴 / aicopy | `https://api.aicopy.top` | image2 → SD2.0 全系列视频（首帧生成） |
+| `I_kunji_image_video_demo.json` | 坤鸡 | 图 `https://img.yunfei.best`／视频另填 | 坤鸡 图片 → Grok-Video（坤鸡分支） |
+| `J_octopus_image_video_demo.json` | 章鱼哥 | 你的网关 | 章鱼哥 异步图片 → 异步视频 |
+| `K_zero_image_video_demo.json` | 零视工坊 | `https://zeroapi.ai-ren.cn` | 零视工坊 图片 → 图生视频（seedance_2_fast_480p） |
+| `L_lingganya_image_video_demo.json` | 灵感鸭 | `https://www.lingganyaapi.com` | 统一图片 → 统一视频（sd-fast, 9:16, 10秒） |
+| `M_he_image_video_demo.json` | 鹤 / paisio | `https://api.paisio.online` | 鹤 图片生成 → 鹤 视频（sd2-pro-720p, 12秒） |
+
+**用前只改两处**：① API 设置里的 `api_key`；② 提示词。`base_url` 已按各家预填。
+
+⚠️ **坤鸡那个有两个 API 设置节点** —— 因为它图片（`img.yunfei.best`）和视频不是同一个域名，
+视频那个的 `base_url` 需要你填自己的坤鸡视频网关。
+
+各家参考图的传法不同（节点内部已处理好，知道就行）：
+- 小裴：上传到 `upload_base_url` 换公网 URL（非 aicopy 的 Key 会 401 → 改用 `ref_url_*` 填公网 URL）
+- 鹤 / paisio：**只吃 data URI 内联**，节点自动压成 1024px JPEG q80
+- 章鱼哥 / 零视工坊 / 灵感鸭：`images[]` base64 或公网 URL（**优先填 URL**，个别网关会静默忽略 base64）
+- 坤鸡：视频 multipart 直传；图片 `/v1/images/edits` 重复 `image` 字段
+
 ## 文字合并接法（在 UI 里手接，2 步）
 
 分段/多路文字合成一段：

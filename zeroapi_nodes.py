@@ -11,12 +11,26 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import Any, Optional
 
 import torch
 
-from .utils import RespectAPIError, download_to_output, ensure_config, tensor_to_b64
+from .utils import (
+    RespectAPIError,
+    api_request,
+    download_to_output,
+    dynamic_image_inputs,
+    ensure_config,
+    expand_image_frames,
+    extract_image_payloads,
+    resolve_image_to_tensor,
+    tensor_to_b64,
+    tensors_concat,
+)
 from .video_nodes import _async_poll, _submit_async_video
+from .llm_nodes import _IMG_DONE, _img_status, _img_task_id, _poll_image_task
 
 CATEGORY = "Respect"
 
@@ -226,12 +240,124 @@ class RespectZeroImg2Video:
         return (url, local, task_id or "")
 
 
+# ---------------------------------------------------------------------------
+# 零视工坊 图片（gpt-image-2）—— 文档没列在索引里，参数见「模型」页
+# ---------------------------------------------------------------------------
+
+ZERO_IMAGE_MODELS = ["gpt-image-2", "gpt-image-2-2K", "gpt-image-2-4K", "nano_banana_pro"]
+ZERO_IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536", "1792x1024", "1024x1792"]
+ZERO_IMAGE_QUALITY = ["standard", "hd", "high", "medium", "low", "auto"]
+ZERO_IMAGE_STYLE = ["vivid", "natural"]
+ZERO_IMAGE_FORMATS = ["url", "b64_json"]
+
+
+class RespectZeroImage:
+    """零视工坊 图片（`POST /v1/images/generations`）。返回 IMAGE。
+
+    参数按该网关「模型」页：`prompt`(必填) / `size` / `quality` / `style` / `n`(1-10) / `response_format`。
+    该网关的图片是**异步**的（只回 `task_id` + `status=queued`）→ 节点自动轮询，查询端点自动探测。
+
+    接了参考图 → 改走 `POST /v1/images/edits`（multipart，重复 `image` 字段）。
+    参考图数量可变：填 `inputcount` 后点节点上的「更新输入口」。
+    """
+
+    DESCRIPTION = ("零视工坊 图片(base_url=zeroapi.ai-ren.cn)。prompt/size/quality/style/n/response_format；"
+                   "异步自动轮询。接参考图则走 /v1/images/edits，数量用 inputcount + 『更新输入口』。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://zeroapi.ai-ren.cn"}),
+                "model": (ZERO_IMAGE_MODELS, {"default": "gpt-image-2", "tooltip": "上新模型用 custom_model 填"}),
+                "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "想要生成图像的文字描述（必填）"}),
+                "size": (ZERO_IMAGE_SIZES, {"default": "1024x1024", "tooltip": "输出图像尺寸"}),
+                "n": ("INT", {"default": 1, "min": 1, "max": 10, "tooltip": "生成的图像数量 1-10"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 900, "min": 60, "max": 7200}),
+            },
+            "optional": {
+                "quality": (ZERO_IMAGE_QUALITY, {"default": "standard", "tooltip": "生成质量预设"}),
+                "style": (ZERO_IMAGE_STYLE, {"default": "vivid", "tooltip": "画风"}),
+                "response_format": (ZERO_IMAGE_FORMATS, {"default": "url", "tooltip": "图像结果的返回方式"}),
+                "image_1": ("IMAGE", {"tooltip": "参考图（接了就走 /v1/images/edits）"}),
+                "image_2": ("IMAGE",),
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
+                "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖 size，如 2048x2048"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 64, "step": 1, "tooltip": "参考图接口数量；改完点『更新输入口』按钮"}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("image", "image_urls", "task_id")
+    OUTPUT_TOOLTIPS = ("生成的图片", "图片URL（每行一个）", "任务 ID")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, size, n, poll_interval, poll_timeout,
+                 quality="standard", style="vivid", response_format="url",
+                 custom_model="", custom_size="", inputcount=4, **kwargs):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+        size = (custom_size or "").strip() or size
+        if not (prompt or "").strip():
+            raise RespectAPIError("prompt 必填")
+
+        refs = expand_image_frames(dynamic_image_inputs(kwargs))
+        if refs:
+            # 图生图：文档未列，按 OpenAI 兼容惯例走 edits（每张参考图一个重复的 image 字段）
+            files: list = [
+                ("model", (None, model)),
+                ("prompt", (None, prompt)),
+                ("size", (None, size)),
+                ("n", (None, str(int(n)))),
+                ("quality", (None, quality)),
+                ("style", (None, style)),
+                ("response_format", (None, response_format)),
+            ]
+            for i, frame in enumerate(refs):
+                b64 = tensor_to_b64(frame, fmt="PNG", max_side=2048)
+                if not b64:
+                    continue
+                raw = b64[0].split(",", 1)[1]
+                files.append(("image", (f"ref_{i + 1}.png", base64.b64decode(raw), "image/png")))
+            resp = api_request(cfg, "POST", "/v1/images/edits", files=files,
+                               retries=2, timeout=max(cfg.timeout, 300))
+        else:
+            body = {
+                "model": model, "prompt": prompt, "size": size, "n": int(n),
+                "quality": quality, "style": style, "response_format": response_format,
+            }
+            resp = api_request(cfg, "POST", "/v1/images/generations", json_body=body,
+                               retries=2, timeout=max(cfg.timeout, 300))
+
+        data = resp.json() if resp.content else {}
+        items = extract_image_payloads(data)
+        task_id = _img_task_id(data)
+        if not items:
+            status = _img_status(data)
+            if not task_id:
+                raise RespectAPIError(f"未返回图片也没有 task_id: {json.dumps(data, ensure_ascii=False)[:400]}")
+            print(f"[Respect] 零视工坊图片异步任务 {task_id}（status={status or 'n/a'}），开始轮询…")
+            items = _poll_image_task(cfg, task_id, int(poll_interval), int(poll_timeout))
+
+        tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
+        if not tensors:
+            raise RespectAPIError(f"取到结果但无法解析为图片: {str(items)[:300]}")
+        urls = "\n".join(i for i in items if isinstance(i, str) and i.startswith("http"))
+        return (tensors_concat(tensors), urls, task_id or "")
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectZeroSoraVeo": RespectZeroSoraVeo,
     "RespectZeroImg2Video": RespectZeroImg2Video,
+    "RespectZeroImage": RespectZeroImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectZeroSoraVeo": "Respect 零视工坊 Sora2/VEO 视频",
     "RespectZeroImg2Video": "Respect 零视工坊 图生视频",
+    "RespectZeroImage": "Respect 零视工坊 图片（gpt-image-2）",
 }

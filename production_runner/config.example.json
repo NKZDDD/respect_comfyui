@@ -1,0 +1,17 @@
+{
+  "api_key": "",
+  "base_url": "https://www.lingganyaapi.com",
+  "proxy": "",
+
+  "image_model": "gpt-image-2",
+  "image_size": "1024x1536",
+  "image_poll_interval": 5,
+  "image_poll_timeout": 900,
+
+  "video_model": "sd-2.0",
+  "video_resolution": "720p",
+  "video_poll_interval": 8,
+  "video_poll_timeout": 1800,
+
+  "ref_max_side": 1536
+}

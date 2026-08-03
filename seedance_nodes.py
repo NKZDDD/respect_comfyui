@@ -182,12 +182,29 @@ def _clean_urls(url_list) -> list:
     return [u.strip() for u in (url_list or []) if isinstance(u, str) and u.strip()]
 
 
-def _seedance_image_urls(cfg, url_list, mode, first_frame, last_frame, refs, cap=9):
-    """填了公网 URL 就直接用（跳过上传）；否则收集 tensor 上传换 URL。"""
+SD_REF_MODES = ["上传换URL(图床)", "data URI 内联(paisio等)"]
+
+
+def _seedance_image_urls(cfg, url_list, mode, first_frame, last_frame, refs, cap=9, ref_mode=""):
+    """参考图三种来源，优先级：填了公网 URL → 直接用；否则按 `ref_mode` 处理接入的 IMAGE。
+
+    - `上传换URL(图床)`：传到 `upload_base_url`（默认 api.aione.help）换公网 URL —— 只适合 aicopy 系 key
+    - `data URI 内联(paisio等)`：直接把图压成 1024px JPEG q80 的 data URI 塞 `images[]`
+      （paisio `api.paisio.online` 实测可用；它拒绝外部 key 上传到 aione）
+    """
     urls = _clean_urls(url_list)
     if urls:
         return urls[:cap]
     tensors = _collect_mode_tensors(mode, first_frame, last_frame, refs)[:cap]
+    if not tensors:
+        return []
+    if (ref_mode or "").startswith("data URI"):
+        out: list = []
+        for t in tensors:
+            b = tensor_to_b64(t[:1], fmt="JPEG", quality=80, max_side=1024)
+            if b:
+                out.append(b[0])
+        return out
     return _upload_all(cfg, tensors)
 
 
@@ -233,6 +250,8 @@ class RespectSD2AllVideo:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                # 新控件加在最后：已保存的工作流不会错位
+                "ref_mode": (SD_REF_MODES, {"default": "上传换URL(图床)", "tooltip": "接入 IMAGE 时怎么传：图床上传(仅aicopy系key)/data URI 内联(paisio 等外部网关用这个)"}),
             },
         }
 
@@ -248,7 +267,7 @@ class RespectSD2AllVideo:
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
                  ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
-                 custom_model="", save_dir="", filename=""):
+                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)"):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
@@ -329,6 +348,8 @@ class RespectSeedance9Video:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                # 新控件加在最后：已保存的工作流不会错位
+                "ref_mode": (SD_REF_MODES, {"default": "上传换URL(图床)", "tooltip": "接入 IMAGE 时怎么传：图床上传(仅aicopy系key)/data URI 内联(paisio 等外部网关用这个)"}),
             },
         }
 
@@ -344,7 +365,7 @@ class RespectSeedance9Video:
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
                  ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
-                 custom_model="", save_dir="", filename=""):
+                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)"):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         official = model.startswith("官方稳定")

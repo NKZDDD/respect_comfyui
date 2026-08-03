@@ -26,6 +26,10 @@ _test_*.py
 *.key
 secrets.*
 config.local.*
+production_runner/config.json
+
+# 生产项目产物（体积大，按需另行备份）
+projects/
 
 # 系统
 .DS_Store

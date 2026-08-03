@@ -108,14 +108,26 @@ pip install -r respect_comfyui/requirements.txt
 
 **同一个模型在不同网关的名字/字段都不一样，跨网关混用会 503 或参数丢失。** 先按这张表选对节点和 `base_url`：
 
-| 网关 | `base_url` | 配套节点 | 备注 |
-|---|---|---|---|
-| 小裴 / aicopy | `https://api.aicopy.top` | image2、Seedance 全系、Grok-Video（小裴分支）、快乐马、低价多渠道、Firefly 系、即梦 SD2 | 参考图走 `upload_base_url` 上传换 URL |
-| 一花 Codex | `https://llm.xxttt.com` | Chat 对话 / Responses 代码 / Claude 对话 | 纯文本/代码，图片走各自图片节点 |
-| 坤鸡 | 你的坤鸡网关地址 | Grok-Video（坤鸡分支） | 参考图 **multipart 直传**，不经图床 |
-| 章鱼哥 | 你的章鱼哥网关地址 | 章鱼哥 异步图片 / 视频 / 任务查询 | 参考图 `images[]` base64 |
-| 零视工坊 | `https://zeroapi.ai-ren.cn` | 零视工坊 Sora2/VEO、零视工坊 图生视频 | `POST /v1/videos` + 轮询；sd2-fast/pro 支持九图 |
-| 灵感鸭 | `https://www.lingganyaapi.com` | 灵感鸭 统一视频 / 统一图片 | 三步式：提交 → 查询 → `/content` 取成品 |
+| 网关 | `base_url` | 图片节点 | 视频节点 | demo |
+|---|---|---|---|---|
+| 小裴 / aicopy | `https://api.aicopy.top` | image2 等 5 个 | Firefly 系 / SD2 / Seedance 全系 / 快乐马 / 低价多渠道 | `H_xiaopei` |
+| **坤鸡** | 图片 `https://img.yunfei.best`；视频=你的坤鸡网关 | **坤鸡 图片** | Grok-Video（坤鸡分支） | `I_kunji` |
+| 章鱼哥 | 你的章鱼哥网关 | 章鱼哥 异步图片 | 章鱼哥 异步视频（+任务查询） | `J_octopus` |
+| 零视工坊 | `https://zeroapi.ai-ren.cn` | **零视工坊 图片** | Sora2/VEO、图生视频 | `K_zero` |
+| 灵感鸭 | `https://www.lingganyaapi.com` | 灵感鸭 统一图片 | 灵感鸭 统一视频 | `L_lingganya` |
+| **鹤 / paisio** | `https://api.paisio.online` | **鹤 图片生成**、**鹤 图生图（≤16张）** | **鹤 视频**（+虚拟资产上传） | `M_he` |
+| 一花 Codex | `https://llm.xxttt.com` | — | — | LLM 专用，见 `2_llm_*` |
+
+各家的坑：
+
+| 网关 | 要注意 |
+|---|---|
+| 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401** |
+| 坤鸡 | 视频参考图 **multipart 直传**不经图床；图片 `response_format` 必填（`b64_json`）。**图片和视频的 base_url 不同**，demo 里放了两个 API 设置节点 |
+| 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
+| 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`sd2-fast/pro` 支持九图；`grok preview` 只能 1 张图 |
+| 灵感鸭 | 三步式：提交 → 查询 → `/content`；`size` 是**比例**、`seconds` 才是时长；SD 系要顶层 `resolution` + `extra{}` |
+| 鹤 / paisio | 参考图**只吃 data URI 内联**（节点自动转 1024px JPEG q80），走外部图床会被拒；有**虚拟资产接口**可传参考视频/音频 |
 
 **模型名典型坑**：
 
@@ -180,7 +192,13 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectOctopusQuery` | Respect 章鱼哥 任务查询 | 用 `task_id` 单独查结果 |
 | `RespectZeroSoraVeo` | Respect 零视工坊 Sora2/VEO 视频 | `size=WxH`，`input_reference` 多图 `\|` 分隔，`remix_id` 续 15 秒 |
 | `RespectZeroImg2Video` | Respect 零视工坊 图生视频 | vad3 / omni_flash / grok-1.5 / seedance_2 / sd2-fast / sd2-pro，**九图** |
+| `RespectZeroImage` | Respect 零视工坊 图片 | `/v1/images/generations`，异步自动轮询；quality/style/response_format |
 | `RespectLingganyaVideo` | Respect 灵感鸭 统一视频（sora/SD） | `size`=比例、`seconds`=时长；SD 带顶层 `resolution` + `extra{}` |
+| `RespectHeVideo` | Respect 鹤 视频 | sd2/sd3/seedance2.0 全系；参考图自动 data URI；`compat_metadata` |
+| `RespectHeImage` | Respect 鹤 图片生成（统一接口） | `imageSize`(1K/2K/4K) + `aspectRatio` 自动换算像素，同步 |
+| `RespectHeImageEdit` | Respect 鹤 图生图/多图融合 | `image[]` **最多 16 张** + 可选 `mask` 局部重绘 |
+| `RespectHeAssetUpload` | Respect 鹤 虚拟资产上传 | 图/视频/音频 → `va_xxx`，轮询到 active；**传参考视频的官方途径** |
+| `RespectKunjiImage` | Respect 坤鸡 图片 | `img.yunfei.best`，有参考图走 `/v1/images/edits` multipart |
 
 **LLM / 文本**
 
@@ -524,6 +542,19 @@ Seedance 通用异步视频 / 零视工坊 图生视频 的 参考视频URL / re
 | `F_asset_library_demo.json` | 关键词取素材 → 生图 |
 | `G_split_json_items_demo.json` | JSON 字段 → 拆出每个物品（**不需要 API Key 就能跑**） |
 
+**每个服务商一个「图片 → 视频」demo**（结构统一：API设置 → 图片节点 → 预览图像 →（图当参考）视频节点 → 查看视频）：
+
+| 文件 | 服务商 | 图片节点 → 视频节点 |
+|---|---|---|
+| `H_xiaopei_image_video_demo.json` | 小裴 / aicopy | image2 → SD2.0 全系列视频 |
+| `I_kunji_image_video_demo.json` | 坤鸡 | 坤鸡 图片 → Grok-Video（坤鸡分支）｜**两个 API 设置**（图片/视频域名不同） |
+| `J_octopus_image_video_demo.json` | 章鱼哥 | 章鱼哥 异步图片 → 章鱼哥 异步视频 |
+| `K_zero_image_video_demo.json` | 零视工坊 | 零视工坊 图片 → 零视工坊 图生视频 |
+| `L_lingganya_image_video_demo.json` | 灵感鸭 | 灵感鸭 统一图片 → 灵感鸭 统一视频 |
+| `M_he_image_video_demo.json` | 鹤 / paisio | 鹤 图片生成 → 鹤 视频 |
+
+用前只需在「Respect API 设置」里填 Key（`base_url` 已按各家预填好）。
+
 ## 常见问题
 
 - **节点没出现**：确认目录在 `custom_nodes` 下，启动日志里搜 `Respect` / `ImportError`，多半是依赖没装到 ComfyUI 用的那个 Python。
@@ -563,7 +594,8 @@ Seedance 通用异步视频 / 零视工坊 图生视频 的 参考视频URL / re
   - `loader_nodes.py`：ZIP 批量加载基础节点
   - `llm_nodes.py`：Chat / Responses / Claude 对话 + image2 生图
   - `seedance_nodes.py`：Seedance 全系 / Grok 双分支 / 快乐马 / 低价多渠道
-  - `octopus_nodes.py`：章鱼哥；`zeroapi_nodes.py`：零视工坊；`lingganya_nodes.py`：灵感鸭
+  - 各服务商一个模块：`octopus_nodes.py`(章鱼哥)、`zeroapi_nodes.py`(零视工坊)、
+    `lingganya_nodes.py`(灵感鸭)、`he_nodes.py`(鹤/paisio)、`kunji_nodes.py`(坤鸡图片)
   - `text_nodes.py`：分段 / 取段 / 输入 / 合并 / 显示 / 提取秒数
   - `pdf_nodes.py`：PDF 批量转文字；`asset_nodes.py`：关键词取素材
   - `video_edit_nodes.py`：帧选择 / 裁剪 / 拼接 / BGM（ffmpeg 封装）

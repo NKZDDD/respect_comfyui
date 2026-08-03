@@ -1,0 +1,27 @@
+{
+  "episode": "EP01",
+  "project": "PDZJ-001",
+  "storyboard_tasks": [
+    {
+      "segment_id": "EP01-SEG04",
+      "prompt_ref": "06_生产提示词/02_段落故事板提示词/EP01/EP01-SEG04_STORYBOARD_PROMPT.txt",
+      "reference_images": [
+        { "image_n": 1, "asset_id": "C001-E01-A01", "file_ref": "02_全剧资产/Characters/C001-E01-A01.png" },
+        { "image_n": 2, "asset_id": "C002-E01-A01", "file_ref": "02_全剧资产/Characters/C002-E01-A01.png" },
+        { "image_n": 3, "asset_id": "S001-E01", "file_ref": "02_全剧资产/Scenes/S001-E01.png" }
+      ],
+      "params": { "cells": 6, "layout": "2x3", "cell_ratio": "9:16", "size": "1024x1536" },
+      "output": "03_段落故事板/EP01/PDZJ-001_EP01_SEG04_STORYBOARD_V01_FIXED.png"
+    }
+  ],
+  "video_tasks": [
+    {
+      "segment_id": "EP01-SEG04",
+      "prompt_ref": "06_生产提示词/03_段落视频提示词/EP01/EP01-SEG04_VIDEO_PROMPT.txt",
+      "storyboard_ref": "03_段落故事板/EP01/PDZJ-001_EP01_SEG04_STORYBOARD_V01_FIXED.png",
+      "aux_reference": null,
+      "params": { "duration": 15, "ratio": "9:16", "model": "sd-2.0", "resolution": "720p" },
+      "output": "04_段落视频/EP01/PDZJ-001_EP01_SEG04_VIDEO_V01.mp4"
+    }
+  ]
+}

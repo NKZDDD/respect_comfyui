@@ -1,16 +1,16 @@
 {
   "last_node_id": 5,
-  "last_link_id": 4,
+  "last_link_id": 5,
   "nodes": [
     {
       "id": 1,
       "type": "RespectApiSettings",
       "pos": [
-        40,
-        60
+        30,
+        40
       ],
       "size": [
-        300,
+        340,
         200
       ],
       "flags": {},
@@ -23,7 +23,7 @@
           "type": "RESPECT_CONFIG",
           "links": [
             1,
-            3
+            4
           ],
           "slot_index": 0
         }
@@ -33,10 +33,10 @@
       },
       "widgets_values": [
         "",
-        "https://YOUR_OCTOPUS_HOST",
-        600,
+        "（填你的章鱼哥网关）",
+        0,
         "",
-        "https://api.aione.help"
+        ""
       ]
     },
     {
@@ -47,8 +47,8 @@
         40
       ],
       "size": [
-        300,
-        200
+        360,
+        420
       ],
       "flags": {},
       "order": 2,
@@ -85,7 +85,8 @@
           "name": "image",
           "type": "IMAGE",
           "links": [
-            2
+            2,
+            3
           ],
           "slot_index": 0
         },
@@ -107,7 +108,7 @@
       },
       "widgets_values": [
         "gpt-image-2",
-        "a corgi astronaut on the moon, cinematic lighting",
+        "水墨风山水，留白，高级灰",
         "auto",
         4,
         600,
@@ -120,12 +121,12 @@
       "id": 3,
       "type": "PreviewImage",
       "pos": [
-        800,
+        820,
         40
       ],
       "size": [
         300,
-        200
+        300
       ],
       "flags": {},
       "order": 3,
@@ -147,12 +148,12 @@
       "id": 4,
       "type": "RespectOctopusVideo",
       "pos": [
-        420,
-        420
+        820,
+        400
       ],
       "size": [
-        300,
-        200
+        360,
+        520
       ],
       "flags": {},
       "order": 4,
@@ -161,12 +162,12 @@
         {
           "name": "api_config",
           "type": "RESPECT_CONFIG",
-          "link": 3
+          "link": 4
         },
         {
           "name": "image_1",
           "type": "IMAGE",
-          "link": null
+          "link": 3
         },
         {
           "name": "image_2",
@@ -195,7 +196,7 @@
           "name": "local_path",
           "type": "STRING",
           "links": [
-            4
+            5
           ],
           "slot_index": 1
         },
@@ -211,7 +212,7 @@
       },
       "widgets_values": [
         "sora-2-12s",
-        "海边日落延时，镜头缓慢推进，电影感",
+        "云雾流动，镜头横移",
         "1280x720",
         5,
         1800,
@@ -226,12 +227,12 @@
       "id": 5,
       "type": "RespectPreviewVideo",
       "pos": [
-        800,
-        420
+        1220,
+        400
       ],
       "size": [
-        300,
-        200
+        340,
+        320
       ],
       "flags": {},
       "order": 5,
@@ -240,7 +241,7 @@
         {
           "name": "video_path",
           "type": "STRING",
-          "link": 4
+          "link": 5
         }
       ],
       "outputs": [
@@ -276,6 +277,14 @@
     ],
     [
       3,
+      2,
+      0,
+      4,
+      1,
+      "IMAGE"
+    ],
+    [
+      4,
       1,
       0,
       4,
@@ -283,7 +292,7 @@
       "RESPECT_CONFIG"
     ],
     [
-      4,
+      5,
       4,
       1,
       5,
@@ -291,7 +300,18 @@
       "STRING"
     ]
   ],
-  "groups": [],
+  "groups": [
+    {
+      "title": "章鱼哥：图片 → 视频",
+      "bounding": [
+        400,
+        0,
+        800,
+        960
+      ],
+      "color": "#3f789e"
+    }
+  ],
   "config": {},
   "extra": {},
   "version": 0.4

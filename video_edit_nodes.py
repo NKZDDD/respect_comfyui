@@ -547,8 +547,7 @@ class RespectConcatVideos:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
-        optional = {"inputcount": ("INT", {"default": 2, "min": 1, "max": 200, "step": 1, "tooltip": "视频接口数量；改完点节点上的『更新输入口』按钮增减 video_N 槽"})}
-        optional.update({f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True, "tooltip": f"第{i+1}个视频路径（接 local_path）"}) for i in range(2)})
+        optional = {f"video_{i + 1}": ("STRING", {"default": "", "forceInput": True, "tooltip": f"第{i+1}个视频路径（接 local_path）"}) for i in range(2)}
         optional.update({
             "folder": ("STRING", {"default": "", "multiline": False, "placeholder": "可选：读取该文件夹内所有视频(按名排序)", "tooltip": "填分镜的 03_videos/<scene> 即可整批拼接"}),
             "extra_paths": ("STRING", {"default": "", "multiline": True, "placeholder": "追加视频路径，每行一个（数量不限）", "tooltip": "超过8个时每行填一个路径"}),
@@ -563,6 +562,8 @@ class RespectConcatVideos:
             "height": ("INT", {"default": 0, "min": 0, "max": 8192}),
             "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
             "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+            # 新控件一律放最后：这样已保存的工作流(旧值)仍能按位对齐
+            "inputcount": ("INT", {"default": 2, "min": 1, "max": 200, "step": 1, "tooltip": "视频接口数量；改完点节点上的『更新输入口』按钮增减 video_N 槽"}),
         })
         return {"required": {}, "optional": optional}
 
