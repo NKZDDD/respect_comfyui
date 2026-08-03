@@ -26,10 +26,23 @@ _test_*.py
 *.key
 secrets.*
 config.local.*
-production_runner/config.json
+
+# 独立仓库：剧本→AI视频自动化生产台（自带 git，单独推送）
+# 见 github.com/NKZDDD/script-to-video-studio
+script-to-video-studio/
+
+# skill 是上面那个仓库的内容，这里只是目录联接（junction）
+.claude/skills/script-to-video-prompts/
+.claude/skills/script-to-video-prompts-v2/
 
 # 生产项目产物（体积大，按需另行备份）
 projects/
+
+# 会话导出的聊天记录（体积大）
+*剧本自动化流程优化.html
+*剧本自动化流程优化_files/
+*Shared Grok Conversation.html
+*Shared Grok Conversation_files/
 
 # 系统
 .DS_Store

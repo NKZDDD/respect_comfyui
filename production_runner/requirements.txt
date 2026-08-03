@@ -1,3 +1,0 @@
-requests>=2.28
-# 可选：装了 Pillow 会把本地参考图压缩到 max_side 再转 base64（省流量、防超限）
-# Pillow>=10.0
