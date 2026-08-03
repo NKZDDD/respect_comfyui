@@ -63,6 +63,21 @@ def _collect_refs(image_tensors, url_texts, cap: int = 9) -> list[str]:
 
 
 ZERO_SIZES = ["1280x720", "1920x1080", "720x1280", "1080x1920", "1024x1024", "1280x960", "960x1280", "832x480", "480x832"]
+# 文档允许的六种比例；size 只在「没显式给 ratio」时才由服务端推断，推断失败会回落 16:9
+ZERO_RATIOS = ["自动(按size推算)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+_RATIO_VALUES = {"21:9": 21 / 9, "16:9": 16 / 9, "4:3": 4 / 3, "1:1": 1.0, "3:4": 3 / 4, "9:16": 9 / 16}
+
+
+def _zero_ratio(size: str, override: str = "") -> str:
+    """从 `宽x高` 算出最接近的官方比例；`override` 非「自动」时直接用它。"""
+    if override and not override.startswith("自动"):
+        return override
+    try:
+        w, h = (size or "").lower().replace("×", "x").split("x")[:2]
+        val = float(int(w)) / float(int(h))
+    except Exception:
+        return ""
+    return min(_RATIO_VALUES.items(), key=lambda kv: abs(kv[1] - val))[0]
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +105,6 @@ class RespectZeroSoraVeo:
                 "model": (ZERO_SORA_MODELS, {"default": "veo_3_1-fast"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "size": (ZERO_SIZES, {"default": "1280x720", "tooltip": "输出尺寸 宽x高"}),
-                "seconds": ("INT", {"default": 0, "min": 0, "max": 60, "tooltip": "时长；0=不传该字段(用服务端默认)。sd2 只支持 5/10/15；veo/sora 一般不需要填"}),
                 "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
@@ -109,6 +123,9 @@ class RespectZeroSoraVeo:
                 "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，自定义 宽x高，覆盖上面"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                # 新控件一律加在最后：已保存的工作流不会错位
+                "aspect_ratio": (ZERO_RATIOS, {"default": "自动(按size推算)", "tooltip": "显式发 aspect_ratio+ratio；不发的话服务端可能回落 16:9"}),
+                "seconds": ("INT", {"default": 0, "min": 0, "max": 60, "tooltip": "时长；0=不传该字段(用服务端默认)。sd2 只支持 5/10/15；veo/sora 一般不需要填"}),
             },
         }
 
@@ -117,10 +134,11 @@ class RespectZeroSoraVeo:
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
-    def generate(self, api_config, model, prompt, size, seconds, poll_interval, poll_timeout, auto_download,
+    def generate(self, api_config, model, prompt, size, poll_interval, poll_timeout, auto_download,
                  first_frame=None, last_frame=None, ref_image_3=None, ref_image_4=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
-                 remix_id="", custom_model="", custom_size="", save_dir="", filename=""):
+                 remix_id="", custom_model="", custom_size="", save_dir="", filename="",
+                 aspect_ratio="自动(按size推算)", seconds=0):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
@@ -128,6 +146,11 @@ class RespectZeroSoraVeo:
         refs = _collect_refs([first_frame, last_frame, ref_image_3, ref_image_4],
                              [ref_url_1, ref_url_2, ref_url_3, ref_url_4])
         body: dict = {"model": model, "prompt": prompt, "size": size}
+        # 显式带上比例（两个别名都发），否则服务端推断失败会变成 16:9
+        ratio = _zero_ratio(size, aspect_ratio)
+        if ratio:
+            body["aspect_ratio"] = ratio
+            body["ratio"] = ratio
         if int(seconds) > 0:
             body["seconds"] = int(seconds)
         if refs:
@@ -200,6 +223,8 @@ class RespectZeroImg2Video:
                 "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，自定义 宽x高"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                # 新控件加在最后：已保存的工作流不会错位
+                "aspect_ratio": (ZERO_RATIOS, {"default": "自动(按size推算)", "tooltip": "显式发 aspect_ratio+ratio；不发的话服务端可能回落 16:9"}),
             },
         }
 
@@ -212,7 +237,8 @@ class RespectZeroImg2Video:
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
                  ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="", extra_image_urls="",
-                 custom_model="", custom_size="", save_dir="", filename=""):
+                 custom_model="", custom_size="", save_dir="", filename="",
+                 aspect_ratio="自动(按size推算)"):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
@@ -224,6 +250,11 @@ class RespectZeroImg2Video:
             cap=9,
         )
         body: dict = {"model": model, "prompt": prompt, "size": size, "duration": int(duration), "stream": False}
+        # 显式带上比例（两个别名都发），否则服务端推断失败会变成 16:9
+        ratio = _zero_ratio(size, aspect_ratio)
+        if ratio:
+            body["aspect_ratio"] = ratio
+            body["ratio"] = ratio
         if len(imgs) == 1:
             body["image"] = imgs[0]
         elif len(imgs) > 1:
