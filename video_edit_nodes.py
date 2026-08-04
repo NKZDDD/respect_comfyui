@@ -576,7 +576,7 @@ class RespectConcatVideos:
     def concat(self, folder: str = "", extra_paths: str = "", mode: str = "auto", keep_audio: bool = True,
                bgm_audio: str = "", bgm_stage: str = "none", bgm_mode: str = "mix(叠加原声)", bgm_volume: float = 1.0,
                out_fps: float = 0.0, width: int = 0, height: int = 0,
-               save_dir: str = "", filename: str = "", **kwargs):
+               save_dir: str = "", filename: str = "", inputcount: int = 2, **kwargs):
         paths: list[str] = []
         # 文件夹优先（按文件名排序）
         folder = (folder or "").strip().strip('"')

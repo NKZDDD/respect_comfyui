@@ -12,7 +12,7 @@ PDF 文字抽取自动尝试 pymupdf(fitz) / pdfplumber / pypdf，任装其一�
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from .loader_nodes import (
     SAMPLE_MODES,

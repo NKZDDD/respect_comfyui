@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Optional
 
-import torch
 
 from .utils import (
     RespectAPIError,
@@ -30,9 +28,9 @@ from .utils import (
     tensors_concat,
 )
 from .video_nodes import _async_poll, _submit_async_video
-from .llm_nodes import _IMG_DONE, _img_status, _img_task_id, _poll_image_task
+from .llm_nodes import _img_status, _img_task_id, _poll_image_task
 
-CATEGORY = "Respect"
+CATEGORY = "Respect/零视工坊"
 
 
 def _ref_b64_or_url(tensor, url: str = "") -> str:
@@ -47,6 +45,52 @@ def _ref_b64_or_url(tensor, url: str = "") -> str:
 
 def _zero_lines(s: str) -> list[str]:
     return [ln.strip() for ln in (s or "").splitlines() if ln.strip()]
+
+
+def _clean_urls(items) -> list[str]:
+    """保序去空的 URL 列表。"""
+    return [u.strip() for u in (items or []) if isinstance(u, str) and u.strip()]
+
+
+def _zero_preflight(urls: list[str], timeout: int = 12) -> list[str]:
+    """**不带鉴权**地试拉每个素材 URL，返回有问题的说明。
+
+    零视会自己去 fetch 这些地址，拉不到就回 `Failed to fetch media URL`——
+    提前用匿名请求验一遍，能直接指出是哪条、什么原因（403 多半是 R2 桶没公开）。
+    """
+    import requests
+
+    problems: list[str] = []
+    for u in urls:
+        # 关键：用「服务器视角」——默认 UA、不带 Range。浏览器能打开不代表服务端能拉：
+        # Cloudflare / 图床可能拦非浏览器 UA，或只放行 GET 不放行 HEAD。
+        head_note = ""
+        try:
+            h = requests.head(u, timeout=timeout, allow_redirects=True)
+            if h.status_code not in (200, 206, 405):   # 405=不支持HEAD，正常
+                head_note = f"（HEAD 返回 {h.status_code}，有些抓取器先发 HEAD 会直接失败）"
+        except Exception as exc:
+            head_note = f"（HEAD 失败: {type(exc).__name__}）"
+
+        try:
+            g = requests.get(u, timeout=timeout, stream=True)
+            code, ctype = g.status_code, g.headers.get("Content-Type", "")
+            server = g.headers.get("Server", "")
+            g.close()
+            if code not in (200, 206):
+                hint = ""
+                if code in (401, 403):
+                    hint = "（非公开可读，或被 CDN 机器人防护拦了非浏览器请求）"
+                elif code == 404:
+                    hint = "（路径不对：检查 public_base_url 有没有多带桶名）"
+                problems.append(f"HTTP {code}{hint}{head_note} server={server or '?'} -> {u}")
+            elif not ctype.startswith(("image/", "video/", "audio/", "application/octet-stream")):
+                problems.append(f"能拉到但 Content-Type={ctype!r}（不是媒体类型，服务端可能拒收）{head_note} -> {u}")
+            elif head_note:
+                problems.append(f"GET 正常但{head_note} -> {u}")
+        except Exception as exc:
+            problems.append(f"{type(exc).__name__}: {exc}{head_note} -> {u}")
+    return problems
 
 
 def _collect_refs(image_tensors, url_texts, cap: int = 9) -> list[str]:
@@ -152,7 +196,7 @@ class RespectZeroSoraVeo:
             body["aspect_ratio"] = ratio
             body["ratio"] = ratio
         if int(seconds) > 0:
-            body["seconds"] = int(seconds)
+            body["seconds"] = str(int(seconds))   # 该网关的 seconds 是字符串类型（发数字会 400 invalid_json）
         if refs:
             # sd2 系走 images 数组；sora/veo 用 input_reference（多图 | 分隔）
             if model.lower().startswith("sd"):
@@ -187,9 +231,9 @@ class RespectZeroImg2Video:
     单张 → image；多张 → images[]。参考图优先公网 URL，否则 IMAGE 转 base64。
     """
 
-    DESCRIPTION = ("零视工坊 图生视频(base_url=zeroapi.ai-ren.cn)。model=seedance_2_fast_480p/vad3/omni_flash/"
-                   "grok-1.5/sd2-fast/sd2-pro，duration(seedance 4-15，sd2 仅5/10/15，其它多为10/20)，"
-                   "size=WxH，单图 image/多图 images[](≤9)。")
+    DESCRIPTION = ("零视工坊 图生视频(base_url=zeroapi.ai-ren.cn)。model=seedance_2_fast_480p/vad3/omni_flash/grok-1.5；"
+                   "duration(seedance 4-15，其它多为10/20)，size=WxH，单图 image/多图 images[](≤9)。"
+                   "⚠️ sd 系请改用『零视工坊 SD2 视频（新接口）』节点——它的字段不一样(duration/aspect_ratio 必填、只收URL)。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -249,7 +293,9 @@ class RespectZeroImg2Video:
              ref_url_6, ref_url_7, ref_url_8, ref_url_9] + _zero_lines(extra_image_urls),
             cap=9,
         )
-        body: dict = {"model": model, "prompt": prompt, "size": size, "duration": int(duration), "stream": False}
+        # duration 给数字、seconds 给字符串（该网关 seconds 是 string 类型），两个都发提高兼容
+        body: dict = {"model": model, "prompt": prompt, "size": size,
+                      "duration": int(duration), "seconds": str(int(duration)), "stream": False}
         # 显式带上比例（两个别名都发），否则服务端推断失败会变成 16:9
         ratio = _zero_ratio(size, aspect_ratio)
         if ratio:
@@ -268,6 +314,146 @@ class RespectZeroImg2Video:
                 local = download_to_output(url, cfg, prefix="zero_i2v", save_dir=save_dir, filename=filename)
             except Exception as exc:
                 print(f"[Respect] 零视工坊 图生视频 下载失败: {exc}")
+        return (url, local, task_id or "")
+
+
+# ---------------------------------------------------------------------------
+# 零视工坊 SD2 视频（新接口，替代原 sd 系）
+# ---------------------------------------------------------------------------
+
+ZERO_SD2_MODELS = ["sd2-fast"]
+ZERO_SD2_DURATIONS = [5, 10, 15]
+ZERO_SD2_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+
+
+class RespectZeroSD2:
+    """零视工坊 SD2 视频（新接口）。`POST /v1/videos` + `GET /v1/videos/{task_id}` 轮询。
+
+    严格照该文档：`{model, prompt, duration(int 5/10/15), aspect_ratio(必填), images[≤9], videos[≤3], audios[≤3]}`。
+    分辨率固定 720P（不用也不能传）。**参考素材只收 HTTPS URL** —— 接「对象存储上传」拿 R2 链接最稳。
+    """
+
+    DESCRIPTION = ("零视工坊 SD2 视频(新接口，替代原 sd 系)。model=sd2-fast，duration 只能 5/10/15，"
+                   "aspect_ratio 必填，720P 固定；images≤9 / videos≤3 / audios≤3 且只收 HTTPS URL。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://zeroapi.ai-ren.cn"}),
+                "model": (ZERO_SD2_MODELS, {"default": "sd2-fast", "tooltip": "上新模型用 custom_model 填"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 10, "min": 5, "max": 15, "tooltip": "只支持 5 / 10 / 15，填别的会自动吸附"}),
+                "aspect_ratio": (ZERO_SD2_RATIOS, {"default": "9:16", "tooltip": "该接口必填"}),
+                "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "ref_url_1": ("STRING", {"default": "", "multiline": False, "placeholder": "参考图 HTTPS URL（接对象存储上传）"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图URL，每行一个（共≤9）"}),
+                "video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频 HTTPS URL，每行一个（≤3）"}),
+                "audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频 HTTPS URL，每行一个（≤3）"}),
+                "image_1": ("IMAGE", {"tooltip": "可接；但填了 ref_url_* 时以 URL 为准（文档说 images 只收公网URL）"}),
+                "image_2": ("IMAGE",),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "verify_urls": ("BOOLEAN", {"default": True, "tooltip": "提交前匿名试拉一遍素材URL，提前指出哪条公网拉不到（避免白花一次生成费）"}),
+                "inputcount": ("INT", {"default": 2, "min": 1, "max": 9, "step": 1, "tooltip": "IMAGE 接口数量；改完点『更新输入口』按钮"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径", "任务 ID")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout,
+                 auto_download, ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
+                 extra_image_urls="", video_urls="", audio_urls="",
+                 custom_model="", save_dir="", filename="", verify_urls=True, inputcount=2, **kwargs):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+        if not (prompt or "").strip():
+            raise RespectAPIError("prompt 必填")
+
+        dur = int(duration)
+        if dur not in ZERO_SD2_DURATIONS:
+            near = min(ZERO_SD2_DURATIONS, key=lambda d: abs(d - dur))
+            print(f"[Respect] 零视 SD2 只支持 duration={ZERO_SD2_DURATIONS}，已把 {dur} 纠正为 {near}")
+            dur = near
+
+        body: dict = {
+            "model": model,
+            "prompt": prompt,
+            "duration": dur,              # 文档：int
+            "aspect_ratio": aspect_ratio,  # 文档：必填
+        }
+
+        urls = _clean_urls([ref_url_1, ref_url_2, ref_url_3, ref_url_4] + _zero_lines(extra_image_urls))
+        # 文档：images 只收公网 HTTPS URL → 不发 base64。
+        # 但不因为「顺手也接了 IMAGE」就报错：填了 URL 就以 URL 为准，只提示一句。
+        tensors = dynamic_image_inputs(kwargs)
+        if tensors and urls:
+            print(f"[Respect] 零视 SD2 按文档只发公网URL，已忽略接入的 {len(tensors)} 张 IMAGE（用的是 ref_url_*）")
+        elif tensors and not urls:
+            raise RespectAPIError(
+                "接了 IMAGE 但没填任何 ref_url_* —— 该接口文档写明 images 只收公网 HTTPS URL，base64 会被判 "
+                "Failed to fetch media URL。\n正确接法：加载图像 → 『Respect 对象存储上传』→ url → 本节点 ref_url_1。\n"
+                "（只想文生视频就把 IMAGE 线拔掉）"
+            )
+        imgs = urls[:9]
+        if imgs:
+            body["images"] = imgs
+        vids = _zero_lines(video_urls)[:3]
+        if vids:
+            body["videos"] = vids
+        auds = _zero_lines(audio_urls)[:3]
+        if auds:
+            body["audios"] = auds
+
+        # 提交前匿名试拉一遍，直接指出哪条素材公网拉不到
+        if verify_urls and (imgs or vids or auds):
+            probs = _zero_preflight(imgs + vids + auds)
+            if probs:
+                raise RespectAPIError(
+                    "以下参考素材**公网访问不到**，零视会报 Failed to fetch media URL：\n  "
+                    + "\n  ".join(probs)
+                    + "\n\n修法：用『Respect 对象存储上传』上传，并确保 public_base_url 填的是能公开访问的域名"
+                      "（R2 要在桶设置里开 r2.dev 子域或绑自定义域名）。\n"
+                      "确认过能公开访问就把 verify_urls 关掉跳过本检查。"
+                )
+
+        print(f"[Respect] 零视 SD2 提交: model={model} duration={dur} aspect_ratio={aspect_ratio} "
+              f"images={len(imgs)} videos={len(vids)} audios={len(auds)}")
+        print(f"[Respect] body={json.dumps(body, ensure_ascii=False)}")
+        try:
+            direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        except RespectAPIError as exc:
+            msg = str(exc)
+            # 网关侧临时故障：它和上游之间超时/被取消，跟入参无关。不自动重试——提交要扣费。
+            if "context canceled" in msg or "read_response_body_failed" in msg or "fail_to_fetch_task" in msg:
+                raise RespectAPIError(
+                    f"{msg}\n\n"
+                    "【判断】零视网关侧的临时故障（它读上游响应时连接被取消/超时），**不是参数问题** —— "
+                    "参考素材这次已经能正常抓取了。\n"
+                    "【建议】① 先去零视后台看这条任务是否其实已创建（避免重复扣费）；"
+                    "② 等 1–2 分钟重跑；③ 反复复现就把下面这段发他们客服。\n"
+                    f"【本次提交】{json.dumps(body, ensure_ascii=False)[:500]}"
+                ) from exc
+            raise
+        url = direct or _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="zero_sd2", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] 零视 SD2 下载失败: {exc}")
         return (url, local, task_id or "")
 
 
@@ -384,11 +570,13 @@ class RespectZeroImage:
 NODE_CLASS_MAPPINGS = {
     "RespectZeroSoraVeo": RespectZeroSoraVeo,
     "RespectZeroImg2Video": RespectZeroImg2Video,
+    "RespectZeroSD2": RespectZeroSD2,
     "RespectZeroImage": RespectZeroImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectZeroSoraVeo": "Respect 零视工坊 Sora2/VEO 视频",
     "RespectZeroImg2Video": "Respect 零视工坊 图生视频",
+    "RespectZeroSD2": "Respect 零视工坊 SD2 视频（新接口）",
     "RespectZeroImage": "Respect 零视工坊 图片（gpt-image-2）",
 }

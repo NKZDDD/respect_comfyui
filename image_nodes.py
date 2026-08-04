@@ -25,7 +25,7 @@ from .utils import (
     tensors_concat,
 )
 
-CATEGORY = "Respect"
+CATEGORY = "Respect/小裴"
 
 
 # ---------------------------------------------------------------------------
@@ -433,8 +433,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RespectImageGenerate": "Respect 图片生成",
-    "RespectImageMultiRef": "Respect 多参考图编辑",
-    "RespectGPTLocalImage": "Respect GPT本地版生图",
-    "RespectImageChat": "Respect 多模态对话生图",
+    "RespectImageGenerate": "Respect 小裴 图片生成",
+    "RespectImageMultiRef": "Respect 小裴 多参考图编辑",
+    "RespectGPTLocalImage": "Respect 小裴 GPT本地版生图",
+    "RespectImageChat": "Respect 小裴 多模态对话生图",
 }

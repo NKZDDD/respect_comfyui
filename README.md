@@ -1,7 +1,11 @@
 # Respect ComfyUI 扩展
 
 把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭），
-并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **54 个节点**，全部在 ComfyUI 的 **`Respect`** 分类下。
+并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **61 个节点**。
+
+节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
+子分类下；通用工具（配置、文本、剪辑、上传、预览）留在 **`Respect`** 根分类，分镜在 `Respect/分镜`、LLM 在 `Respect/LLM`。
+**显示名都带网关名**（如「Respect 小裴 SD2.0 全系列视频」），一眼能看出属于谁。
 
 覆盖能力：
 
@@ -125,16 +129,17 @@ pip install -r respect_comfyui/requirements.txt
 | 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401** |
 | 坤鸡 | 视频参考图 **multipart 直传**不经图床；图片 `response_format` 必填（`b64_json`）。**图片和视频的 base_url 不同**，demo 里放了两个 API 设置节点 |
 | 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
-| 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`sd2-fast/pro` 支持九图；`grok preview` 只能 1 张图 |
-| 灵感鸭 | 三步式：提交 → 查询 → `/content`；`size` 是**比例**、`seconds` 才是时长；SD 系要顶层 `resolution` + `extra{}` |
+| 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`seconds` 是**字符串**类型（发数字会 400 invalid_json）；比例必须**显式发 `aspect_ratio`+`ratio`**，只给 `size` 它会回落 16:9；**sd 系已迁到新接口**（用「SD2 视频（新接口）」节点） |
+| 灵感鸭 | 三步式：提交 → 查询 → `/content`；`size` 是**比例**、`seconds` 才是时长（sd 传整数、其余字符串）；每个模型 `seconds` 是**固定档位**（sora-2 只有 4/8/12、veo 只有 8、grok 只有 10/15）；SD 系要顶层 `resolution`，且**有参考图时 `extra.reference_mode` 必填**（`media`/`frame`）；吊炸天模型在**单独文档**里（`sd-2.0`/`sd-fast`/`-special`），不在统一接口的模型表 |
 | 鹤 / paisio | 参考图**只吃 data URI 内联**（节点自动转 1024px JPEG q80），走外部图床会被拒；有**虚拟资产接口**可传参考视频/音频 |
 
 **模型名典型坑**：
 
-| 想要 | 小裴叫 | 坤鸡 / 零视工坊叫 |
-|---|---|---|
-| Grok 视频 | `grok-video` | `grok-imagine-video-1.5-fast` / `grok-imagine-1.0-video` / `grok-imagine-video-1.5-preview` |
-| SD2 | `sd2-720p-fast` / `sd2-1080p` … | 零视工坊：`sd2-fast` / `sd2-pro`；灵感鸭：`sd-2.0` / `sd-fast` |
+| 想要 | 小裴 | 坤鸡 | 零视工坊 | 灵感鸭 | 鹤 / paisio |
+|---|---|---|---|---|---|
+| Grok 视频 | `grok-video` | `grok-imagine-video-1.5-fast` / `-1.0-video` / `-1.5-preview` | `grok-1.5` | `grok-imagine-video-1.5-preview` 等 | — |
+| SD 系 | `sd2-720p-fast` / `sd2-1080p` / `sd2-720p-mini` … | — | **`sd2-fast`**（新接口，720P固定） | `sd-2.0` / `sd-fast` / `sd-2.0-special` / `sd-fast-special` | `sd2-pro-720p` / `sd2-*` / `sd3-*` |
+| VEO | `firefly-veo31-*` | — | `veo_3_1-fast`（连字符） | `veo_3_1_fast`（**下划线**） | — |
 
 > 填错就会看到 `503 No available channel for model xxx under group default` —— 那是网关没这个模型，不是插件的错。
 
@@ -155,11 +160,11 @@ pip install -r respect_comfyui/requirements.txt
 
 | 节点 | 显示名 | 功能 |
 |---|---|---|
-| `RespectImageGenerate` | Respect 图片生成 | `POST /v1/images/generations` |
-| `RespectImageMultiRef` | Respect 多参考图编辑 | `POST /v1/responses`，最多 7 张 |
-| `RespectGPTLocalImage` | Respect GPT本地版生图 | `/responses` → 失败降级 `/images/generations` |
-| `RespectImageChat` | Respect 多模态对话生图 | `POST /v1/chat/completions` (stream) |
-| `RespectOpenAIImage` | Respect image2 文生图/图生图 (aicopy) | gpt-image-2 / gpt-image-1-direct，支持 1k/2k/4k、参考图 |
+| `RespectImageGenerate` | Respect 小裴 图片生成 | `POST /v1/images/generations` |
+| `RespectImageMultiRef` | Respect 小裴 多参考图编辑 | `POST /v1/responses`，最多 7 张 |
+| `RespectGPTLocalImage` | Respect 小裴 GPT本地版生图 | `/responses` → 失败降级 `/images/generations` |
+| `RespectImageChat` | Respect 小裴 多模态对话生图 | `POST /v1/chat/completions` (stream) |
+| `RespectOpenAIImage` | Respect 小裴 image2 文生图/图生图 | gpt-image-2 / gpt-image-1-direct，支持 1k/2k/4k、参考图 |
 | `RespectOctopusImage` | Respect 章鱼哥 异步图片 | gpt-image-2 / nano_banana，异步 → IMAGE |
 | `RespectLingganyaImage` | Respect 灵感鸭 统一图片 | `POST /v1/images/generations?async=true` 三步式 |
 
@@ -167,21 +172,21 @@ pip install -r respect_comfyui/requirements.txt
 
 | 节点 | 显示名 | 功能 |
 |---|---|---|
-| `RespectFireflySora2` | Respect Firefly Sora2 视频 | chat stream，4/8/12 秒 |
-| `RespectFireflyVeo31` | Respect Firefly VEO3.1 视频 | chat stream，4/6/8 秒，720p/1080p |
-| `RespectFireflyRunway45` | Respect Firefly Runway 4.5 视频 | chat stream，5/10 秒 |
-| `RespectFireflyKling3` | Respect Firefly 可灵3.0 视频 | chat stream |
-| `RespectSoraV3Video` | Respect Sora V3 视频 | 异步 `/v1/videos` + `video_config` |
-| `RespectSD2Video` | Respect 即梦/SD2 视频 | 异步 `/v1/videos`，有参考图自动 multipart |
-| `RespectGrokVideo` | Respect Grok 视频 | 1.0 体 / 1.5 体两种 body，最多 7 张参考图 |
-| `RespectSD2AllVideo` | Respect SD2.0 全系列视频 | 按秒计费全系，九图，支持 `ref_url_1..9` 直填 URL |
-| `RespectSeedance9Video` | Respect Seedance9 九图/稳定版视频 | fast / 官方稳定，九图，支持 `ref_url_1..9` |
-| `RespectSeedanceFourRefVideo` | Respect Seedance 四参考图视频 | `/v1/video/generations`，四图，支持 `ref_url_1..4` |
-| `RespectSeedanceUniversal` | Respect Seedance 通用异步视频 | 通用 `/v1/videos`，9 图（IMAGE 或 URL），自动补 `@ImageN` |
-| `RespectGrokVideoXiaopei` | Respect Grok-Video 视频（小裴分支） | 模型 `grok-video`，上传换公网 URL |
-| `RespectGrokVideoNew` | Respect Grok-Video 视频（坤鸡分支） | `grok-imagine-*` 三模型，multipart 直传参考图 |
-| `RespectHappyHorseVideo` | Respect HappyHorse 快乐马视频 | `/v1/videos`，`parameters` + 参考图 |
-| `RespectLowCostMultiVideo` | Respect 低价多渠道视频 | 可灵 / 快乐马 / gemini-omni，含音频 |
+| `RespectFireflySora2` | Respect 小裴 Firefly Sora2 视频 | chat stream，4/8/12 秒 |
+| `RespectFireflyVeo31` | Respect 小裴 Firefly VEO3.1 视频 | chat stream，4/6/8 秒，720p/1080p |
+| `RespectFireflyRunway45` | Respect 小裴 Firefly Runway 4.5 视频 | chat stream，5/10 秒 |
+| `RespectFireflyKling3` | Respect 小裴 Firefly 可灵3.0 视频 | chat stream |
+| `RespectSoraV3Video` | Respect 小裴 Sora V3 视频 | 异步 `/v1/videos` + `video_config` |
+| `RespectSD2Video` | Respect 小裴 即梦/SD2 视频 | 异步 `/v1/videos`，有参考图自动 multipart |
+| `RespectGrokVideo` | Respect 小裴 Grok 视频 | 1.0 体 / 1.5 体两种 body，最多 7 张参考图 |
+| `RespectSD2AllVideo` | Respect 小裴 SD2.0 全系列视频 | 按秒计费全系，九图，支持 `ref_url_1..9` 直填 URL |
+| `RespectSeedance9Video` | Respect 小裴 Seedance9 九图/稳定版视频 | fast / 官方稳定，九图，支持 `ref_url_1..9` |
+| `RespectSeedanceFourRefVideo` | Respect 小裴 Seedance 四参考图视频 | `/v1/video/generations`，四图，支持 `ref_url_1..4` |
+| `RespectSeedanceUniversal` | Respect 鹤 Seedance 通用异步视频（旧版） | 通用 `/v1/videos`，9 图（IMAGE 或 URL），自动补 `@ImageN` |
+| `RespectGrokVideoXiaopei` | Respect 小裴 Grok-Video 视频 | 模型 `grok-video`，上传换公网 URL |
+| `RespectGrokVideoNew` | Respect 坤鸡 Grok-Video 视频 | `grok-imagine-*` 三模型，multipart 直传参考图 |
+| `RespectHappyHorseVideo` | Respect 小裴 HappyHorse 快乐马视频 | `/v1/videos`，`parameters` + 参考图 |
+| `RespectLowCostMultiVideo` | Respect 小裴 低价多渠道视频（可灵/快乐马/omni） | 可灵 / 快乐马 / gemini-omni，含音频 |
 | `RespectSaveVideo` | Respect 保存视频 | 下载视频 URL 到本地 |
 
 **视频（其它网关）**
@@ -191,7 +196,8 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectOctopusVideo` | Respect 章鱼哥 异步视频 | sora / omni / veo，异步提交 |
 | `RespectOctopusQuery` | Respect 章鱼哥 任务查询 | 用 `task_id` 单独查结果 |
 | `RespectZeroSoraVeo` | Respect 零视工坊 Sora2/VEO 视频 | `size=WxH`，`input_reference` 多图 `\|` 分隔，`remix_id` 续 15 秒 |
-| `RespectZeroImg2Video` | Respect 零视工坊 图生视频 | vad3 / omni_flash / grok-1.5 / seedance_2 / sd2-fast / sd2-pro，**九图** |
+| `RespectZeroImg2Video` | Respect 零视工坊 图生视频 | vad3 / omni_flash / grok-1.5 / seedance_2，**九图** |
+| `RespectZeroSD2` | Respect 零视工坊 SD2 视频（新接口） | `sd2-fast`，`duration` 只能 5/10/15、`aspect_ratio` 必填、720P 固定；`images≤9` / `videos≤3` / `audios≤3` **只收 HTTPS URL** |
 | `RespectZeroImage` | Respect 零视工坊 图片 | `/v1/images/generations`，异步自动轮询；quality/style/response_format |
 | `RespectLingganyaVideo` | Respect 灵感鸭 统一视频（sora/SD） | `size`=比例、`seconds`=时长；SD 带顶层 `resolution` + `extra{}` |
 | `RespectHeVideo` | Respect 鹤 视频 | sd2/sd3/seedance2.0 全系；参考图自动 data URI；`compat_metadata` |
@@ -271,22 +277,22 @@ pip install -r respect_comfyui/requirements.txt
 
 ## 图片节点
 
-### Respect 图片生成
+### Respect 小裴 图片生成
 
 走 `/v1/images/generations`。选 `model_family` 自动拼模型 ID，或选 `自定义/custom` 后填 `custom_model`。
 传入单张 `reference_image` 时会附加到 `image` 字段（Grok 风格通道用）。
 
 模型 ID 已含 `1k/2k/4k` 或 `1024x1024` 时不会再加 `size`。
 
-### Respect 多参考图编辑
+### Respect 小裴 多参考图编辑
 
 走 `/v1/responses`，`image_1` ~ `image_7` 最多 7 张参考图，`model` 可填 `GPT本地版` 或任意支持 `/responses` 的模型。
 
-### Respect GPT本地版生图
+### Respect 小裴 GPT本地版生图
 
 `GPT本地版` 开头的模型优先 `/responses`，失败自动降级 `/images/generations`；其他应急模型直接走 `/images/generations`。
 
-### Respect 多模态对话生图
+### Respect 小裴 多模态对话生图
 
 走 `/v1/chat/completions`（流式），从返回文本里解析图片 URL / base64，适合 firefly-nano-banana 等通过 chat 返回的模型。
 
@@ -457,7 +463,7 @@ ComfyUI 官方只给图片做了上传按钮，视频这个按钮由 `web/respec
 ### Respect 查看图像
 
 输入 IMAGE，直接在节点内显示（行为同核心 PreviewImage）。可接任意输出 IMAGE 的节点，如
-**Respect 图片生成**、**Respect ZIP批量加载图片**。
+**Respect 小裴 图片生成**、**Respect ZIP批量加载图片**。
 
 ### Respect 查看视频
 
@@ -488,7 +494,7 @@ ComfyUI 官方只给图片做了上传按钮，视频这个按钮由 `web/respec
 ### 文生图
 
 ```text
-Respect API 设置  →  Respect 图片生成  →  PreviewImage
+Respect API 设置  →  Respect 小裴 图片生成  →  PreviewImage
 ```
 
 ### 批量参考图 → 批量出视频
@@ -497,7 +503,7 @@ Respect API 设置  →  Respect 图片生成  →  PreviewImage
 Respect ZIP批量加载图片 (mode=increment, batch=1)
         │ images
         ▼
-Respect Firefly VEO3.1 视频 (first_frame)
+Respect 小裴 Firefly VEO3.1 视频 (first_frame)
         │ local_path
         ▼
 （每次 Queue 自动换下一张参考图，遍历整个 ZIP）
@@ -506,7 +512,7 @@ Respect Firefly VEO3.1 视频 (first_frame)
 ### 即梦 SD2 首尾帧
 
 ```text
-Respect API 设置  →  Respect 即梦/SD2 视频
+Respect API 设置  →  Respect 小裴 即梦/SD2 视频
 LoadImage(首) →  ref_image_1
 LoadImage(尾) →  ref_image_2
 model = sd2-720p, aspect_ratio = 16:9, duration = 5

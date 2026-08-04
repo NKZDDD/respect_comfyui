@@ -618,7 +618,7 @@ class RespectOpenAIImage:
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("image", "model_used", "size_used")
     FUNCTION = "generate"
-    CATEGORY = "Respect"
+    CATEGORY = "Respect/小裴"
 
     def generate(
         self,
@@ -821,6 +821,6 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectChatLLM": "Respect Chat 对话 (OpenAI)",
     "RespectResponsesLLM": "Respect Responses 代码 (Codex)",
-    "RespectOpenAIImage": "Respect image2 文生图/图生图 (aicopy)",
+    "RespectOpenAIImage": "Respect 小裴 image2 文生图/图生图",
     "RespectClaudeLLM": "Respect Claude 对话 (Anthropic)",
 }

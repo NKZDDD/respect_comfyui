@@ -22,7 +22,6 @@ import base64
 import io
 import json
 import time
-from typing import Any, Optional
 
 import torch
 from PIL import Image
@@ -40,7 +39,7 @@ from .utils import (
     tensor_to_pil,
     tensors_concat,
 )
-from .video_nodes import _async_poll, _async_status, _sd2_extract_task_id, _submit_async_video
+from .video_nodes import _async_poll, _submit_async_video
 
 CATEGORY = "Respect/鹤"
 

@@ -19,6 +19,7 @@ const TABLE = {
     RespectHeVideo: IMAGE_PORTS,         // 鹤 视频（参考图）
     RespectHeImageEdit: IMAGE_PORTS,     // 鹤 图生图/多图融合（≤16）
     RespectKunjiImage: IMAGE_PORTS,      // 坤鸡 图片
+    RespectZeroSD2: IMAGE_PORTS,         // 零视工坊 SD2（IMAGE 槽保留，但按文档只发 ref_url_*）
 };
 
 app.registerExtension({

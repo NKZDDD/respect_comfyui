@@ -12,14 +12,12 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
+from typing import Optional
 
 import torch
 
 from .utils import (
     RespectAPIError,
-    api_request,
     dynamic_image_inputs,
     ensure_config,
     expand_image_frames,

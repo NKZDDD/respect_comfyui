@@ -21,9 +21,7 @@ import mimetypes
 import os
 import time
 import uuid
-from typing import Any, Optional
 
-import torch
 
 from .utils import tensor_to_pil
 

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, Optional
@@ -35,7 +36,7 @@ from .video_nodes import (
     _ASYNC_FAIL,
 )
 
-CATEGORY = "Respect"
+CATEGORY = "Respect/小裴"
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +682,7 @@ class RespectGrokVideoNew:
     RETURN_NAMES = ("video_url", "local_path", "task_id")
     OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/后续用这个）", "任务 ID")
     FUNCTION = "generate"
-    CATEGORY = CATEGORY
+    CATEGORY = "Respect/坤鸡"
 
     def generate(self, api_config, model, prompt, generation_mode, duration, aspect_ratio, resolution,
                  poll_interval, poll_timeout, auto_download,
@@ -1121,7 +1122,7 @@ class RespectSeedanceUniversal:
     RETURN_NAMES = ("video_url", "local_path", "task_id")
     OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/后续用这个）", "任务 ID")
     FUNCTION = "generate"
-    CATEGORY = CATEGORY
+    CATEGORY = "Respect/鹤"
 
     def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout, auto_download,
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
@@ -1189,12 +1190,12 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RespectSD2AllVideo": "Respect SD2.0 全系列视频",
-    "RespectSeedance9Video": "Respect Seedance9 九图/稳定版视频",
-    "RespectSeedanceFourRefVideo": "Respect Seedance 四参考图视频",
-    "RespectSeedanceUniversal": "Respect Seedance 通用异步视频",
-    "RespectGrokVideoNew": "Respect Grok-Video 视频（坤鸡分支）",
-    "RespectGrokVideoXiaopei": "Respect Grok-Video 视频（小裴分支）",
-    "RespectHappyHorseVideo": "Respect HappyHorse 快乐马视频",
-    "RespectLowCostMultiVideo": "Respect 低价多渠道视频（可灵/快乐马/omni）",
+    "RespectSD2AllVideo": "Respect 小裴 SD2.0 全系列视频",
+    "RespectSeedance9Video": "Respect 小裴 Seedance9 九图/稳定版视频",
+    "RespectSeedanceFourRefVideo": "Respect 小裴 Seedance 四参考图视频",
+    "RespectSeedanceUniversal": "Respect 鹤 Seedance 通用异步视频（旧版）",
+    "RespectGrokVideoNew": "Respect 坤鸡 Grok-Video 视频",
+    "RespectGrokVideoXiaopei": "Respect 小裴 Grok-Video 视频",
+    "RespectHappyHorseVideo": "Respect 小裴 HappyHorse 快乐马视频",
+    "RespectLowCostMultiVideo": "Respect 小裴 低价多渠道视频（可灵/快乐马/omni）",
 }

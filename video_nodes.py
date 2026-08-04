@@ -24,7 +24,7 @@ from .utils import (
 )
 
 
-CATEGORY = "Respect"
+CATEGORY = "Respect/小裴"
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +594,7 @@ class RespectSaveVideo:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("local_path",)
     FUNCTION = "save"
-    CATEGORY = CATEGORY
+    CATEGORY = "Respect"
     OUTPUT_NODE = True
 
     def save(
@@ -1185,12 +1185,12 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RespectFireflySora2": "Respect Firefly Sora2 视频",
-    "RespectFireflyVeo31": "Respect Firefly VEO3.1 视频",
-    "RespectFireflyRunway45": "Respect Firefly Runway 4.5 视频",
-    "RespectFireflyKling3": "Respect Firefly 可灵3.0 视频",
-    "RespectSoraV3Video": "Respect Sora V3 视频",
-    "RespectGrokVideo": "Respect Grok 视频",
-    "RespectSD2Video": "Respect 即梦/SD2 视频",
+    "RespectFireflySora2": "Respect 小裴 Firefly Sora2 视频",
+    "RespectFireflyVeo31": "Respect 小裴 Firefly VEO3.1 视频",
+    "RespectFireflyRunway45": "Respect 小裴 Firefly Runway 4.5 视频",
+    "RespectFireflyKling3": "Respect 小裴 Firefly 可灵3.0 视频",
+    "RespectSoraV3Video": "Respect 小裴 Sora V3 视频",
+    "RespectGrokVideo": "Respect 小裴 Grok 视频",
+    "RespectSD2Video": "Respect 小裴 即梦/SD2 视频",
     "RespectSaveVideo": "Respect 保存视频",
 }
