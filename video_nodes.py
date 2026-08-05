@@ -367,8 +367,9 @@ class RespectFireflyRunway45:
 
 
 SD2_MODELS = [
-    "sd2-720p-fast", "sd2-720p", "sd2-1080p-fast", "sd2-1080p",
-    "sd2-720p-min-fast", "sd2-720p-min",
+    # 照 3.3.25 文档「sd2.0全系原不卡蒸（按秒）」分支的真实模型名（原来写成 -min 是错的，没有这个模型）
+    "sd2-720p-fast", "sd2-720p", "sd2-720p-mini",
+    "sd2-1080p-fast", "sd2-1080p", "sd2-1080p-mini",
 ]
 SD2_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
@@ -990,8 +991,9 @@ GROK_VIDEO_VARIANTS = [
     "grok-imagine-video-1.5-fast",
     "grok-imagine-video-preview",
     "grok-imagine-video-1.5-preview",
-    "grok-1.5-官转接口",
-    "grok-1.5-备用接口",
+    # 3.3.25 文档里 1.5 的官转/备用带 -fast-（原来漏了，会 503 no available channel）
+    "grok-1.5-fast-官转接口",
+    "grok-1.5-fast-备用接口",
 ]
 # 1.0 体：duration + video_config + reference_images（文生/首帧/多参考≤7）
 _GROK_ONE_CLASS = {

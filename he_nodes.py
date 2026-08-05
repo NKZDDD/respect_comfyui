@@ -89,6 +89,21 @@ def _he_png_bytes(tensor, max_side: int = 2048) -> bytes:
     return base64.b64decode(b[0].split(",", 1)[1])
 
 
+def _he_brief(body: dict) -> str:
+    """请求体压成一行日志：base64/长串截断，方便核对到底发了什么字段。"""
+    def shrink(v):
+        if isinstance(v, str):
+            if v.startswith("data:"):
+                return f"<{v.split(',', 1)[0]} {len(v)}字符>"
+            return v if len(v) <= 80 else v[:77] + "…"
+        if isinstance(v, list):
+            return [shrink(x) for x in v]
+        if isinstance(v, dict):
+            return {k: shrink(x) for k, x in v.items()}
+        return v
+    return json.dumps({k: shrink(v) for k, v in body.items()}, ensure_ascii=False)
+
+
 def _he_items_to_tensor(items: list, cfg) -> torch.Tensor:
     tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
     if not tensors:
@@ -175,7 +190,15 @@ class RespectHeVideo:
         elif refs:
             # 只发文档字段时，参考图只能塞 image_url
             body.setdefault("image_url", refs[0])
+            if body.get("image_url", "").startswith("data:"):
+                print("[Respect] 提醒：compat_metadata 已关，把 data URI 放进了 image_url —— "
+                      "文档这个字段是公网 URL，服务端若去 fetch 会失败。建议改填公网URL（接对象存储上传）。")
 
+        print(f"[Respect] 鹤 视频提交 POST /v1/videos  body={_he_brief(body)}")
+        if refs and "images" in body:
+            print("[Respect] 注意：images[]+metadata 是即梦/豆包兼容写法（实测于 sd2-pro-720p）。"
+                  "文档只列了 image_url；sd3/其它系列若出片不参考图，把 compat_metadata 关掉、"
+                  "改成把公网URL填进 image_url 再试。")
         direct, task_id = _submit_async_video(cfg, body, timeout=300)
         video_url = direct or _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
         local = ""

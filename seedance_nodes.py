@@ -65,11 +65,19 @@ def _extract_upload_token(data: Any) -> str:
     return ""
 
 
-def _upload_reference(cfg, tensor: torch.Tensor, index: int = 1) -> str:
-    """把参考图上传换公网 URL。默认发 {upload_base}/v1/uploads（字段 image），/v1/upload 兜底。"""
-    data = _tensor_to_jpeg_bytes(tensor, max_side=1536, quality=90)
-    if not data:
-        raise RespectAPIError(f"参考图{index} 为空，无法上传")
+def _upload_media(cfg, blob: bytes, filename: str, kind: str = "image", content_type: str = "") -> str:
+    """把本地素材上传换公网 URL（共享素材上传服务）。
+
+    文档 3.3.25：`POST {upload_base}/v1/uploads`，`/v1/upload` 兜底；
+    **multipart 字段名按素材类型**取 `image` / `video` / `audio`（原来固定用 image，视频/音频会传失败）。
+    单文件上限：图片 15MB，视频/音频 64MB。
+    """
+    if not blob:
+        raise RespectAPIError(f"{filename} 内容为空，无法上传")
+    limit = 15 * 1024 * 1024 if kind == "image" else 64 * 1024 * 1024
+    if len(blob) > limit:
+        raise RespectAPIError(f"{filename} 有 {len(blob) / 1048576:.1f}MB，超过{kind}上限 {limit // 1048576}MB")
+    ctype = content_type or {"image": "image/jpeg", "video": "video/mp4", "audio": "audio/mpeg"}.get(kind, "application/octet-stream")
     base = cfg.resolve_upload_base()
     last_err: Optional[Exception] = None
     for endpoint in ("/v1/uploads", "/v1/upload"):
@@ -77,7 +85,7 @@ def _upload_reference(cfg, tensor: torch.Tensor, index: int = 1) -> str:
         try:
             resp = api_request(
                 cfg, "POST", url,
-                files=[("image", (f"ref_{index}.jpg", data, "image/jpeg"))],
+                files=[(kind, (filename, blob, ctype))],
                 retries=1, timeout=max(cfg.timeout, 300),
             )
         except RespectAPIError as exc:
@@ -92,7 +100,36 @@ def _upload_reference(cfg, tensor: torch.Tensor, index: int = 1) -> str:
         if token:
             return token
         last_err = RespectAPIError(f"上传未返回可用引用(url/name): {json.dumps(payload, ensure_ascii=False)[:300]}")
-    raise last_err or RespectAPIError("参考图上传失败")
+    raise last_err or RespectAPIError(f"{kind} 素材上传失败")
+
+
+def _upload_reference(cfg, tensor: torch.Tensor, index: int = 1) -> str:
+    """参考图 IMAGE → 公网 URL（走共享素材上传，字段名 image）。"""
+    data = _tensor_to_jpeg_bytes(tensor, max_side=1536, quality=90)
+    if not data:
+        raise RespectAPIError(f"参考图{index} 为空，无法上传")
+    return _upload_media(cfg, data, f"ref_{index}.jpg", kind="image", content_type="image/jpeg")
+
+
+def _upload_local_file(cfg, path: str) -> str:
+    """本地视频/音频文件 → 公网 URL（按扩展名自动选 video/audio 字段）。"""
+    import mimetypes
+    import os
+
+    path = (path or "").strip().strip('"')
+    if not os.path.isfile(path):
+        raise RespectAPIError(f"找不到文件: {path}")
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"):
+        kind = "video"
+    elif ext in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"):
+        kind = "audio"
+    else:
+        kind = "image"
+    with open(path, "rb") as f:
+        blob = f.read()
+    ctype = mimetypes.guess_type(path)[0] or ""
+    return _upload_media(cfg, blob, os.path.basename(path), kind=kind, content_type=ctype)
 
 
 def _upload_all(cfg, tensors: list[Optional[torch.Tensor]]) -> list[str]:
@@ -253,6 +290,8 @@ class RespectSD2AllVideo:
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
                 # 新控件加在最后：已保存的工作流不会错位
                 "ref_mode": (SD_REF_MODES, {"default": "上传换URL(图床)", "tooltip": "接入 IMAGE 时怎么传：图床上传(仅aicopy系key)/data URI 内联(paisio 等外部网关用这个)"}),
+                "reference_video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤3，文档字段 videos）"}),
+                "reference_audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤3，文档字段 audios）"}),
             },
         }
 
@@ -268,7 +307,8 @@ class RespectSD2AllVideo:
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
                  ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
                  ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
-                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)"):
+                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)",
+                 reference_video_urls="", reference_audio_urls=""):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
@@ -288,6 +328,13 @@ class RespectSD2AllVideo:
         }
         if image_urls:
             body["images"] = image_urls
+        # 文档 3.3.25 #16：该分支还支持参考视频/音频（各 ≤3），字段名 videos / audios
+        vids = [ln.strip() for ln in (reference_video_urls or "").splitlines() if ln.strip()][:3]
+        if vids:
+            body["videos"] = vids
+        auds = [ln.strip() for ln in (reference_audio_urls or "").splitlines() if ln.strip()][:3]
+        if auds:
+            body["audios"] = auds
 
         direct, task_id = _submit_async_video(cfg, body, timeout=300)
         return _finalize_sd(cfg, direct, task_id, poll_interval, poll_timeout,

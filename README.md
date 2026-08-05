@@ -1,7 +1,7 @@
 # Respect ComfyUI 扩展
 
 把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭），
-并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **61 个节点**。
+并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **65 个节点**。
 
 节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
 子分类下；通用工具（配置、文本、剪辑、上传、预览）留在 **`Respect`** 根分类，分镜在 `Respect/分镜`、LLM 在 `Respect/LLM`。
@@ -10,7 +10,7 @@
 覆盖能力：
 
 - **图片**：文生图、单图/多图参考、image2（含 4K）、GPT 本地版、多模态对话兜底、章鱼哥/灵感鸭异步图片
-- **视频**：Firefly Sora2 / VEO3.1 / Runway4.5 / 可灵3.0、Sora V3、即梦 SD2、Seedance 全系（含九图）、
+- **视频**：小裴 16 个分支全覆盖（Firefly 系、Sora V3、即梦 SD2 全系、SD2 按次/ad/最低渠道、SD 轮换、VEO、Omni 生成+编辑、Grok 含16/20秒、快乐马、低价多渠道）、
   Grok（小裴 / 坤鸡 双分支）、快乐马、低价多渠道、章鱼哥、零视工坊 Sora2/VEO + 图生视频、灵感鸭统一视频
 - **LLM**：Chat(OpenAI) / Responses(Codex) / Claude(Anthropic)，都带 `response_format` + `json_schema`
 - **文本**：分段提取（动态输出口）、取第N段、文字输入 / 合并 / 显示、提取镜头秒数
@@ -126,7 +126,7 @@ pip install -r respect_comfyui/requirements.txt
 
 | 网关 | 要注意 |
 |---|---|
-| 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401** |
+| 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401**。**16 个分支的字段互不相同**（见下方节点表）：光模型名对了不代表能用，`sd2-720p-mini` 不是 `-min`、1.5 的官转/备用要带 `-fast-`。素材上传的 multipart 字段名按类型取 `image`/`video`/`audio`，单文件上限 图片 15MB / 视频音频 64MB |
 | 坤鸡 | 视频参考图 **multipart 直传**不经图床；图片 `response_format` 必填（`b64_json`）。**图片和视频的 base_url 不同**，demo 里放了两个 API 设置节点 |
 | 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
 | 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`seconds` 是**字符串**类型（发数字会 400 invalid_json）；比例必须**显式发 `aspect_ratio`+`ratio`**，只给 `size` 它会回落 16:9；**sd 系已迁到新接口**（用「SD2 视频（新接口）」节点） |
@@ -188,6 +188,18 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectHappyHorseVideo` | Respect 小裴 HappyHorse 快乐马视频 | `/v1/videos`，`parameters` + 参考图 |
 | `RespectLowCostMultiVideo` | Respect 小裴 低价多渠道视频（可灵/快乐马/omni） | 可灵 / 快乐马 / gemini-omni，含音频 |
 | `RespectSaveVideo` | Respect 保存视频 | 下载视频 URL 到本地 |
+
+**小裴其余分支**（照 3.3.25 文档补齐，字段结构各不相同 → `xiaopei_video_nodes.py`）
+
+| 节点 | 显示名 | 文档分支 / 关键字段 |
+|---|---|---|
+| `RespectXPSd2Native` | Respect 小裴 SD2 全系/火山官方（按秒） | #13 #14：`start_image_url`+`end_image_url` 首尾帧、`extra_images`(≤9)/`extra_videos`/`extra_audios`(各≤3) |
+| `RespectXPSd2Lowest` | Respect 小裴 SD2 最低渠道（双端点） | #15：文生·单首帧→`/v1/videos`(`input_reference`)；首尾帧/多参考→`/v1/video/generations`(`image_references[]`)，轮询也换路径，带 `Idempotency-Key` |
+| `RespectXPSd2PerUse` | Respect 小裴 SD2 按次/ad渠道（嵌套input） | #11 #12：**`input{prompt, media:[{type,url}]}`** 嵌套结构，固定 15 秒，`size` 由单位名决定 |
+| `RespectXPSdRotate` | Respect 小裴 SD 轮换渠道（动态调价） | #10：固定 720p，`first_frame_url`/`last_frame_url`/`reference_image_urls` + `reference_videos`/`reference_audios` |
+| `RespectXPVeo` | Respect 小裴 VEO 视频生成 | #9：模型固定 `veo视频生成`，4/6/8 秒，固定 720p+`generate_audio`，`image_urls` 1张=首帧 / 2张=首尾帧 |
+| `RespectXPOmni` | Respect 小裴 Omni 生成/编辑 | #8：固定 10 秒，`first_image_url`/`last_image_url`/`images`(≤5)/`video_url`/`videos`(≤2)，含带/无水印 4 个单位 |
+| `RespectXPGrok16` | Respect 小裴 Grok 16/20秒 | #4：`seconds`(字符串)+`size`(WxH)+`image_reference`(单首帧)，轮询优先用返回的 `status_url` |
 
 **视频（其它网关）**
 

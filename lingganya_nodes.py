@@ -152,9 +152,12 @@ def _lg_fit_video(body: dict) -> dict:
         extra = body.setdefault("extra", {})
         mode = str(extra.get("reference_mode") or "").strip().lower()
         if mode not in ("media", "frame"):
-            mode = "frame" if len(imgs) == 2 else "media"
+            # 不靠张数猜：2 张图既可能是首尾帧(frame)、也可能是多图参考(media)，
+            # 猜错等于悄悄改变了生成语义。所以留空一律按 media，要首尾帧必须自己填 frame。
+            mode = "media"
             extra["reference_mode"] = mode
-            print(f"[Respect] 灵感鸭 {model} 有参考图必须带 extra.reference_mode，已自动填 {mode}")
+            print(f"[Respect] 灵感鸭 {model} 有参考图必须带 extra.reference_mode，未指定 → 按 media(素材参考) 提交。"
+                  f"要做首尾帧请把 reference_mode 填 frame（正好 2 张：第1张首帧、第2张尾帧）")
         else:
             extra["reference_mode"] = mode
         if mode == "frame":
@@ -320,7 +323,7 @@ class RespectLingganyaVideo:
                 "ref_image_2": ("IMAGE",),
                 "ref_image_3": ("IMAGE",),
                 "ref_image_4": ("IMAGE",),
-                "reference_mode": ("STRING", {"default": "", "multiline": False, "placeholder": "media 或 frame；留空则有图时自动填", "tooltip": "SD系有参考图时必填：media=素材参考(≤9张) / frame=首尾帧(正好2张)。留空节点会自动补"}),
+                "reference_mode": ("STRING", {"default": "", "multiline": False, "placeholder": "media=素材参考(默认) / frame=首尾帧", "tooltip": "SD系有参考图时必填。media=多图素材参考(≤9张)；frame=首尾帧(正好2张，第1张首帧、第2张尾帧)。留空一律按 media——张数无法区分这两种意图，不会替你猜"}),
                 "reference_videos": ("STRING", {"default": "", "multiline": True, "placeholder": "SD extra.reference_videos，参考视频URL每行一个"}),
                 "reference_audios": ("STRING", {"default": "", "multiline": True, "placeholder": "SD extra.reference_audios，参考音频URL每行一个"}),
                 "generate_audio": (LG_TRISTATE, {"default": "auto(不传)", "tooltip": "SD extra.generate_audio；auto=不传该字段"}),
