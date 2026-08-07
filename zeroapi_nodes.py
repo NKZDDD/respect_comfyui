@@ -52,6 +52,63 @@ def _clean_urls(items) -> list[str]:
     return [u.strip() for u in (items or []) if isinstance(u, str) and u.strip()]
 
 
+def _zero_ratio_value(text: str) -> float:
+    """"9:16" → 0.5625；取不到返回 0。"""
+    try:
+        w, h = str(text).replace("：", ":").split(":")[:2]
+        return float(int(w)) / float(int(h))
+    except Exception:
+        return 0.0
+
+
+def _zero_check_ref_ratio(urls: list[str], want_ratio: str, timeout: int = 15) -> list[str]:
+    """读参考图真实宽高，和目标比例对比。
+
+    图生视频时上游常按**参考图**的宽高比出片，`aspect_ratio` 反而被忽略 ——
+    这就是「同一个节点一会儿横屏一会儿竖屏」的常见原因。提交前先提醒。
+    """
+    import io as _io
+
+    import requests
+    from PIL import Image
+
+    want = _zero_ratio_value(want_ratio)
+    if want <= 0:
+        return []
+    notes: list[str] = []
+    for u in urls[:3]:                      # 只查前 3 张，够定位问题
+        try:
+            r = requests.get(u, timeout=timeout)
+            if r.status_code not in (200, 206):
+                continue
+            w, h = Image.open(_io.BytesIO(r.content)).size
+        except Exception:
+            continue
+        got = w / h if h else 0
+        if got and abs(got - want) > 0.12:
+            shape = "横" if got > 1 else ("竖" if got < 1 else "方")
+            want_shape = "横" if want > 1 else ("竖" if want < 1 else "方")
+            notes.append(f"参考图 {w}x{h}（{shape}，比例{got:.2f}）与 aspect_ratio={want_ratio}"
+                         f"（{want_shape}，{want:.2f}）不一致 -> {u}")
+    return notes
+
+
+def _zero_probe_video(path: str) -> tuple:
+    """读本地 mp4 的真实宽高（拿不到返回 (0,0)）。用来核对上游到底出了横屏还是竖屏。"""
+    try:
+        import cv2
+    except Exception:
+        return (0, 0)
+    try:
+        cap = cv2.VideoCapture(path)
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        cap.release()
+        return (w, h)
+    except Exception:
+        return (0, 0)
+
+
 def _zero_preflight(urls: list[str], timeout: int = 12) -> list[str]:
     """**不带鉴权**地试拉每个素材 URL，返回有问题的说明。
 
@@ -321,30 +378,48 @@ class RespectZeroImg2Video:
 # 零视工坊 SD2 视频（新接口，替代原 sd 系）
 # ---------------------------------------------------------------------------
 
-ZERO_SD2_MODELS = ["sd2-fast"]
+ZERO_SD2_MODELS = ["sd2-fast", "sd2-pro"]
 ZERO_SD2_DURATIONS = [5, 10, 15]
 ZERO_SD2_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+# 「Seedance 满血」官方规格（客服确认，sd2-pro / sd2-fast **共用**）：
+#   比例由 size 决定，**没有 aspect_ratio 字段**；duration 是**字符串**；images 支持 URL 或 data:base64
+ZERO_SD2_SIZES = ["自动(按下面的比例换算)", "720x1280", "1280x720", "1024x1024",
+                  "1080x1920", "1920x1080", "960x1280", "1280x960", "2560x1080"]
+_ZERO_RATIO_TO_SIZE = {
+    "9:16": "720x1280", "16:9": "1280x720", "1:1": "1024x1024",
+    "3:4": "960x1280", "4:3": "1280x960", "21:9": "2560x1080",
+}
 
 
 class RespectZeroSD2:
-    """零视工坊 SD2 视频（新接口）。`POST /v1/videos` + `GET /v1/videos/{task_id}` 轮询。
+    """零视工坊 Seedance 满血（`sd2-pro` / `sd2-fast`，两者**共用同一套规格**）。
 
-    严格照该文档：`{model, prompt, duration(int 5/10/15), aspect_ratio(必填), images[≤9], videos[≤3], audios[≤3]}`。
-    分辨率固定 720P（不用也不能传）。**参考素材只收 HTTPS URL** —— 接「对象存储上传」拿 R2 链接最稳。
+    官方规格（客服确认，优先于站内那份分模型文档）：
+
+    ```json
+    {"model":"sd2-pro", "prompt":"…",
+     "images":["data:image/png;base64,…", "https://example.com/ref.jpg"],
+     "duration":"10", "size":"1280x720", "stream":false}
+    ```
+    - **比例由 `size` 决定**，该接口**没有 `aspect_ratio` 字段**（之前发它 → 被忽略 → 比例随机，就是「同参数时横时竖」的原因）
+    - `duration` 是**字符串**，只支持 5 / 10 / 15
+    - `images` ≤9，**公网 URL 和 `data:image/base64` 都支持**
+    - 固定 720P 专线，支持人脸参考、不排队
+    `POST /v1/videos` 提交，`GET /v1/videos/{task_id}` 轮询。
     """
 
-    DESCRIPTION = ("零视工坊 SD2 视频(新接口，替代原 sd 系)。model=sd2-fast，duration 只能 5/10/15，"
-                   "aspect_ratio 必填，720P 固定；images≤9 / videos≤3 / audios≤3 且只收 HTTPS URL。")
+    DESCRIPTION = ("零视工坊 Seedance 满血（sd2-pro / sd2-fast 共用规格）。**比例靠 size**（无 aspect_ratio 字段）、"
+                   "duration 是字符串(5/10/15)、images≤9 支持 URL 或 base64、固定720P。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://zeroapi.ai-ren.cn"}),
-                "model": (ZERO_SD2_MODELS, {"default": "sd2-fast", "tooltip": "上新模型用 custom_model 填"}),
+                "model": (ZERO_SD2_MODELS, {"default": "sd2-fast", "tooltip": "sd2-pro / sd2-fast 共用同一套规格；上新模型用 custom_model 填"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
-                "duration": ("INT", {"default": 10, "min": 5, "max": 15, "tooltip": "只支持 5 / 10 / 15，填别的会自动吸附"}),
-                "aspect_ratio": (ZERO_SD2_RATIOS, {"default": "9:16", "tooltip": "该接口必填"}),
+                "duration": ("INT", {"default": 10, "min": 5, "max": 15, "tooltip": "只支持 5 / 10 / 15，填别的会自动吸附。发出去是字符串"}),
+                "aspect_ratio": (ZERO_SD2_RATIOS, {"default": "9:16", "tooltip": "**只用来换算 size**（该接口没有 aspect_ratio 字段）；想精确控制就直接填下面的 size"}),
                 "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 1800, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
@@ -364,6 +439,7 @@ class RespectZeroSD2:
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
                 "verify_urls": ("BOOLEAN", {"default": True, "tooltip": "提交前匿名试拉一遍素材URL，提前指出哪条公网拉不到（避免白花一次生成费）"}),
                 "inputcount": ("INT", {"default": 2, "min": 1, "max": 9, "step": 1, "tooltip": "IMAGE 接口数量；改完点『更新输入口』按钮"}),
+                "size": (ZERO_SD2_SIZES, {"default": "自动(按aspect_ratio换算)", "tooltip": "**sd2-pro 靠这个定比例**（它的文档没有 aspect_ratio 字段）。留自动=按上面的 aspect_ratio 换算"}),
             },
         }
 
@@ -376,7 +452,8 @@ class RespectZeroSD2:
     def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout,
                  auto_download, ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
                  extra_image_urls="", video_urls="", audio_urls="",
-                 custom_model="", save_dir="", filename="", verify_urls=True, inputcount=2, **kwargs):
+                 custom_model="", save_dir="", filename="", verify_urls=True, inputcount=2,
+                 size="自动(按下面的比例换算)", **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         if not (prompt or "").strip():
@@ -388,38 +465,43 @@ class RespectZeroSD2:
             print(f"[Respect] 零视 SD2 只支持 duration={ZERO_SD2_DURATIONS}，已把 {dur} 纠正为 {near}")
             dur = near
 
+        # 官方「Seedance 满血」规格（客服确认，sd2-pro / sd2-fast **共用**）：
+        # 比例由 size 决定、duration 是**字符串**、**没有 aspect_ratio 字段**、带 stream。
+        # 之前发 aspect_ratio 却不发 size → 那个字段被忽略、比例随上游默认 → 就是「同参数时横时竖」。
+        px = size if not str(size).startswith("自动") else _ZERO_RATIO_TO_SIZE.get(aspect_ratio, "720x1280")
         body: dict = {
             "model": model,
             "prompt": prompt,
-            "duration": dur,              # 文档：int
-            "aspect_ratio": aspect_ratio,  # 文档：必填
+            "duration": str(dur),     # 字符串
+            "size": px,               # 比例只能靠它
+            "stream": False,
         }
+        print(f"[Respect] 零视 Seedance满血 {model}: duration='{dur}'(字符串) size={px}"
+              f"（该接口无 aspect_ratio 字段，比例由 size 决定）")
 
+        # images 官方支持「公网 URL」和「data:image/base64」两种 → 接的 IMAGE 直接转 base64，不用非得走图床
         urls = _clean_urls([ref_url_1, ref_url_2, ref_url_3, ref_url_4] + _zero_lines(extra_image_urls))
-        # 文档：images 只收公网 HTTPS URL → 不发 base64。
-        # 但不因为「顺手也接了 IMAGE」就报错：填了 URL 就以 URL 为准，只提示一句。
-        tensors = dynamic_image_inputs(kwargs)
-        if tensors and urls:
-            print(f"[Respect] 零视 SD2 按文档只发公网URL，已忽略接入的 {len(tensors)} 张 IMAGE（用的是 ref_url_*）")
-        elif tensors and not urls:
-            raise RespectAPIError(
-                "接了 IMAGE 但没填任何 ref_url_* —— 该接口文档写明 images 只收公网 HTTPS URL，base64 会被判 "
-                "Failed to fetch media URL。\n正确接法：加载图像 → 『Respect 对象存储上传』→ url → 本节点 ref_url_1。\n"
-                "（只想文生视频就把 IMAGE 线拔掉）"
-            )
-        imgs = urls[:9]
+        inline = [i for i in (_ref_b64_or_url(t) for t in dynamic_image_inputs(kwargs)) if i]
+        if inline:
+            print(f"[Respect] 接入的 {len(inline)} 张 IMAGE 转 data:image/base64（官方规格支持该格式）")
+        imgs = (urls + inline)[:9]
         if imgs:
             body["images"] = imgs
+
+        # videos / audios 不在官方规格里（只有站内那份分模型文档提过）→ 填了才发，并说明
         vids = _zero_lines(video_urls)[:3]
+        auds = _zero_lines(audio_urls)[:3]
+        if vids or auds:
+            print("[Respect] 提醒：官方『Seedance 满血』规格里没有 videos/audios 字段，本次仍按你填的发出（可能被忽略）")
         if vids:
             body["videos"] = vids
-        auds = _zero_lines(audio_urls)[:3]
         if auds:
             body["audios"] = auds
 
-        # 提交前匿名试拉一遍，直接指出哪条素材公网拉不到
-        if verify_urls and (imgs or vids or auds):
-            probs = _zero_preflight(imgs + vids + auds)
+        # 提交前匿名试拉一遍，直接指出哪条素材公网拉不到（只查 http(s) 的，base64 跳过）
+        http_refs = [u for u in (imgs + vids + auds) if u.startswith("http")]
+        if verify_urls and http_refs:
+            probs = _zero_preflight(http_refs)
             if probs:
                 raise RespectAPIError(
                     "以下参考素材**公网访问不到**，零视会报 Failed to fetch media URL：\n  "
@@ -454,6 +536,19 @@ class RespectZeroSD2:
                 local = download_to_output(url, cfg, prefix="zero_sd2", save_dir=save_dir, filename=filename)
             except Exception as exc:
                 print(f"[Respect] 零视 SD2 下载失败: {exc}")
+
+        # 出片后核对真实分辨率：同样的请求若时横时竖，这行日志就是找他们客服的证据
+        if local:
+            w, h = _zero_probe_video(local)
+            if w and h:
+                got = "竖" if h > w else ("横" if w > h else "方")
+                want_v = _zero_ratio_value(aspect_ratio)
+                want = "竖" if 0 < want_v < 1 else ("横" if want_v > 1 else "方")
+                flag = "✓ 与请求一致" if got == want else f"✗ 与请求不符（要的是{want}屏）"
+                print(f"[Respect] 成片实际 {w}x{h}（{got}屏）{flag}  task_id={task_id}")
+                if got != want:
+                    print(f"[Respect]    同一份请求出现比例漂移时，把这行 + body + task_id 一起发零视客服："
+                          f"请求已按官方规格发了 size={px}")
         return (url, local, task_id or "")
 
 

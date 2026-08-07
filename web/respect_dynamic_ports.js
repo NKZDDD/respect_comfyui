@@ -20,6 +20,7 @@ const TABLE = {
     RespectHeImageEdit: IMAGE_PORTS,     // 鹤 图生图/多图融合（≤16）
     RespectKunjiImage: IMAGE_PORTS,      // 坤鸡 图片
     RespectZeroSD2: IMAGE_PORTS,         // 零视工坊 SD2（IMAGE 槽保留，但按文档只发 ref_url_*）
+    RespectM86Video: IMAGE_PORTS,        // M86 seed-2.0（本地图走 multipart）
 };
 
 app.registerExtension({

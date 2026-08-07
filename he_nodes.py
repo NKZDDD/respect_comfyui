@@ -44,12 +44,17 @@ from .video_nodes import _async_poll, _submit_async_video
 CATEGORY = "Respect/鹤"
 
 # --- 视频 ---------------------------------------------------------------
+# 照当前文档的模型清单（2026-08 抓取）。**列表会变**，不确定时先跑「Respect 加载模型列表」。
 HE_VIDEO_MODELS = [
-    "sd2-pro-720p",
-    "sd2-1080p", "sd2-720p", "sd2-480p", "sd2-fast-720p", "sd2-fast-480p",
-    "sd3-1080p", "sd3-720p", "sd3-480p", "sd3-fast-720p", "sd3-fast-480p",
-    "seedance2.0-official2-1080p", "seedance2.0-official2-720p", "seedance2.0-official2-480p",
-    "seedance2.0-fast2-720p", "seedance2.0-fast2-480p",
+    # 按秒计费
+    "sd2-720p", "sd2-1080p", "sd2-480p", "sd2-fast-720p", "sd2-fast-480p",
+    "seedance2.0-selfsur-720p", "seedance2.0-selfsur-fast-720p",
+    "seedance-discount-720p", "seedance-discount-fast-720p",
+    # 按次计费
+    "paisiodance2.0", "paisiodance2.0-fast", "paisiodance2.0-mini",
+    "paisiodance2.0-720p", "paisiodance933-720p",
+    # 旧名（已不在文档清单里，留着以防你的 key 还能用；跑不通就换上面的）
+    "sd2-pro-720p", "seedance2.0-official2-720p", "seedance2.0-fast2-720p",
 ]
 HE_RATIOS = ["(不传)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
 HE_TRISTATE = ["on", "off", "(不传)"]
@@ -145,7 +150,7 @@ class RespectHeVideo:
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
-                "image_url": ("STRING", {"default": "", "multiline": False, "placeholder": "公网参考图URL（文档字段，作首帧）"}),
+                "image_url": ("STRING", {"default": "", "multiline": True, "placeholder": "公网参考图URL，每行一个：第1行→image_url(首帧)，其余→extra_images", "tooltip": "文档路径：只收 http/https（jpg/png/webp）。接『对象存储上传』的 url 最稳"}),
                 "enable_sound": (HE_TRISTATE, {"default": "on", "tooltip": "metadata.enableSound"}),
                 "compat_metadata": ("BOOLEAN", {"default": True, "tooltip": "带即梦/豆包兼容字段(metadata/images/seconds)；关掉=只发文档三字段"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
@@ -170,29 +175,35 @@ class RespectHeVideo:
             raise RespectAPIError("prompt 必填")
 
         body: dict = {"model": model, "prompt": prompt}
-        url = (image_url or "").strip()
-        if url:
-            body["image_url"] = url
+        # 文档字段：duration 是**整数**(4-15)，比例是**顶层 aspect_ratio**（该接口没有 size 字段）
+        if int(seconds) > 0:
+            body["duration"] = int(seconds)
+        if not aspect_ratio.startswith("("):
+            body["aspect_ratio"] = aspect_ratio
+
+        # 参考图文档路径：image_url（单张首帧，公网 http/https）+ extra_images（URL 数组）
+        ref_urls = [ln.strip() for ln in (image_url or "").splitlines() if ln.strip()]
+        if ref_urls:
+            body["image_url"] = ref_urls[0]
+            if ref_urls[1:]:
+                body["extra_images"] = ref_urls[1:9]
 
         refs = _he_data_uris(dynamic_image_inputs(kwargs))
         if compat_metadata:
+            # 即梦/豆包兼容附加字段（文档未列，但 production_runner 实测跑通过 17 段）
             if refs:
                 body["images"] = refs
             if int(seconds) > 0:
                 body["seconds"] = str(int(seconds))
-                body["duration"] = int(seconds)
-            meta: dict = {"modeType": "image2video" if (refs or url) else "text2video"}
+            meta: dict = {"modeType": "image2video" if (refs or ref_urls) else "text2video"}
             if not aspect_ratio.startswith("("):
                 meta["ratio"] = aspect_ratio
             if not enable_sound.startswith("("):
                 meta["enableSound"] = enable_sound
             body["metadata"] = meta
-        elif refs:
-            # 只发文档字段时，参考图只能塞 image_url
-            body.setdefault("image_url", refs[0])
-            if body.get("image_url", "").startswith("data:"):
-                print("[Respect] 提醒：compat_metadata 已关，把 data URI 放进了 image_url —— "
-                      "文档这个字段是公网 URL，服务端若去 fetch 会失败。建议改填公网URL（接对象存储上传）。")
+        elif refs and not ref_urls:
+            print("[Respect] compat_metadata 已关且没填公网URL —— 文档的 image_url 要求 http/https，"
+                  "base64 会被拒。请把图先过『对象存储上传』，把 url 填进 image_url。")
 
         print(f"[Respect] 鹤 视频提交 POST /v1/videos  body={_he_brief(body)}")
         if refs and "images" in body:
