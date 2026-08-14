@@ -1,0 +1,4 @@
+interface:
+  display_name: "电影级AI短剧生产"
+  short_description: "把剧本编译为资产、故事板及模型原生多镜头成片生产包"
+  default_prompt: "Use $produce-cinematic-ai-short-drama to turn this script into a complete canonical production package with model-native shot transitions in each final SEG video."

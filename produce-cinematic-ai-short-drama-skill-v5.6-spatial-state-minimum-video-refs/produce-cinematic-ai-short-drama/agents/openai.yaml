@@ -1,0 +1,4 @@
+interface:
+  display_name: "电影级AI短剧生产"
+  short_description: "把剧本编译为空间连续且参考图不冲突的完整短剧生产包"
+  default_prompt: "Use $produce-cinematic-ai-short-drama to compile this script into a canonical production package with authorized spatial transitions, minimum-sufficient video references, and model-native shot transitions."

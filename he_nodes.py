@@ -31,6 +31,7 @@ from .utils import (
     api_request,
     download_to_output,
     dynamic_image_inputs,
+    dynamic_url_inputs,
     ensure_config,
     expand_image_frames,
     extract_image_payloads,
@@ -532,15 +533,137 @@ class RespectHeAssetUpload:
         return (asset_id, asset_type, status)
 
 
+# ---------------------------------------------------------------------------
+# 鹤 Seedance 2.5（新规格，和上面的旧模型完全不同）
+# ---------------------------------------------------------------------------
+
+HE_SD25_MODELS = ["seedance-2.5-720p", "seedance-2.5-480p"]
+HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+
+
+class RespectHeSeedance25:
+    """鹤 Seedance 2.5（`seedance-2.5-720p` / `-480p`）。
+
+    和鹤的旧模型**不是一套字段**（旧的是 `metadata{modeType,ratio}` + `images[data URI]`），
+    2.5 用文档规定的标准格式：
+
+    ```json
+    {"model":"seedance-2.5-720p","prompt":"…","duration":29,"aspect_ratio":"21:9",
+     "image_url":"https://…","extra_images":["https://…"],
+     "extra_videos":["https://….mp4"],"extra_audios":["https://….wav"]}
+    ```
+    硬约束（提交前就校验，不浪费付费请求）：
+    **4–29 秒**、6 种比例、图 ≤30、视频 ≤10、音频 ≤10，
+    且**参考素材必须是公网 http(s) URL**（接「对象存储上传」拿链接）。
+    """
+
+    DESCRIPTION = ("鹤 Seedance 2.5：duration(4-29整数) + aspect_ratio + image_url/extra_images"
+                   "(≤30) + extra_videos(≤10)/extra_audios(≤10)。**只收公网URL**，"
+                   "参考图请接『对象存储上传』。与鹤的旧模型字段完全不同。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
+                "model": (HE_SD25_MODELS, {"default": "seedance-2.5-720p"}),
+                "prompt": ("STRING", {"default": "", "multiline": True}),
+                "duration": ("INT", {"default": 15, "min": 4, "max": 29, "tooltip": "4–29 秒（整数）"}),
+                "aspect_ratio": (HE_SD25_RATIOS, {"default": "9:16"}),
+                "poll_interval": ("INT", {"default": 10, "min": 2, "max": 60}),
+                "poll_timeout": ("INT", {"default": 2400, "min": 60, "max": 7200}),
+                "auto_download": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "ref_url_1": ("STRING", {"default": "", "multiline": False, "placeholder": "首帧/主参考图 URL（接对象存储上传）→ image_url"}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False}),
+                "extra_image_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "追加参考图URL，每行一个（连同上面共 ≤30）"}),
+                "video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤10）"}),
+                "audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤10）"}),
+                "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
+                "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
+                "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图URL接口数量；改完点节点上的『更新输入口』按钮增减 ref_url_N（接对象存储上传的 url）"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "local_path", "task_id")
+    OUTPUT_TOOLTIPS = ("在线视频 URL", "下载到本地的路径（预览/拼接用这个）", "任务 ID")
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, api_config, model, prompt, duration, aspect_ratio,
+                 poll_interval, poll_timeout, auto_download,
+                 extra_image_urls="", video_urls="", audio_urls="",
+                 custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
+        cfg = ensure_config(api_config)
+        model = (custom_model or "").strip() or model
+
+        def lines(s, cap):
+            return [ln.strip() for ln in (s or "").splitlines() if ln.strip()][:cap]
+
+        # ref_url_N 数量由 inputcount + 「更新输入口」决定，按数字顺序取
+        imgs = dynamic_url_inputs(kwargs)
+        imgs += lines(extra_image_urls, 30)
+        vids, auds = lines(video_urls, 10), lines(audio_urls, 10)
+
+        # 提交前把不合规的全说清楚，别发出去等 400（付费请求）
+        problems = []
+        dur = int(duration)
+        if not 4 <= dur <= 29:
+            problems.append(f"时长只能 4-29 秒，收到 {dur} 秒")
+        if aspect_ratio not in HE_SD25_RATIOS:
+            problems.append(f"比例只支持 {'、'.join(HE_SD25_RATIOS)}，收到 {aspect_ratio}")
+        if len(imgs) > 30:
+            problems.append(f"图片最多 30 张，收到 {len(imgs)} 张")
+        if len(vids) > 10:
+            problems.append(f"视频素材最多 10 条，收到 {len(vids)} 条")
+        if len(auds) > 10:
+            problems.append(f"音频素材最多 10 条，收到 {len(auds)} 条")
+        bad = [u for u in imgs + vids + auds if not u.startswith(("http://", "https://"))]
+        if bad:
+            problems.append(f"参考素材必须是公网 http(s) URL（接『对象存储上传』），"
+                            f"这些不是：{bad[:2]}")
+        if problems:
+            raise RespectAPIError("Seedance 2.5 参数不符合鹤的接口要求：" + "；".join(problems))
+
+        body: dict = {"model": model, "prompt": prompt or "",
+                      "duration": dur, "aspect_ratio": aspect_ratio}
+        if imgs:
+            body["image_url"] = imgs[0]
+            if imgs[1:]:
+                body["extra_images"] = imgs[1:]
+        if vids:
+            body["extra_videos"] = vids
+        if auds:
+            body["extra_audios"] = auds
+
+        print(f"[Respect] 鹤 Seedance2.5 提交 body={_he_brief(body)}")
+        direct, task_id = _submit_async_video(cfg, body, timeout=300)
+        url = direct or _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
+        local = ""
+        if auto_download and url:
+            try:
+                local = download_to_output(url, cfg, prefix="he_sd25", save_dir=save_dir, filename=filename)
+            except Exception as exc:
+                print(f"[Respect] 鹤 Seedance2.5 下载失败: {exc}")
+        return (url, local, task_id or "")
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectHeVideo": RespectHeVideo,
+    "RespectHeSeedance25": RespectHeSeedance25,
     "RespectHeImage": RespectHeImage,
     "RespectHeImageEdit": RespectHeImageEdit,
     "RespectHeAssetUpload": RespectHeAssetUpload,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RespectHeVideo": "Respect 鹤 视频（sd2/sd3/seedance）",
+    "RespectHeVideo": "Respect 鹤 视频（sd2/sd3/seedance 旧规格）",
+    "RespectHeSeedance25": "Respect 鹤 Seedance 2.5（4-29秒/30图）",
     "RespectHeImage": "Respect 鹤 图片生成（统一接口）",
     "RespectHeImageEdit": "Respect 鹤 图生图/多图融合（≤16张）",
     "RespectHeAssetUpload": "Respect 鹤 虚拟资产上传（图/视频/音频）",

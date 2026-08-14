@@ -1,7 +1,7 @@
 # Respect ComfyUI 扩展
 
-把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭），
-并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **65 个节点**。
+把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙），
+并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **82 个节点**。
 
 节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
 子分类下；通用工具（配置、文本、剪辑、上传、预览）留在 **`Respect`** 根分类，分镜在 `Respect/分镜`、LLM 在 `Respect/LLM`。
@@ -119,7 +119,12 @@ pip install -r respect_comfyui/requirements.txt
 | 章鱼哥 | 你的章鱼哥网关 | 章鱼哥 异步图片 | 章鱼哥 异步视频（+任务查询） | `J_octopus` |
 | 零视工坊 | `https://zeroapi.ai-ren.cn` | **零视工坊 图片** | Sora2/VEO、图生视频 | `K_zero` |
 | 灵感鸭 | `https://www.lingganyaapi.com` | 灵感鸭 统一图片 | 灵感鸭 统一视频 | `L_lingganya` |
-| **鹤 / paisio** | `https://api.paisio.online` | **鹤 图片生成**、**鹤 图生图（≤16张）** | **鹤 视频**（+虚拟资产上传） | `M_he` |
+| **鹤 / paisio** | `https://api.paisio.online` | 鹤 图片生成、鹤 图生图（≤16张） | 鹤 视频（旧规格）、**鹤 Seedance 2.5**、虚拟资产上传 | `M_he` |
+| **M86 / New API** | `https://yiyun.xiaoge.uk` | M86 图片（`seed-image-1.0`，同步） | M86 视频（`seed-2.0`） | — |
+| **一手 / ONE API** | `https://www.weijinapi.top` | — | **一手 视频**（+模型能力查询、视频上传） | — |
+| **阿珂** | `https://snumom.com` | — | **阿珂 Grok视频**（grok-imagine-video-1.5-preview） | — |
+| **超模** | `https://www.chaomoapi.com` | 超模 图片、超模 图生图（≤9） | **超模 视频**（seedance2 / -fast / -mini） | — |
+| **小霸龙** | `https://api.keik.cc` | 小霸龙 图片（同步，6 个模型） | **小霸龙 视频**（20 个模型）（+模型价格查询、素材上传） | — |
 | 一花 Codex | `https://llm.xxttt.com` | — | — | LLM 专用，见 `2_llm_*` |
 
 各家的坑：
@@ -131,7 +136,12 @@ pip install -r respect_comfyui/requirements.txt
 | 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
 | 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`seconds` 是**字符串**类型（发数字会 400 invalid_json）；比例必须**显式发 `aspect_ratio`+`ratio`**，只给 `size` 它会回落 16:9；**sd 系已迁到新接口**（用「SD2 视频（新接口）」节点） |
 | 灵感鸭 | 三步式：提交 → 查询 → `/content`；`size` 是**比例**、`seconds` 才是时长（sd 传整数、其余字符串）；每个模型 `seconds` 是**固定档位**（sora-2 只有 4/8/12、veo 只有 8、grok 只有 10/15）；SD 系要顶层 `resolution`，且**有参考图时 `extra.reference_mode` 必填**（`media`/`frame`）；吊炸天模型在**单独文档**里（`sd-2.0`/`sd-fast`/`-special`），不在统一接口的模型表 |
-| 鹤 / paisio | 参考图**只吃 data URI 内联**（节点自动转 1024px JPEG q80），走外部图床会被拒；有**虚拟资产接口**可传参考视频/音频 |
+| 鹤 / paisio | **旧模型**（sd2/sd3/seedance2.0）用 `metadata`+`images`(data URI) 兼容格式；**Seedance 2.5 是另一套**：`duration` 整数 + 顶层 `aspect_ratio` + `image_url`/`extra_images`，**只收公网 URL**、4–29秒、30图/10视频/10音频 —— 两者字段不通用，用错节点参数会被忽略。另有**虚拟资产接口**可传参考视频/音频 |
+| M86 / New API | **图片的 `size` 是比例**（`1:1`/`9:16`）不是像素；**视频比例字段叫 `ratio`**；本地图走 multipart（`images` 字段重复多次）；`seed-2.0` 固定 $1.2/次，5–15 秒同价 |
+| 阿珂 / snumom | **只做视频**。`seconds` 是**字符串**；**没有 aspect_ratio 字段**，画面全靠 `size`（只有 480p/720p × 16:9/9:16 四种组合）；参考图 ≤7 且**两个字段形状不同**：`reference_images` 是对象数组 `[{url:…}]`（只收链接）、`input_reference` 是字符串数组（URL 或 base64），**二选一别混** |
+| 超模 / chaomoapi | **视频参考素材是 OpenAI chat 风格的 `content` 块**：`[{"type":"image_url","role":"reference_image","image_url":{"url":…}}]` —— 发别家的 `images:[base64]` 过去**不报错但参考图被忽略**；视频 `size` 是**分辨率档位**（480p/720p/1080p/4k）不是像素；`seconds` 是字符串。图片那边比例字段又叫 **`ratio`**、要带 `async:true` 后轮询；图生图走 multipart，字段名是 **`image[]`**，且文档明写「参考图 URL 不能直传，必须先下载到本地再上传」 |
+| 小霸龙 / keik.cc | ⚠ **创建 POST 只能提交一次、不得自动重试**（插件已设只发一次；失败会提示先人工核对是否已计费，别重跑）。图片**同步**无轮询、比例字段是 `ratio`、数量是 `count`(1–4 按张计费)，**HTTP 200 且 `data` 非空才算成功**；视频用 **`duration` 整数**、素材是**纯字符串数组** `images`≤9/`videos`≤3/`audios`≤3（不能对象数组）。状态多一个 **`unknown`——不是失败**也不是可重投信号，只能继续查；`asset://` URI 24 小时有效且**只用于视频**，图片参考图必须公网 URL |
+| 一手 / ONE API | **只做视频**。模型和能力（秒数/比例/素材上限/单价）由 `GET /v1/models` 动态给，**别照抄别家模型名**；统一用 `seconds`、**不传 `size`**；图片/音频只收公网 HTTPS（没有图片上传接口），**只有视频**能上传（≤50MB）。创建超时别盲目重投——可能已计费建单，先查任务 |
 
 **模型名典型坑**：
 
@@ -140,6 +150,9 @@ pip install -r respect_comfyui/requirements.txt
 | Grok 视频 | `grok-video` | `grok-imagine-video-1.5-fast` / `-1.0-video` / `-1.5-preview` | `grok-1.5` | `grok-imagine-video-1.5-preview` 等 | — |
 | SD 系 | `sd2-720p-fast` / `sd2-1080p` / `sd2-720p-mini` … | — | **`sd2-fast`**（新接口，720P固定） | `sd-2.0` / `sd-fast` / `sd-2.0-special` / `sd-fast-special` | `sd2-pro-720p` / `sd2-*` / `sd3-*` |
 | VEO | `firefly-veo31-*` | — | `veo_3_1-fast`（连字符） | `veo_3_1_fast`（**下划线**） | — |
+
+> 超模的视频模型是 `seedance2` / `-fast` / `-mini`；小霸龙自成一套（`bh2.0-*` / `gz-sd*` / `sdvip*` / `quanneng2.0*`，**还有带中文的 `sd2-福利`**），
+> 两家都必须用 `GET /v1/models` 返回的精确 id，模型名区分大小写、空格和中文。
 
 > 填错就会看到 `503 No available channel for model xxx under group default` —— 那是网关没这个模型，不是插件的错。
 
@@ -212,7 +225,21 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectZeroSD2` | Respect 零视工坊 SD2 视频（新接口） | `sd2-fast`，`duration` 只能 5/10/15、`aspect_ratio` 必填、720P 固定；`images≤9` / `videos≤3` / `audios≤3` **只收 HTTPS URL** |
 | `RespectZeroImage` | Respect 零视工坊 图片 | `/v1/images/generations`，异步自动轮询；quality/style/response_format |
 | `RespectLingganyaVideo` | Respect 灵感鸭 统一视频（sora/SD） | `size`=比例、`seconds`=时长；SD 带顶层 `resolution` + `extra{}` |
-| `RespectHeVideo` | Respect 鹤 视频 | sd2/sd3/seedance2.0 全系；参考图自动 data URI；`compat_metadata` |
+| `RespectHeVideo` | Respect 鹤 视频（旧规格） | sd2/sd3/seedance2.0 全系；`metadata`+`images`(data URI) 兼容格式；顶层也发 `aspect_ratio` |
+| `RespectHeSeedance25` | Respect 鹤 Seedance 2.5 | **新规格**：`duration`(4–29整数)+`aspect_ratio`+`image_url`/`extra_images`(≤30)+`extra_videos`/`extra_audios`(各≤10)，**只收公网URL** |
+| `RespectM86Video` | Respect M86 视频（`seed-2.0`） | 比例字段是 **`ratio`**；给 URL 走 JSON、接 IMAGE 自动走 multipart；$1.2/次固定，5–15 秒同价 |
+| `RespectM86Image` | Respect M86 图片（`seed-image-1.0`） | **同步**出图；**`size` 是比例**不是像素；`ref_images` 只收公网 URL |
+| `RespectYishouVideo` | Respect 一手 视频 | `seconds`+`aspect_ratio` 必填、不传 `size`；`images`/`videos`/`audios` 只收公网 HTTPS |
+| `RespectYishouModels` | Respect 一手 模型能力 | `GET /v1/models`：列出该 Key 可用模型 + 秒数/比例/素材上限/单价 |
+| `RespectYishouUploadVideo` | Respect 一手 上传视频 | `POST /api/upload/video`（≤50MB）→ 公网链接，供 `videos` 用 |
+| `RespectAkeVideo` | Respect 阿珂 Grok视频 | `seconds` 字符串(1–15)；**`size` 同时定分辨率+比例**（480p/720p × 16:9/9:16）；参考图 ≤7，给URL走 `reference_images:[{url}]`、接IMAGE转base64走 `input_reference` |
+| `RespectChaomoVideo` | Respect 超模 视频 | 参考素材走 **`content` 块**（只收公网URL，≤9）；`seconds` 字符串(4–15)；`size` 是分辨率档位 |
+| `RespectChaomoImage` | Respect 超模 图片 | `POST /v1/images/generations`，比例字段 **`ratio`**、`n`固定1、`async:true` → 轮询 `/v1/images/{id}` |
+| `RespectChaomoImageEdit` | Respect 超模 图生图 | `POST /v1/images/edits`，multipart 字段名 **`image[]`**（1–9张）；直接吃 IMAGE，不需要图床 |
+| `RespectXiaobalongVideo` | Respect 小霸龙 视频 | `duration` 整数；`images`/`videos`/`audios` 纯字符串数组；**创建不重试**；`unknown` 继续查 |
+| `RespectXiaobalongImage` | Respect 小霸龙 图片 | **同步**返回无轮询；`count`(1–4)+`ratio`；`data:[]` 按失败处理但不重提 |
+| `RespectXiaobalongModels` | Respect 小霸龙 模型与价格 | `GET /v1/models` + `/api/pricing`，列能力类型与实时USD单价（别硬编码） |
+| `RespectXiaobalongUpload` | Respect 小霸龙 上传素材 | `POST /v1/assets/uploads`（只能带 `file` 一个字段）→ `asset://xiaobalong/...`，24小时有效，**只用于视频** |
 | `RespectHeImage` | Respect 鹤 图片生成（统一接口） | `imageSize`(1K/2K/4K) + `aspectRatio` 自动换算像素，同步 |
 | `RespectHeImageEdit` | Respect 鹤 图生图/多图融合 | `image[]` **最多 16 张** + 可选 `mask` 局部重绘 |
 | `RespectHeAssetUpload` | Respect 鹤 虚拟资产上传 | 图/视频/音频 → `va_xxx`，轮询到 active；**传参考视频的官方途径** |

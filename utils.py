@@ -168,6 +168,26 @@ def dynamic_image_inputs(kwargs: dict, prefix: str = "image_") -> list:
     return out
 
 
+def dynamic_url_inputs(kwargs: dict, prefix: str = "ref_url_") -> list:
+    """取出动态输入口填/接进来的 URL，按 `ref_url_1, ref_url_2 … ref_url_10` 的数字顺序。
+
+    和 `dynamic_image_inputs` 是一对：那个给吃图片内容的接口用，这个给**只收公网 URL**
+    的接口用（接「对象存储上传」的 url 输出）。数量由 `inputcount` + 前端
+    `web/respect_dynamic_ports.js` 的「更新输入口」按钮决定。
+    """
+    n = len(prefix)
+    keys = sorted(
+        (k for k in kwargs if k.startswith(prefix) and k[n:].isdigit()),
+        key=lambda k: int(k[n:]),
+    )
+    out = []
+    for k in keys:
+        v = kwargs.get(k)
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip())
+    return out
+
+
 def expand_image_frames(tensors: list) -> list:
     """把每个 IMAGE 批次拆成单帧列表（角色库/ZIP 一次给多张时，每张都要当参考图）。"""
     frames = []

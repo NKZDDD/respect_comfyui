@@ -34,13 +34,17 @@ from . import (
     kunji_nodes,
     xiaopei_video_nodes,
     m86_nodes,
+    yishou_nodes,
+    ake_nodes,
+    chaomo_nodes,
+    xiaobalong_nodes,
 )
 
 
 NODE_CLASS_MAPPINGS: dict = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict = {}
 
-for module in (api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes, llm_nodes, seedance_nodes, pdf_nodes, text_nodes, video_edit_nodes, storyboard_nodes, octopus_nodes, asset_nodes, upload_nodes, zeroapi_nodes, lingganya_nodes, he_nodes, kunji_nodes, xiaopei_video_nodes, m86_nodes):
+for module in (api_settings, image_nodes, video_nodes, loader_nodes, preview_nodes, llm_nodes, seedance_nodes, pdf_nodes, text_nodes, video_edit_nodes, storyboard_nodes, octopus_nodes, asset_nodes, upload_nodes, zeroapi_nodes, lingganya_nodes, he_nodes, kunji_nodes, xiaopei_video_nodes, m86_nodes, yishou_nodes, ake_nodes, chaomo_nodes, xiaobalong_nodes):
     NODE_CLASS_MAPPINGS.update(getattr(module, "NODE_CLASS_MAPPINGS", {}))
     NODE_DISPLAY_NAME_MAPPINGS.update(getattr(module, "NODE_DISPLAY_NAME_MAPPINGS", {}))
 
