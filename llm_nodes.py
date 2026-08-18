@@ -29,6 +29,7 @@ from .utils import (
     dynamic_image_inputs,
     ensure_config,
     expand_image_frames,
+    extract_data_array_images,
     extract_image_payloads,
     iter_sse_lines,
     resolve_image_to_tensor,
@@ -276,6 +277,7 @@ class RespectChatLLM:
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -296,16 +298,16 @@ class RespectChatLLM:
         response_format: str = "text",
         json_schema: str = "",
         schema_name: str = "response",
-        image_1: Optional[torch.Tensor] = None,
-        image_2: Optional[torch.Tensor] = None,
-        image_3: Optional[torch.Tensor] = None,
+        # image_1..N 由前端「更新输入口」动态增减，统一从 kwargs 里按数字顺序取
+        inputcount: int = 4,
+        **kwargs,
     ) -> tuple[str]:
         cfg = ensure_config(api_config)
         messages: list[dict] = []
         if system_prompt.strip():
             messages.append({"role": "system", "content": system_prompt})
 
-        imgs = [image_1, image_2, image_3]
+        imgs = dynamic_image_inputs(kwargs)
         has_img = any(i is not None and getattr(i, "numel", lambda: 0)() > 0 for i in imgs)
         if has_img:
             messages.append({"role": "user", "content": _build_multimodal_content(prompt, imgs)})
@@ -554,7 +556,9 @@ def _poll_image_task(cfg, task_id: str, interval: int = 5, timeout: int = 900) -
                 "请把该网关的『查询图片任务』端点发我以便适配"
             )
 
-        items = extract_image_payloads(data)
+        # 规范的 data[] 优先严格取：同一张图同时给 url 和 b64_json 时，
+        # 递归解析会把它数成两张（IMAGE 批次里出现重复画面）
+        items = extract_data_array_images(data) or extract_image_payloads(data)
         status = _img_status(data)
         if status and status != last:
             print(f"[Respect] 图片任务 {task_id} 状态: {status}")
@@ -749,6 +753,7 @@ class RespectClaudeLLM:
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -768,13 +773,13 @@ class RespectClaudeLLM:
         temperature: float = -1.0,
         response_format: str = "text",
         json_schema: str = "",
-        image_1: Optional[torch.Tensor] = None,
-        image_2: Optional[torch.Tensor] = None,
-        image_3: Optional[torch.Tensor] = None,
+        # image_1..N 由前端「更新输入口」动态增减，统一从 kwargs 里按数字顺序取
+        inputcount: int = 4,
+        **kwargs,
     ) -> tuple[str]:
         cfg = ensure_config(api_config)
 
-        content: list[dict] = _anthropic_image_blocks([image_1, image_2, image_3])
+        content: list[dict] = _anthropic_image_blocks(dynamic_image_inputs(kwargs))
         if prompt:
             content.append({"type": "text", "text": prompt})
         if not content:

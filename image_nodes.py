@@ -11,6 +11,7 @@ from typing import Any, Optional
 import torch
 
 from .utils import (
+    dynamic_image_inputs,
     ASPECT_RATIOS,
     RESOLUTIONS,
     RespectAPIError,
@@ -185,6 +186,7 @@ class RespectImageMultiRef:
                 "image_5": ("IMAGE",),
                 "image_6": ("IMAGE",),
                 "image_7": ("IMAGE",),
+                "inputcount": ("INT", {"default": 7, "min": 1, "max": 16, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -200,15 +202,13 @@ class RespectImageMultiRef:
         prompt: str,
         aspect_ratio: str,
         resolution: str,
-        **kwargs: Any,
+        inputcount=4, **kwargs: Any,
     ) -> tuple[torch.Tensor, str]:
         cfg = ensure_config(api_config)
 
         content: list[dict] = []
-        for i in range(1, 8):
-            img = kwargs.get(f"image_{i}")
-            if img is None or (hasattr(img, "numel") and img.numel() == 0):
-                continue
+        # 张数由 inputcount + 「更新输入口」决定，不再写死 7 张
+        for img in dynamic_image_inputs(kwargs):
             b64_list = tensor_to_b64(img[:1], fmt="JPEG", quality=85, max_side=1280)
             if not b64_list:
                 continue
@@ -365,6 +365,7 @@ class RespectImageChat:
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -379,13 +380,13 @@ class RespectImageChat:
         model: str,
         prompt: str,
         stream: bool,
-        image_1: Optional[torch.Tensor] = None,
-        image_2: Optional[torch.Tensor] = None,
-        image_3: Optional[torch.Tensor] = None,
+        # image_1..N 由前端「更新输入口」动态增减，统一从 kwargs 里按数字顺序取
+        inputcount: int = 4,
+        **kwargs,
     ) -> tuple[torch.Tensor, str]:
         cfg = ensure_config(api_config)
         content: list[dict] = []
-        for img in (image_1, image_2, image_3):
+        for img in dynamic_image_inputs(kwargs):
             if img is None or (hasattr(img, "numel") and img.numel() == 0):
                 continue
             b64_list = tensor_to_b64(img[:1], fmt="JPEG", quality=85, max_side=1280)

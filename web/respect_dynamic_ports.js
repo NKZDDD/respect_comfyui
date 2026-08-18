@@ -38,12 +38,36 @@ const TABLE = {
     RespectChaomoImageEdit: IMAGE_PORTS, // 超模 图生图（multipart image[]；≤9）
     RespectXiaobalongVideo: URL_PORTS,   // 小霸龙（HTTPS 或 asset:// URI；≤9）
     RespectXiaobalongImage: URL_PORTS,   // 小霸龙 图片（reference_images 只收URL；≤9）
+    RespectXPSd25: IMAGE_PORTS,          // 小裴 SD2.5 不卡脸（图≤30）
+    RespectXPSd900: IMAGE_PORTS,         // 小裴 900 不售后（只多参考，≤9）
 };
+
+// 自动识别：节点只要有 inputcount 组件 + image_1 或 ref_url_1 输入，就自动装按钮。
+// 这样以后新加节点不用再回来改这张表 —— 漏注册过好几次了，表只留给要改上限的特例。
+function detectConf(nodeData) {
+    const named = TABLE[nodeData.name];
+    if (named) {
+        return named;
+    }
+    const spec = nodeData?.input || {};
+    const keys = [...Object.keys(spec.required || {}), ...Object.keys(spec.optional || {})];
+    if (!keys.includes("inputcount")) {
+        return null;
+    }
+    // 同时有两种口时以 ref_url_ 为准：那类接口只收公网 URL，IMAGE 槽是给能吃图片内容的
+    if (keys.some((k) => /^ref_url_\d+$/.test(k))) {
+        return URL_PORTS;
+    }
+    if (keys.some((k) => /^image_\d+$/.test(k))) {
+        return IMAGE_PORTS;
+    }
+    return null;
+}
 
 app.registerExtension({
     name: "Respect.DynamicPorts",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        const conf = TABLE[nodeData.name];
+        const conf = detectConf(nodeData);
         if (!conf) {
             return;
         }

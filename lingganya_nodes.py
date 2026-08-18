@@ -24,6 +24,7 @@ from typing import Any
 import torch
 
 from .utils import (
+    dynamic_url_inputs,
     RespectAPIError,
     api_request,
     download_to_output,
@@ -332,6 +333,7 @@ class RespectLingganyaVideo:
                 "custom_resolution": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖 resolution"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -342,11 +344,10 @@ class RespectLingganyaVideo:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, size, seconds, resolution,
-                 poll_interval, poll_timeout, auto_download,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", extra_image_urls="",
+                 poll_interval, poll_timeout, auto_download, extra_image_urls="",
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  reference_mode="", reference_videos="", reference_audios="", generate_audio="auto(不传)",
-                 custom_model="", custom_size="", custom_resolution="", save_dir="", filename=""):
+                 custom_model="", custom_size="", custom_resolution="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
@@ -362,7 +363,7 @@ class RespectLingganyaVideo:
 
         # images[] 官方支持 公网URL / data:image;base64 / 纯 base64 三种，base64 是合法的
         refs = _lg_refs([first_frame, ref_image_2, ref_image_3, ref_image_4],
-                        [ref_url_1, ref_url_2, ref_url_3, ref_url_4] + _lg_lines(extra_image_urls))
+                        dynamic_url_inputs(kwargs) + _lg_lines(extra_image_urls))
         if refs:
             body["images"] = refs
 

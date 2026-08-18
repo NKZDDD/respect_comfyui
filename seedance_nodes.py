@@ -19,6 +19,8 @@ from typing import Any, Optional
 import torch
 
 from .utils import (
+    dynamic_url_inputs,
+    dynamic_image_inputs,
     RespectAPIError,
     api_request,
     download_to_output,
@@ -292,6 +294,7 @@ class RespectSD2AllVideo:
                 "ref_mode": (SD_REF_MODES, {"default": "上传换URL(图床)", "tooltip": "接入 IMAGE 时怎么传：图床上传(仅aicopy系key)/data URI 内联(paisio 等外部网关用这个)"}),
                 "reference_video_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考视频URL，每行一个（≤3，文档字段 videos）"}),
                 "reference_audio_urls": ("STRING", {"default": "", "multiline": True, "placeholder": "参考音频URL，每行一个（≤3，文档字段 audios）"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -305,14 +308,12 @@ class RespectSD2AllVideo:
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
-                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
                  custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)",
-                 reference_video_urls="", reference_audio_urls=""):
+                 reference_video_urls="", reference_audio_urls="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
-        url_inputs = [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5, ref_url_6, ref_url_7, ref_url_8, ref_url_9]
+        url_inputs = dynamic_url_inputs(kwargs)
         image_urls = _seedance_image_urls(cfg, url_inputs, generation_mode, first_frame, last_frame, refs, 9)
         final_prompt = _tag_prompt(prompt, generation_mode, len(image_urls))
 
@@ -398,6 +399,7 @@ class RespectSeedance9Video:
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
                 # 新控件加在最后：已保存的工作流不会错位
                 "ref_mode": (SD_REF_MODES, {"default": "上传换URL(图床)", "tooltip": "接入 IMAGE 时怎么传：图床上传(仅aicopy系key)/data URI 内联(paisio 等外部网关用这个)"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -411,14 +413,12 @@ class RespectSeedance9Video:
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
-                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
-                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)"):
+                 custom_model="", save_dir="", filename="", ref_mode="上传换URL(图床)", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         official = model.startswith("官方稳定")
         refs = [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7]
-        url_inputs = [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5, ref_url_6, ref_url_7, ref_url_8, ref_url_9]
+        url_inputs = dynamic_url_inputs(kwargs)
         image_urls = _seedance_image_urls(cfg, url_inputs, generation_mode, first_frame, last_frame, refs, 9)
         final_prompt = _tag_prompt(prompt, generation_mode, len(image_urls))
         vl = int(duration or 15)
@@ -548,6 +548,7 @@ class RespectSeedanceFourRefVideo:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了优先使用"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -560,8 +561,7 @@ class RespectSeedanceFourRefVideo:
                  poll_interval, poll_timeout, auto_download,
                  first_frame=None, last_frame=None,
                  ref_image_1=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
-                 custom_model="", save_dir="", filename=""):
+                 custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
 
@@ -575,7 +575,7 @@ class RespectSeedanceFourRefVideo:
             "async": True,
         }
 
-        url_list = _clean_urls([ref_url_1, ref_url_2, ref_url_3, ref_url_4])
+        url_list = _clean_urls(dynamic_url_inputs(kwargs))
 
         if generation_mode == "首帧生成视频":
             if url_list:
@@ -1162,6 +1162,7 @@ class RespectSeedanceUniversal:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -1174,10 +1175,9 @@ class RespectSeedanceUniversal:
     def generate(self, api_config, model, prompt, duration, aspect_ratio, poll_interval, poll_timeout, auto_download,
                  first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
                  ref_image_5=None, ref_image_6=None, ref_image_7=None, ref_image_8=None, ref_image_9=None,
-                 image_url="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
-                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="",
+                 image_url="",
                  extra_image_urls="", extra_video_urls="", extra_audio_urls="",
-                 custom_model="", save_dir="", filename=""):
+                 custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         body: dict = {"model": model, "prompt": prompt, "duration": int(duration), "aspect_ratio": aspect_ratio}
@@ -1186,13 +1186,16 @@ class RespectSeedanceUniversal:
         if main:
             body["image_url"] = main
 
+        # ref_image_N（IMAGE）和 ref_url_N（URL）都由「更新输入口」动态增减，
+        # 按同一个下标配对：第 N 号槽填了 URL 就用 URL，否则用该槽接的 IMAGE。
+        tensors = dynamic_image_inputs(kwargs, prefix="ref_image_")
+        urls = dynamic_url_inputs(kwargs)
         extras: list[str] = []
-        for t, u in zip(
-            (ref_image_2, ref_image_3, ref_image_4, ref_image_5,
-             ref_image_6, ref_image_7, ref_image_8, ref_image_9),
-            (ref_url_2, ref_url_3, ref_url_4, ref_url_5,
-             ref_url_6, ref_url_7, ref_url_8, ref_url_9),
-        ):
+        for i in range(max(len(tensors), len(urls))):
+            if i == 0:
+                continue                      # 第 1 张是首图，上面已经用掉了
+            t = tensors[i] if i < len(tensors) else None
+            u = urls[i] if i < len(urls) else ""
             r = _uni_ref(t, u)
             if r:
                 extras.append(r)

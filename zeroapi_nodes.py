@@ -16,6 +16,7 @@ import json
 
 
 from .utils import (
+    dynamic_url_inputs,
     RespectAPIError,
     api_request,
     download_to_output,
@@ -227,6 +228,7 @@ class RespectZeroSoraVeo:
                 # 新控件一律加在最后：已保存的工作流不会错位
                 "aspect_ratio": (ZERO_RATIOS, {"default": "自动(按size推算)", "tooltip": "显式发 aspect_ratio+ratio；不发的话服务端可能回落 16:9"}),
                 "seconds": ("INT", {"default": 0, "min": 0, "max": 60, "tooltip": "时长；0=不传该字段(用服务端默认)。sd2 只支持 5/10/15；veo/sora 一般不需要填"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -237,15 +239,14 @@ class RespectZeroSoraVeo:
 
     def generate(self, api_config, model, prompt, size, poll_interval, poll_timeout, auto_download,
                  first_frame=None, last_frame=None, ref_image_3=None, ref_image_4=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="",
                  remix_id="", custom_model="", custom_size="", save_dir="", filename="",
-                 aspect_ratio="自动(按size推算)", seconds=0):
+                 aspect_ratio="自动(按size推算)", seconds=0, inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
 
         refs = _collect_refs([first_frame, last_frame, ref_image_3, ref_image_4],
-                             [ref_url_1, ref_url_2, ref_url_3, ref_url_4])
+                             dynamic_url_inputs(kwargs))
         body: dict = {"model": model, "prompt": prompt, "size": size}
         # 显式带上比例（两个别名都发），否则服务端推断失败会变成 16:9
         ratio = _zero_ratio(size, aspect_ratio)
@@ -326,6 +327,7 @@ class RespectZeroImg2Video:
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
                 # 新控件加在最后：已保存的工作流不会错位
                 "aspect_ratio": (ZERO_RATIOS, {"default": "自动(按size推算)", "tooltip": "显式发 aspect_ratio+ratio；不发的话服务端可能回落 16:9"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -335,19 +337,16 @@ class RespectZeroImg2Video:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, duration, size, poll_interval, poll_timeout, auto_download,
-                 first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None,
-                 ref_url_1="", ref_url_2="", ref_url_3="", ref_url_4="", ref_url_5="",
-                 ref_url_6="", ref_url_7="", ref_url_8="", ref_url_9="", extra_image_urls="",
+                 first_frame=None, ref_image_2=None, ref_image_3=None, ref_image_4=None, extra_image_urls="",
                  custom_model="", custom_size="", save_dir="", filename="",
-                 aspect_ratio="自动(按size推算)"):
+                 aspect_ratio="自动(按size推算)", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
 
         imgs = _collect_refs(
             [first_frame, ref_image_2, ref_image_3, ref_image_4],
-            [ref_url_1, ref_url_2, ref_url_3, ref_url_4, ref_url_5,
-             ref_url_6, ref_url_7, ref_url_8, ref_url_9] + _zero_lines(extra_image_urls),
+            dynamic_url_inputs(kwargs) + _zero_lines(extra_image_urls),
             cap=9,
         )
         # duration 给数字、seconds 给字符串（该网关 seconds 是 string 类型），两个都发提高兼容

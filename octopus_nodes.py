@@ -151,6 +151,7 @@ class RespectOctopusVideo:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                "inputcount": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1, "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"}),
             },
         }
 
@@ -161,13 +162,13 @@ class RespectOctopusVideo:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, size, poll_interval, poll_timeout, auto_download,
-                 custom_size="", image_1=None, image_2=None, image_3=None, image_4=None,
-                 custom_model="", save_dir="", filename=""):
+                 custom_size="",
+                 custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         size = (custom_size or "").strip() or size
         body: dict = {"model": model, "prompt": prompt, "size": size}
-        refs = _octopus_image_refs([image_1, image_2, image_3, image_4])
+        refs = _octopus_image_refs(dynamic_image_inputs(kwargs))
         if refs:
             body["images"] = refs
 
