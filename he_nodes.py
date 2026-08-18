@@ -57,7 +57,7 @@ HE_VIDEO_MODELS = [
     # 旧名（已不在文档清单里，留着以防你的 key 还能用；跑不通就换上面的）
     "sd2-pro-720p", "seedance2.0-official2-720p", "seedance2.0-fast2-720p",
 ]
-HE_RATIOS = ["(不传)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+HE_RATIOS = ["(不传)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 HE_TRISTATE = ["on", "off", "(不传)"]
 
 # --- 图片 ---------------------------------------------------------------
@@ -67,7 +67,7 @@ HE_IMAGE_MODELS = [
 ]
 HE_EDIT_MODELS = ["gpt-image2-high", "gpt-image2-medium", "gpt-image2-low"]
 HE_IMAGE_SIZES = ["1K", "2K", "4K"]
-HE_IMAGE_RATIOS = ["1:1", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "21:9"]
+HE_IMAGE_RATIOS = ["1:1", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "21:9", "9:21"]
 HE_QUALITY = ["auto", "low", "medium", "high"]
 HE_FORMATS = ["png", "jpeg", "webp"]
 HE_BACKGROUNDS = ["auto", "opaque"]
@@ -222,6 +222,53 @@ class RespectHeVideo:
         return (video_url, local, task_id or "")
 
 
+
+# --- 图片异步模式（文档 2026-08 新增）------------------------------------
+# POST /v1/images/generations 带 async:true → task_id
+# GET  /v1/images/generations/{task_id} → in_progress(progress%) / completed / failed
+# 注意 failed 是**退款**的，所以失败不要盲目重投，先看错误原因。
+_HE_IMG_PATH = "/v1/images/generations/{tid}"
+
+
+def _he_task_id(data) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for k in ("task_id", "id", "request_id"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _he_poll_image(cfg, task_id: str, interval: int = 4, timeout: int = 900) -> list:
+    """轮询异步图片任务，返回图片资源列表。文档建议 3–5 秒一次。"""
+    start, last = time.time(), ""
+    while time.time() - start < timeout:
+        resp = api_request(cfg, "GET", _HE_IMG_PATH.format(tid=task_id), retries=1, timeout=60)
+        data = resp.json() if resp.content else {}
+        status = str(data.get("status") or "").lower()
+        if status != last:
+            prog = data.get("progress")
+            print(f"[Respect] 鹤 图片任务 {task_id}: {status}"
+                  + (f" {prog}%" if isinstance(prog, (int, float)) else ""))
+            last = status
+        if status == "failed":
+            msg = ""
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = str(err.get("message") or "")
+            raise RespectAPIError(
+                f"鹤 图片任务失败：{msg or json.dumps(data, ensure_ascii=False)[:300]}\n"
+                f"（文档写明 failed 会退款，所以别急着重投，先看这条原因）")
+        items = extract_image_payloads(data)
+        if items and status in ("completed", ""):
+            return items
+        if status == "completed":
+            raise RespectAPIError(f"任务已完成但没取到图片: {json.dumps(data, ensure_ascii=False)[:300]}")
+        time.sleep(interval)
+    raise RespectAPIError(f"鹤 图片任务超时: {task_id}（可调大 poll_timeout）")
+
+
 # ---------------------------------------------------------------------------
 # ② 鹤 图片生成（统一接口，同步）
 # ---------------------------------------------------------------------------
@@ -257,6 +304,9 @@ class RespectHeImage:
                 "ref_url": ("STRING", {"default": "", "multiline": False, "placeholder": "参考图公网URL，填了优先于 ref_image"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "custom_size": ("STRING", {"default": "", "multiline": False, "placeholder": "可选：直接指定像素 size，如 1024x1536"}),
+                "use_async": ("BOOLEAN", {"default": False, "tooltip": "文档新增：async=true 返回 task_id 后轮询 /v1/images/generations/{id}。4K 出图建议开，同步容易超时"}),
+                "poll_interval": ("INT", {"default": 4, "min": 3, "max": 60, "tooltip": "文档建议 3–5 秒"}),
+                "poll_timeout": ("INT", {"default": 900, "min": 60, "max": 3600}),
             },
         }
 
@@ -267,7 +317,8 @@ class RespectHeImage:
 
     def generate(self, api_config, model, prompt, imageSize, aspectRatio, n,
                  quality="auto", output_format="png", output_compression=0, background="auto",
-                 ref_image=None, ref_url="", custom_model="", custom_size=""):
+                 ref_image=None, ref_url="", custom_model="", custom_size="",
+                 use_async=False, poll_interval=4, poll_timeout=900):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         if not (prompt or "").strip():
@@ -297,12 +348,19 @@ class RespectHeImage:
         if ref:
             body["image"] = ref
 
+        if use_async:
+            body["async"] = True
+
         resp = api_request(cfg, "POST", "/v1/images/generations", json_body=body,
                            retries=2, timeout=max(cfg.timeout, 300))
         data = resp.json() if resp.content else {}
         items = extract_image_payloads(data)
         if not items:
-            raise RespectAPIError(f"未能从响应中提取图片: {json.dumps(data, ensure_ascii=False)[:400]}")
+            # 异步模式：拿 task_id 去 /v1/images/generations/{id} 轮询
+            tid = _he_task_id(data)
+            if not tid:
+                raise RespectAPIError(f"未能从响应中提取图片: {json.dumps(data, ensure_ascii=False)[:400]}")
+            items = _he_poll_image(cfg, tid, int(poll_interval), int(poll_timeout))
         revised = ""
         arr = data.get("data")
         if isinstance(arr, list) and arr and isinstance(arr[0], dict):
@@ -538,7 +596,11 @@ class RespectHeAssetUpload:
 # ---------------------------------------------------------------------------
 
 HE_SD25_MODELS = ["seedance-2.5-720p", "seedance-2.5-480p"]
-HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
+HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
+# 文档 2026-08 新增 start_image_url / end_image_url（「部分模型支持首尾帧控制」）。
+# 文档没说这两个能不能和 image_url 同时发，所以按模式分流、两组不混发 ——
+# 混着发万一被当成别的任务类型，错了是要计费的。
+HE_SD25_MODES = ["多参考图", "首尾帧"]
 
 
 class RespectHeSeedance25:
@@ -570,6 +632,7 @@ class RespectHeSeedance25:
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": ("INT", {"default": 15, "min": 4, "max": 29, "tooltip": "4–29 秒（整数）"}),
                 "aspect_ratio": (HE_SD25_RATIOS, {"default": "9:16"}),
+                "generation_mode": (HE_SD25_MODES, {"default": "多参考图", "tooltip": "选『首尾帧』就只发 start_image_url+end_image_url，不发 image_url —— 两组字段不混发，避免被当成别的任务类型"}),
                 "poll_interval": ("INT", {"default": 10, "min": 2, "max": 60}),
                 "poll_timeout": ("INT", {"default": 2400, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
@@ -596,7 +659,7 @@ class RespectHeSeedance25:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, duration, aspect_ratio,
-                 poll_interval, poll_timeout, auto_download,
+                 generation_mode, poll_interval, poll_timeout, auto_download,
                  extra_image_urls="", video_urls="", audio_urls="",
                  custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
@@ -627,12 +690,22 @@ class RespectHeSeedance25:
         if bad:
             problems.append(f"参考素材必须是公网 http(s) URL（接『对象存储上传』），"
                             f"这些不是：{bad[:2]}")
+        if generation_mode == "首尾帧" and len(imgs) < 2:
+            problems.append(f"首尾帧要 2 张图（第1张首帧、第2张尾帧），现在只有 {len(imgs)} 张")
         if problems:
             raise RespectAPIError("Seedance 2.5 参数不符合鹤的接口要求：" + "；".join(problems))
 
         body: dict = {"model": model, "prompt": prompt or "",
                       "duration": dur, "aspect_ratio": aspect_ratio}
-        if imgs:
+        if generation_mode == "首尾帧":
+            # 文档：start_image_url=首帧、end_image_url=末帧（部分模型支持）。
+            # 这条路径**不发 image_url / extra_images**，免得两组字段撞车。
+            body["start_image_url"], body["end_image_url"] = imgs[0], imgs[1]
+            if imgs[2:]:
+                print(f"[Respect] 首尾帧模式只用前 2 张，已忽略多余 {len(imgs) - 2} 张"
+                      f"（要多图参考请把模式切回『多参考图』）")
+        elif imgs:
+            # prompt 里可用 @Image1 / @Image2 引用，**顺序就是编号**
             body["image_url"] = imgs[0]
             if imgs[1:]:
                 body["extra_images"] = imgs[1:]
@@ -653,12 +726,170 @@ class RespectHeSeedance25:
         return (url, local, task_id or "")
 
 
+
+# ---------------------------------------------------------------------------
+# ⑥ 鹤 账户余额与价格（GET /v1/balance）
+# ---------------------------------------------------------------------------
+
+
+class RespectHeBalance:
+    """鹤 账户余额与实时价格（`GET /v1/balance`）。
+
+    返回余额、VIP 等级、今日生成次数，以及 **`current_prices`：当前 Key 实际适用的
+    模型价格表**。这张表就是最可靠的模型清单 —— 比文档里那两个示例模型名靠谱，
+    也不用去撞需要鉴权的 `/v1/models`。价格随 VIP 等级变，所以要按 Key 查。
+    """
+
+    DESCRIPTION = ("鹤 GET /v1/balance：余额 / VIP等级 / 今日次数 / current_prices 实时价格表。"
+                   "价格表同时就是该 Key 可用的模型清单，选模型前先跑这个。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
+            },
+            "optional": {
+                "filter": ("STRING", {"default": "", "multiline": False, "placeholder": "按关键字过滤模型名，如 sd2 / seedance / image"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "FLOAT", "INT")
+    RETURN_NAMES = ("report", "model_ids", "balance", "today_count")
+    OUTPUT_TOOLTIPS = ("可读报告（接『显示文字』看）", "模型名列表，每行一个", "余额", "今日已生成次数")
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+
+    def run(self, api_config, filter=""):
+        cfg = ensure_config(api_config)
+        resp = api_request(cfg, "GET", "/v1/balance", retries=1, timeout=60)
+        data = resp.json() if resp.content else {}
+
+        prices = data.get("current_prices") or {}
+        kw = (filter or "").strip().lower()
+        rows, ids = [], []
+        for name in sorted(prices, key=lambda k: (prices.get(k) or 0)):
+            if kw and kw not in name.lower():
+                continue
+            ids.append(name)
+            rows.append(f"  {name:<34} {prices[name]}")
+
+        bal = float(data.get("balance") or 0)
+        used = data.get("used")
+        report = (
+            f"鹤 账户\n"
+            f"  余额={bal} {data.get('currency', '')}"
+            + (f"（已用 {used}）" if used is not None else "")
+            + f"\n  等级={data.get('tier_name') or data.get('tier') or '未给'}"
+            f"  今日已生成={data.get('today_count', '未给')} 次\n\n"
+            f"当前适用价格表（{len(rows)} 个模型，按价格升序）：\n" + "\n".join(rows)
+        )
+        if not rows:
+            report += "  （没返回 current_prices —— 换个过滤词，或该 Key 暂无可用模型）"
+        report += "\n\n注：价格随 VIP 等级变，这张表就是该 Key 的真实可用清单，别照文档抄模型名。"
+        print(f"[Respect] 鹤 余额={bal} 等级={data.get('tier', '?')} 可用模型 {len(ids)} 个")
+        return (report, "\n".join(ids), bal, int(data.get("today_count") or 0))
+
+
+# ---------------------------------------------------------------------------
+# ⑦ 鹤 虚拟资产管理（列表 / 资产组状态 / 能力配置 / 删除）
+# ---------------------------------------------------------------------------
+
+
+HE_ASSET_ACTIONS = ["查询资产组状态", "查询资产列表", "查询上传能力配置", "删除资产"]
+
+
+class RespectHeAssetManage:
+    """鹤 虚拟资产管理。上传之外的 4 个接口合成一个节点，用 `action` 选。
+
+    **「查询资产组状态」是最该先跑的那个**：文档写明 `group_status` 和 `status`
+    **都为 active** 时资产组才可用于视频生成。单个资产 active 不代表能用 ——
+    组没好就提交，视频那边照样失败，而且看不出原因。
+    """
+
+    DESCRIPTION = ("鹤 虚拟资产管理：查资产组状态(group_status+status 都 active 才能用于生成)、"
+                   "列资产、查上传能力(configured:true 才支持)、删资产。")
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {
+            "required": {
+                "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
+                "action": (HE_ASSET_ACTIONS, {"default": "查询资产组状态"}),
+            },
+            "optional": {
+                "asset_id": ("STRING", {"default": "", "multiline": False, "placeholder": "删除资产时必填（va_xxx）"}),
+                "model": ("STRING", {"default": "", "multiline": False, "placeholder": "查上传能力时填模型名"}),
+                "page": ("INT", {"default": 1, "min": 1, "max": 999, "tooltip": "查列表用"}),
+                "page_size": ("INT", {"default": 20, "min": 1, "max": 100}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "BOOLEAN")
+    RETURN_NAMES = ("report", "asset_ids", "ready")
+    OUTPUT_TOOLTIPS = ("可读结果", "资产 ID 列表，每行一个", "资产组是否已就绪（可用于视频生成）")
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+    OUTPUT_NODE = True
+
+    def run(self, api_config, action, asset_id="", model="", page=1, page_size=20):
+        cfg = ensure_config(api_config)
+        aid = (asset_id or "").strip()
+
+        if action == "删除资产":
+            if not aid:
+                raise RespectAPIError("删除资产必须填 asset_id（va_xxx）")
+            resp = api_request(cfg, "DELETE", f"/v1/virtual-assets/{aid}", retries=1, timeout=60)
+            data = resp.json() if resp.content else {}
+            return (f"已删除 {aid}\n{json.dumps(data, ensure_ascii=False)[:300]}", "", False)
+
+        if action == "查询上传能力配置":
+            params = {"model": model.strip()} if (model or "").strip() else None
+            resp = api_request(cfg, "GET", "/v1/virtual-assets/config", params=params,
+                               retries=1, timeout=60)
+            data = resp.json() if resp.content else {}
+            ok = bool(data.get("configured"))
+            return (f"configured={ok}（true 才支持虚拟资产上传）\n"
+                    f"{json.dumps(data, ensure_ascii=False)[:600]}", "", ok)
+
+        if action == "查询资产列表":
+            resp = api_request(cfg, "GET", "/v1/virtual-assets",
+                               params={"page": int(page), "page_size": int(page_size)},
+                               retries=1, timeout=60)
+            data = resp.json() if resp.content else {}
+            arr = data.get("data") or data.get("assets") or []
+            ids, rows = [], []
+            for a in arr if isinstance(arr, list) else []:
+                if not isinstance(a, dict):
+                    continue
+                i = str(a.get("id") or a.get("asset_id") or "")
+                if i:
+                    ids.append(i)
+                rows.append(f"  {i:<40} {a.get('status', '?'):<10} {a.get('type', '')}")
+            return (f"第 {page} 页，共 {len(rows)} 项：\n" + "\n".join(rows), "\n".join(ids), False)
+
+        # 查询资产组状态
+        resp = api_request(cfg, "GET", "/v1/virtual-assets/group", retries=1, timeout=60)
+        data = resp.json() if resp.content else {}
+        gs = str(data.get("group_status") or "")
+        st = str(data.get("status") or "")
+        ready = gs == "active" and st == "active"
+        note = ("✅ 资产组已就绪，可以用于视频生成" if ready else
+                "⏳ **还不能用于视频生成** —— 文档要求 group_status 和 status 都为 active。"
+                "单个资产 active 不代表组好了，这时候提交视频会失败且看不出原因，"
+                "每 2–3 秒再查一次。")
+        return (f"group_status={gs or '未给'}  status={st or '未给'}\n{note}\n\n"
+                f"{json.dumps(data, ensure_ascii=False)[:600]}", "", ready)
+
+
 NODE_CLASS_MAPPINGS = {
     "RespectHeVideo": RespectHeVideo,
     "RespectHeSeedance25": RespectHeSeedance25,
     "RespectHeImage": RespectHeImage,
     "RespectHeImageEdit": RespectHeImageEdit,
     "RespectHeAssetUpload": RespectHeAssetUpload,
+    "RespectHeBalance": RespectHeBalance,
+    "RespectHeAssetManage": RespectHeAssetManage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -667,4 +898,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectHeImage": "Respect 鹤 图片生成（统一接口）",
     "RespectHeImageEdit": "Respect 鹤 图生图/多图融合（≤16张）",
     "RespectHeAssetUpload": "Respect 鹤 虚拟资产上传（图/视频/音频）",
+    "RespectHeBalance": "Respect 鹤 余额与价格表（先查再选模型）",
+    "RespectHeAssetManage": "Respect 鹤 虚拟资产管理（组状态/列表/删除）",
 }
