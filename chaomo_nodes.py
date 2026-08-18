@@ -29,11 +29,13 @@ from .llm_nodes import _img_task_id, _poll_image_task
 from .utils import (
     RespectAPIError,
     api_request,
+    b64_decode_loose,
     download_to_output,
     dynamic_image_inputs,
     dynamic_url_inputs,
     ensure_config,
     expand_image_frames,
+    extract_data_array_images,
     extract_image_payloads,
     resolve_image_to_tensor,
     tensor_to_b64,
@@ -45,18 +47,97 @@ CATEGORY = "Respect/超模"
 
 CM_VIDEO_MODELS = ["seedance2", "seedance2-fast", "seedance2-mini"]
 CM_IMAGE_MODELS = [
+    # Native 三档：官方原生接口，2026-08 确认在售
+    "gpt-image2-1K-Native", "gpt-image2-2K-Native", "gpt-image2-4K-Native",
     "gpt-image2-1K", "gpt-image2-2K-low", "gpt-image2-4K-low",
     "gpt-image2-2K-Direct", "gpt-image2-4K-Direct", "gpt-image2-4K",
     "gpt-image-1k-th",
     "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
 ]
 CM_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "2:3", "3:2", "21:9"]
+# quality：文档示例用 "high"，其余取值没列全，所以默认「(不传)」——
+# 不猜着发，发了不认识的值可能整单 400。
+CM_QUALITY = ["(不传)", "high", "medium", "low", "auto"]
 CM_SIZES = ["720p", "1080p", "480p", "4k"]      # 视频 size = 分辨率档位
 CM_MAX_REFS = 9
 
 
 def _cm_lines(s: str, cap: int) -> list:
     return [ln.strip() for ln in (s or "").splitlines() if ln.strip()][:cap]
+
+
+def _cm_meta(data) -> dict:
+    """取 include_metadata 回来的核验信息（实际宽高 / 格式 / 字节数 / 耗时）。"""
+    if not isinstance(data, dict):
+        return {}
+    for key in ("metadata", "meta", "info"):
+        v = data.get(key)
+        if isinstance(v, dict):
+            return v
+    arr = data.get("data")
+    if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+        v = arr[0].get("metadata")
+        if isinstance(v, dict):
+            return v
+    return {}
+
+
+def _cm_check_meta(meta: dict, items: list, what: str) -> None:
+    """拿网关自报的字节数核对手里的数据 —— 这是判断「有没有被截断」的硬证据。
+
+    文档说 include_metadata 会给「**可核验的**实际图片宽高、格式和字节数」，
+    那就真的拿来核验：base64 解出来的长度对不上，说明传输途中丢了数据，
+    当场说清楚，而不是等 PIL 报一句看不懂的 "cannot identify image file"。
+    """
+    if not meta:
+        return
+    size = next((meta.get(k) for k in ("bytes", "size_bytes", "byte_size", "file_size")
+                 if isinstance(meta.get(k), (int, float))), None)
+    desc = "  ".join(f"{k}={meta[k]}" for k in
+                     ("width", "height", "format", "bytes", "size_bytes", "elapsed", "duration")
+                     if k in meta)
+    if desc:
+        print(f"[Respect] 超模 {what} 核验信息: {desc}")
+    if not size:
+        return
+    for item in items:
+        if not (isinstance(item, str) and item.startswith("data:")):
+            continue
+        try:
+            got = len(b64_decode_loose(item.split(",", 1)[1]))
+        except Exception:                                   # noqa: BLE001
+            continue
+        if got < int(size) * 0.98:                          # 留 2% 容差（元数据可能不含容器开销）
+            raise RespectAPIError(
+                f"超模说这张图有 {int(size)} 字节，实际只收到 {got} 字节"
+                f"（缺 {int(size) - got}，{100 - got * 100 // int(size)}%）。\n"
+                f"**数据在传输途中丢了**，不是解析问题。建议在节点上把 use_async 打开 —— "
+                f"文档写明「异步任务固定返回 URL 结果」，走链接下载就不用把几 MB 的图"
+                f"塞进 JSON 的 base64 字段，从根上避开这个问题。")
+
+
+def _cm_finish(items: list, cfg, model: str, what: str) -> tuple:
+    """把响应里的图片资源统一转成节点输出。
+
+    这家**可能一次返回多张**（4K 系尤其要留意），所以：
+    - IMAGE 输出把所有张拼成一个批次（后面接保存节点会全部存下来）
+    - `image_url` 只给第一张（兼容老连线），全部链接走 `image_urls`（每行一个）
+    只导出第一张的话，多出来的那些等于花了钱没拿到手。
+    """
+    tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
+    if not tensors:
+        raise RespectAPIError(
+            f"超模返回了 {len(items)} 项结果，但一项都解析不成图片。\n"
+            f"**上面那行 `[Respect] 图片解析失败：…` 写了具体原因**，按它说的判断：\n"
+            f"  · 「解码就失败了」/「数据不完整」→ 网关把图截断了，重跑一次；一直这样就是它那边的问题\n"
+            f"  · 「开头不是任何已知图片格式」→ 返回的压根不是图（可能是错误信息），把响应贴出来看\n"
+            f"首项开头：{str(items[0])[:120]}…")
+    urls = [i for i in items if isinstance(i, str) and i.startswith("http")]
+    if len(items) > 1:
+        print(f"[Respect] 超模 {what} 返回 {len(items)} 张（其中 {len(urls)} 个链接）；"
+              f"IMAGE 输出已拼成 {len(tensors)} 张的批次，全部链接见 image_urls")
+    return (tensors_concat(tensors), urls[0] if urls else "", model,
+            "\n".join(urls), len(tensors))
 
 
 def _cm_block(kind: str, url: str) -> dict:
@@ -153,7 +234,6 @@ class RespectChaomoVideo:
 
         print(f"[Respect] 超模 {model}: seconds='{seconds}' size={size} "
               f"content块 图{len(imgs)}/视频{len(vids)}/音频{len(auds)}")
-        print(f"[Respect] body={json.dumps(body, ensure_ascii=False)[:400]}")
         resp = api_request(cfg, "POST", "/v1/videos", json_body=body,
                            retries=2, timeout=max(cfg.timeout, 300))
         data = resp.json() if resp.content else {}
@@ -203,16 +283,20 @@ class RespectChaomoImage:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "response_format": ("STRING", {"default": "url", "multiline": False, "placeholder": "url 或 b64_json"}),
                 "use_async": ("BOOLEAN", {"default": True, "tooltip": "文档示例带 async:true；关掉则按同步解析"}),
+                "quality": (CM_QUALITY, {"default": "(不传)", "tooltip": "文档示例用 high；选(不传)就不带该字段"}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("image", "image_url", "model_used")
+    # image_urls / count 是后加的，**必须追加在末尾**，否则已保存工作流的连线会错位
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("image", "image_url", "model_used", "image_urls", "count")
+    OUTPUT_TOOLTIPS = ("所有返回的图拼成的批次", "第一张的链接", "实际用的模型",
+                       "全部链接，每行一个（一次返回多张时用这个）", "这次拿到几张")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, ratio, poll_interval, poll_timeout,
-                 custom_model="", response_format="url", use_async=True):
+                 custom_model="", response_format="url", use_async=True, quality="(不传)"):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         if not (prompt or "").strip():
@@ -224,26 +308,29 @@ class RespectChaomoImage:
             "ratio": ratio,                    # 不是 size / aspect_ratio
             "n": 1,                            # 文档：固定 1
             "response_format": (response_format or "url").strip() or "url",
+            # 文档：返回可核验的实际图片宽高、格式和字节数 —— 用来核对有没有传丢
+            "include_metadata": True,
         }
+        if not quality.startswith("("):
+            body["quality"] = quality
         if use_async:
+            # 文档：**异步任务固定返回 URL 结果**，避开 base64 传大图
             body["async"] = True
 
         print(f"[Respect] 超模 图片 {model}: ratio={ratio} async={bool(use_async)}")
         resp = api_request(cfg, "POST", "/v1/images/generations", json_body=body,
                            retries=2, timeout=max(cfg.timeout, 300))
         data = resp.json() if resp.content else {}
-        items = extract_image_payloads(data)
+        # 先按规范的 data[] 严格取（一个元素=一张），取不到再退回兜底的递归解析
+        items = extract_data_array_images(data) or extract_image_payloads(data)
         if not items:
             tid = _img_task_id(data)
             if not tid:
                 raise RespectAPIError(f"未取到图片也没有任务 ID: {json.dumps(data, ensure_ascii=False)[:400]}")
             items = _poll_image_task(cfg, tid, interval=int(poll_interval), timeout=int(poll_timeout))
+        _cm_check_meta(_cm_meta(data), items, "图片")
 
-        tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
-        if not tensors:
-            raise RespectAPIError(f"取到结果但无法解析为图片: {str(items)[:300]}")
-        first = items[0] if isinstance(items[0], str) else ""
-        return (tensors_concat(tensors), first if first.startswith("http") else "", model)
+        return _cm_finish(items, cfg, model, "图片")
 
 
 # ---------------------------------------------------------------------------
@@ -280,17 +367,23 @@ class RespectChaomoImageEdit:
                 "image_4": ("IMAGE",),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "response_format": ("STRING", {"default": "url", "multiline": False, "placeholder": "url 或 b64_json"}),
+                "use_async": ("BOOLEAN", {"default": True, "tooltip": "强烈建议开：文档写明异步任务固定返回 URL，走链接下载可避开 base64 传输把大图弄坏"}),
+                "quality": (CM_QUALITY, {"default": "(不传)", "tooltip": "文档示例用 high；选(不传)就不带该字段"}),
                 "inputcount": ("INT", {"default": 4, "min": 1, "max": 9, "step": 1, "tooltip": "参考图接口数量（≤9）；改完点『更新输入口』按钮"}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("image", "image_url", "model_used")
+    # image_urls / count 是后加的，**必须追加在末尾**，否则已保存工作流的连线会错位
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("image", "image_url", "model_used", "image_urls", "count")
+    OUTPUT_TOOLTIPS = ("所有返回的图拼成的批次", "第一张的链接", "实际用的模型",
+                       "全部链接，每行一个（一次返回多张时用这个）", "这次拿到几张")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, ratio, poll_interval, poll_timeout,
-                 custom_model="", response_format="url", inputcount=4, **kwargs):
+                 custom_model="", response_format="url", use_async=True,
+                 quality="(不传)", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         if not (prompt or "").strip():
@@ -307,7 +400,14 @@ class RespectChaomoImageEdit:
             ("ratio", (None, ratio)),
             ("n", (None, "1")),
             ("response_format", (None, (response_format or "url").strip() or "url")),
+            # 文档：**异步任务固定返回 URL 结果**。走异步就不用把几 MB 的图塞进
+            # JSON 的 base64 字段 —— 那条路上任何一处丢字节都会让整张图报废。
+            ("async", (None, "true" if use_async else "false")),
+            # 文档：返回可核验的实际图片宽高、格式和**字节数**，用来核对有没有传丢
+            ("include_metadata", (None, "true")),
         ]
+        if not quality.startswith("("):
+            files.append(("quality", (None, quality)))
         for i, frame in enumerate(frames):
             b64 = tensor_to_b64(frame, fmt="PNG", max_side=2048)
             if not b64:
@@ -319,18 +419,16 @@ class RespectChaomoImageEdit:
         resp = api_request(cfg, "POST", "/v1/images/edits", files=files,
                            retries=2, timeout=max(cfg.timeout, 600))
         data = resp.json() if resp.content else {}
-        items = extract_image_payloads(data)
+        # 先按规范的 data[] 严格取（一个元素=一张），取不到再退回兜底的递归解析
+        items = extract_data_array_images(data) or extract_image_payloads(data)
         if not items:
             tid = _img_task_id(data)
             if not tid:
                 raise RespectAPIError(f"未取到图片也没有任务 ID: {json.dumps(data, ensure_ascii=False)[:400]}")
             items = _poll_image_task(cfg, tid, interval=int(poll_interval), timeout=int(poll_timeout))
+        _cm_check_meta(_cm_meta(data), items, "图生图")
 
-        tensors = [t for t in (resolve_image_to_tensor(i, cfg) for i in items) if t is not None]
-        if not tensors:
-            raise RespectAPIError(f"取到结果但无法解析为图片: {str(items)[:300]}")
-        first = items[0] if isinstance(items[0], str) else ""
-        return (tensors_concat(tensors), first if first.startswith("http") else "", model)
+        return _cm_finish(items, cfg, model, "图生图")
 
 
 NODE_CLASS_MAPPINGS = {
