@@ -40,30 +40,58 @@ XP_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 XP_MODES = ["文生视频", "首帧生成视频", "首尾帧生成视频", "多参考图生成视频", "首帧+参考图生成视频"]
 
 # --- 各分支模型（照 3.3.25 文档第 2 节的「实际 model 值」原样） ---
-XP_SD2_NATIVE_MODELS = [           # #13 全系原卡蒸（按秒）
+# ⚠ 以下两组是 3.3.25 的模型名，**在 3.3.53 里已经整批不存在**（会 503 no available channel）。
+# 保留是为了不让已保存的工作流一打开就报错，但请改用新节点：
+#   sd2-*（全系按秒）        → 『Respect 小裴 SD2.0 全系列不卡脸（metadata）』
+#   火山官方sd2-*（按秒）     → 『Respect 小裴 火山官方 sd稳定版（content块）』
+# 新旧不只是名字变了，请求体也整个换了形状（metadata / content 块），不能只改模型名。
+XP_SD2_NATIVE_MODELS = [           # 3.3.25 #13，已下线
     "sd2-480fast（全系按秒）", "sd2-480max（全系按秒）",
     "sd2-720fast（全系按秒）", "sd2-720max（全系按秒）",
     "sd2-1080fast（全系按秒）", "sd2-1080max（全系按秒）",
 ]
-XP_SD2_VOLC_MODELS = [             # #14 官方即梦全系卡蒸（按秒）
+XP_SD2_VOLC_MODELS = [             # 3.3.25 #14，已下线
     "火山官方sd2-480fast（按秒）", "火山官方sd2-480max（按秒）",
     "火山官方sd2-720fast（按秒）", "火山官方sd2-720max（按秒）",
     "火山官方sd2-1080max（按秒）",
 ]
-XP_SD2_LOWEST_MODELS = [           # #15 sd-2.0 最低渠道（卡蒸）
-    "sd-2.0-480满血（卡蒸）最低渠道", "sd-2.0-480fast（卡蒸）最低渠道",
-    "sd-2.0-720满血（卡蒸）最低渠道", "sd-2.0-720fast（卡蒸）最低渠道",
-    "sd-2.0-1080满血（卡蒸）最低渠道",
+# 3.3.53 把「最低渠道」换成了「惊喜渠道」，并且 933 分支用的是**同一套双端点协议**：
+#   文生/单首帧 → POST /v1/videos      {seconds, size, aspect_ratio, input_reference{image_url}}
+#   首尾/多参考 → POST /v1/video/generations {duration, resolution, aspect_ratio, image_references[]}
+# 可灵 omni 惊喜只有一处不同：多参考的字段叫 images 而不是 image_references（见 XP_DUAL_IMAGES_MODELS）
+XP_SD2_LOWEST_MODELS = [
+    # #9 sd-满血不卡脸-933
+    "sd-480满血-933（按次）", "sd-720满血-933（按次）",
+    "sd-480满血-933（按秒）", "sd-720满血-933（按秒）",
+    # #12 sd-2.0 惊喜渠道（卡脸）
+    "sd-2.0-480满血（卡脸）惊喜渠道", "sd-2.0-480fast（卡脸）惊喜渠道",
+    "sd-2.0-720满血（卡脸）惊喜渠道", "sd-2.0-720fast（卡脸）惊喜渠道",
+    "sd-2.0-1080满血（卡脸）惊喜渠道",
+    # #12 sd-2.0 惊喜渠道（不卡脸）
+    "sd-2.0-720满血（不卡脸）惊喜渠道", "sd-2.0-480满血（不卡脸）惊喜渠道",
+    # #13 快乐马惊喜（只支持文生/单首帧）  #14 可灵omni惊喜
+    "快乐马1.1（不卡脸）惊喜渠道", "可灵-3.0-omni（不卡脸）惊喜渠道",
 ]
-XP_SD_ROTATE_MODELS = [            # #10 sd 轮换渠道（动态调价）
-    "sd-720fast-不卡蒸（按次）", "sd-720满血-较快（按次）", "sd-720满血-不卡蒸（按次）",
+# 这两支的 /v1/videos 请求要多带 n:1（文档 #13 #14 示例里都有）
+XP_DUAL_NEEDS_N = ("快乐马1.1（不卡脸）惊喜渠道", "可灵-3.0-omni（不卡脸）惊喜渠道")
+# 可灵 omni 多参考用 images，不是 image_references（文档 #14 末尾特意点名）
+XP_DUAL_IMAGES_MODELS = ("可灵-3.0-omni（不卡脸）惊喜渠道",)
+# 只支持文生和单首帧，给了多图/视频/音频都是白花钱（文档 #13）
+XP_DUAL_SINGLE_ONLY = ("快乐马1.1（不卡脸）惊喜渠道",)
+XP_SD_ROTATE_MODELS = [            # 3.3.53 #10 sd 轮换渠道（动态调价）
+    # 3.3.53 改动：「卡蒸」→「卡脸」，「较快」→「较慢」，并新增两个 2.5 变体。
+    # 模型名对不上会 503 no available channel，所以这里按新文档原样抄。
+    "sd-720fast-不卡脸（按次）", "sd-720满血-较慢（按次）", "sd-720满血-不卡脸（按次）",
+    "sd-2.5-轮换渠道（按次）",
     "sd-720fast（按秒）", "sd-720满血（按秒）",
+    "sd-2.5-轮换渠道（按秒）",
 ]
-XP_SD2_PERUSE_MODELS = [           # #11 全系渠道卡蒸（按次）
-    "sd-480-fast-渠道9:16（按次）", "sd-480-fast-渠道16:9（按次）",
-    "sd-720-fast-渠道9:16（按次）", "sd-720-fast-渠道16:9（按次）",
-    "sd-720-max-渠道9:16（按次）", "sd-720-max-渠道16:9（按次）",
-]
+# 文档 #10：按次的固定 15 秒；2.5 按秒可到 29 秒；2.5 两支素材上限也更高
+XP_ROTATE_FIXED15 = ("sd-720fast-不卡脸（按次）", "sd-720满血-较慢（按次）", "sd-720满血-不卡脸（按次）")
+XP_ROTATE_25 = ("sd-2.5-轮换渠道（按次）", "sd-2.5-轮换渠道（按秒）")
+# 3.3.53 里「全系渠道卡蒸（按次）」那 6 个单位已经没有了，只剩下面的 ad 渠道 10 个。
+# 保留空列表是为了不动下面 `XP_SD2_PERUSE_MODELS + XP_SD2_AD_MODELS` 的写法。
+XP_SD2_PERUSE_MODELS: list[str] = []
 XP_SD2_AD_MODELS = [               # #12 全系 ad 渠道卡蒸（按次）
     "sd2.0-480fast-ad渠道16x9", "sd2.0-480fast-ad渠道9x16",
     "sd2.0-480满血-ad渠道16x9", "sd2.0-480满血-ad渠道9x16",
@@ -215,6 +243,9 @@ def _xp_ref_inputs(n_images: int = 4, *, with_media: bool = True) -> dict:
     opt["custom_model"] = ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"})
     opt["save_dir"] = ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"})
     opt["filename"] = ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"})
+    # 放最后：widgets_values 是按顺序存的，插在中间会让已保存的工作流参数错位
+    opt["inputcount"] = ("INT", {"default": n_images, "min": 1, "max": 30, "step": 1,
+                                 "tooltip": "参考图接口数量；改完点节点上的『更新输入口』按钮增减"})
     return opt
 
 
@@ -237,8 +268,9 @@ class RespectXPSd2Native:
     图片最多 9 张。
     """
 
-    DESCRIPTION = ("小裴 SD2 全系卡蒸/火山官方（按秒）。start_image_url+end_image_url 首尾帧、"
-                   "extra_images(≤9)/extra_videos(≤3)/extra_audios(≤3)。参考素材自动上传换公网URL。")
+    DESCRIPTION = ("⚠已过时（3.3.25 形状）：这批模型名在 3.3.53 已下线，且请求体换了形状。"
+                   "SD2 全系请改用『SD2.0 全系列不卡脸（metadata）』，火山官方请改用"
+                   "『火山官方 sd稳定版（content块）』。保留本节点只为老工作流不报错。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -318,8 +350,9 @@ class RespectXPSd2Lowest:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
-        req = _xp_common_inputs(XP_SD2_LOWEST_MODELS, "sd-2.0-720fast（卡蒸）最低渠道", duration=(6, 4, 15))
-        req["resolution"] = (XP_RESOLUTIONS, {"default": "720p"})
+        req = _xp_common_inputs(XP_SD2_LOWEST_MODELS, "sd-720满血-933（按秒）", duration=(6, 4, 15))
+        req["resolution"] = (XP_RESOLUTIONS, {"default": "720p",
+                                              "tooltip": "文生/单首帧时它就是 size，首尾/多参考时是 resolution"})
         return {"required": req, "optional": _xp_ref_inputs(4)}
 
     RETURN_TYPES, RETURN_NAMES, OUTPUT_TOOLTIPS = _RET, _RET_NAMES, _RET_TIPS
@@ -335,25 +368,38 @@ class RespectXPSd2Lowest:
         imgs = _xp_media_urls(cfg, [kwargs.get(f"image_{i + 1}") for i in range(9)], image_urls, 9)
         headers = {"Idempotency-Key": uuid.uuid4().hex}
 
-        base: dict = {"model": model, "prompt": prompt, "duration": int(duration),
-                      "resolution": resolution, "aspect_ratio": aspect_ratio}
         multi = generation_mode in ("首尾帧生成视频", "多参考图生成视频", "首帧+参考图生成视频")
+        if multi and model in XP_DUAL_SINGLE_ONLY:
+            raise RespectAPIError(
+                f"{model} 只支持文生和单首帧（文档 #13），不接受首尾帧/多图/视频/音频。\n"
+                f"要多参考请换 933 或 sd-2.0 惊喜渠道的单位。")
 
         if not multi:
-            body = dict(base)
+            # 文生 / 单首帧：走 /v1/videos，字段是 seconds + size + input_reference
+            body: dict = {"model": model, "prompt": prompt, "seconds": int(duration),
+                          "size": resolution, "aspect_ratio": aspect_ratio}
+            if model in XP_DUAL_NEEDS_N:
+                body["n"] = 1
             if generation_mode == "首帧生成视频":
                 if not imgs:
                     raise RespectAPIError("首帧生成视频需要 1 张参考图")
+                # 必须是对象，不能把 URL 直接写成字符串（文档 #12 明说）
                 body["input_reference"] = {"image_url": imgs[0]}
             direct, task_id, _ = _xp_submit(cfg, "/v1/videos", body, headers=headers)
             url = direct or _async_poll(cfg, task_id, interval=int(poll_interval), timeout=int(poll_timeout))
         else:
+            # 首尾/多参考：走 /v1/video/generations，字段换成 duration + resolution
             if generation_mode == "首尾帧生成视频" and len(imgs) < 2:
                 raise RespectAPIError("首尾帧需要 2 张图（索引0=首帧、索引1=尾帧）")
             if not imgs:
                 raise RespectAPIError("该模式至少需要 1 张参考图")
-            body = dict(base)
-            body["image_references"] = imgs[:2] if generation_mode == "首尾帧生成视频" else imgs
+            body = {"model": model, "prompt": prompt, "duration": int(duration),
+                    "resolution": resolution, "aspect_ratio": aspect_ratio}
+            if model in XP_DUAL_NEEDS_N:
+                body["n"] = 1
+            picked = imgs[:2] if generation_mode == "首尾帧生成视频" else imgs
+            key = "images" if model in XP_DUAL_IMAGES_MODELS else "image_references"
+            body[key] = picked
             vids = _xp_local_or_urls(cfg, video_urls, video_paths)
             if vids:
                 body["video_references"] = vids
@@ -483,6 +529,8 @@ class RespectXPOmni:
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，填了覆盖上方模型"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
+                # 放最后：widgets_values 按顺序存，插中间会让已保存的工作流参数错位
+                "inputcount": ("INT", {"default": 5, "min": 1, "max": 5, "step": 1, "tooltip": "参考图接口数量（omni 多图最多 5 张）；改完点『更新输入口』按钮"}),
             },
         }
 
@@ -493,7 +541,7 @@ class RespectXPOmni:
     def generate(self, api_config, model, prompt, generation_mode, aspect_ratio,
                  poll_interval, poll_timeout, auto_download,
                  image_urls="", video_urls="", video_paths="",
-                 custom_model="", save_dir="", filename="", **kwargs):
+                 custom_model="", save_dir="", filename="", inputcount=5, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         body: dict = {"model": model, "prompt": prompt,
@@ -562,12 +610,20 @@ class RespectXPSdRotate:
                  custom_model="", save_dir="", filename="", **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
-        imgs = _xp_media_urls(cfg, [kwargs.get(f"image_{i + 1}") for i in range(9)], image_urls, 9)
+        # 2.5 两支的素材上限更高（图30/视频音频各10），得先按模型定上限再取图
+        cap_i, cap_m = (30, 10) if model in XP_ROTATE_25 else (9, 3)
+        imgs = _xp_media_urls(cfg, [kwargs.get(f"image_{i + 1}") for i in range(cap_i)],
+                              image_urls, cap_i)
 
         sec = int(duration)
-        if "按次" in model and sec != 15:
-            print(f"[Respect] {model} 是按次单位，时长固定 15 秒（已忽略 {sec}）")
+        # 3.3.53 #10：只有这三支固定 15 秒；2.5 轮换（按次）是 4-15、（按秒）到 29
+        if model in XP_ROTATE_FIXED15 and sec != 15:
+            print(f"[Respect] {model} 时长固定 15 秒（已忽略 {sec}）")
             sec = 15
+        elif model == "sd-2.5-轮换渠道（按秒）":
+            sec = min(29, max(4, sec))
+        else:
+            sec = min(15, max(4, sec))
         body: dict = {"model": model, "prompt": prompt, "aspect_ratio": aspect_ratio,
                       "seconds": str(sec), "resolution": "720p"}
 
@@ -590,10 +646,10 @@ class RespectXPSdRotate:
             if imgs[1:]:
                 body["reference_image_urls"] = imgs[1:]
 
-        vids = _xp_local_or_urls(cfg, video_urls, video_paths)
+        vids = _xp_local_or_urls(cfg, video_urls, video_paths, cap_m)
         if vids:
             body["reference_videos"] = vids
-        auds = _xp_local_or_urls(cfg, audio_urls, audio_paths)
+        auds = _xp_local_or_urls(cfg, audio_urls, audio_paths, cap_m)
         if auds:
             body["reference_audios"] = auds
 
@@ -628,7 +684,7 @@ class RespectXPSd2PerUse:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 默认 https://api.aicopy.top"}),
-                "model": (XP_SD2_PERUSE_MODELS + XP_SD2_AD_MODELS, {"default": "sd-720-fast-渠道9:16（按次）"}),
+                "model": (XP_SD2_PERUSE_MODELS + XP_SD2_AD_MODELS, {"default": "sd2.0-720满血-ad渠道16x9"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "size": (XP_SD2_PERUSE_SIZES, {"default": "720x1280", "tooltip": "要和所选单位的比例/分辨率一致"}),
                 "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60}),
@@ -750,13 +806,13 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RespectXPSd2Native": "Respect 小裴 SD2 全系/火山官方（按秒）",
-    "RespectXPSd2Lowest": "Respect 小裴 SD2 最低渠道（双端点）",
-    "RespectXPSd2PerUse": "Respect 小裴 SD2 按次/ad渠道（嵌套input）",
+    "RespectXPSd2Native": "Respect 小裴 SD2全系/火山（⚠3.3.25已过时）",
+    "RespectXPSd2Lowest": "Respect 小裴 933/惊喜渠道（双端点）",
+    "RespectXPSd2PerUse": "Respect 小裴 ad渠道按次（input.media）",
     "RespectXPSdRotate": "Respect 小裴 SD 轮换渠道（动态调价）",
     "RespectXPVeo": "Respect 小裴 VEO 视频生成",
     "RespectXPOmni": "Respect 小裴 Omni 生成/编辑",
-    "RespectXPGrok16": "Respect 小裴 Grok 16/20秒",
+    "RespectXPGrok16": "Respect 小裴 Grok 16/20秒（⚠3.3.25已过时）",
 }
 
 
