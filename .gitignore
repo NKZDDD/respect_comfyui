@@ -54,3 +54,25 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# ---- 参考资料，不入库 ----------------------------------------------------
+# skill 原稿（docx）和解包出来的目录：是**参考**，不是本仓库的源码。
+# 提交它们的坏处：几百 KB 的二进制每改一版就多一份历史，而且 skill 有自己
+# 的版本节奏，混进插件仓库之后没人说得清哪一版对应哪一版代码。
+*.docx
+*.doc
+produce-cinematic-ai-short-drama*/
+
+# 各家网关的接口文档（apifox 导出、飞书导出、厂商给的 md/txt）。
+# 里面常带**示例 key 和账号信息**，而且是别人的资料，不该进公开仓库。
+*接口文档*
+*API文档*
+*apifox*
+*Documentation.md
+
+# 发布包与构建快照。releases/ 424 MB、v61_all_providers_build_* 311 MB，
+# 都是 script-to-video-studio 打出来的 exe 和整份代码拷贝 ——
+# 那个项目有自己的仓库，要发版走 Release，别塞进插件仓库的历史。
+releases/
+*_build_2*/
+*.zip
