@@ -29,7 +29,8 @@ import json
 import os
 
 from .utils import (RespectAPIError, api_request, download_to_output,
-                    dynamic_url_inputs, ensure_config, extract_image_payloads,
+                    dynamic_url_inputs, ensure_config, extract_data_array_images,
+                    extract_image_payloads,
                     resolve_image_to_tensor, tensors_concat)
 from .video_nodes import _async_extract_url, _async_poll, _sd2_extract_task_id
 
@@ -37,21 +38,25 @@ CATEGORY = "Respect/小霸龙"
 
 XBL_IMAGE_MODELS = ["gemini-3-pro-image", "gemini-3.1-flash-image",
                     "image2", "image2-2k4k", "image2-4k", "image2-high"]
+# 2026-08-16 从 GET /api/pricing（公开可读）实拉的清单，**不是文档 r21 里那批**。
+# r21（2026-07-30）写的 bh2.0-* / gz-sd480p / sdvip* / doubaofast / quanneng2.0 /
+# fd-Seedance 2.0 933 / video-standard-720p / B-quannengship2.0 现在**全部查不到**，
+# 20 个里只活下来 sd2-fast福利 和 sd2-福利 两个。所以别照文档抄模型名。
+# 文档自己也写了：不要把 /v1/models 或 /api/pricing 永久硬编码 —— 拿不准就跑
+# 『Respect 小霸龙 模型与价格』节点看当下的。
 XBL_VIDEO_MODELS = [
-    "bh2.0-mini-480p", "bh2.0-mini-720p", "bh2.0-fast-480p", "bh2.0-fast-720p",
-    "bh2.0-480p", "bh2.0-720p", "bh2.0-1080p",
-    "gz-sd480p", "gz-sd720p", "sdvip720p", "sdvip1080p", "doubaofast",
-    "sd2-fast福利", "sd2-福利", "sd2-vip720p", "B-quannengship2.0",
-    "quanneng2.0", "quanneng2.0-9tu", "video-standard-720p", "fd-Seedance 2.0 933",
+    # 便宜 → 贵（USD 单价，2026-08-16）
+    "sd2-mini-480p", "sd2-mini-720p", "sd2-720p-933", "sd2.5-480p-301010",
+    "sd2.0-720p-903", "sd2-720p-high", "sd2.5-720p-301010", "sd2-标准720p",
+    "sd2-900", "sd2-fast福利", "sd2-fast-933", "sd2-福利",
+    "sd2-720p-福利", "sd2-720p-quan", "gz-sd2-720p",
 ]
 XBL_RATIOS = ["", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9"]
 XBL_RESOLUTIONS = ["", "2K", "4K"]
 
-# 文档 12.2：时长规则不是一刀切，写死在这里做提交前自查（省得白花钱）
-XBL_DURATION_RULES = {
-    "quanneng2.0": (5, 10, 15),
-    "quanneng2.0-9tu": (15,),
-}
+# 文档 12.2 那两条时长白名单（quanneng2.0 / -9tu）对应的模型已经下线，先清空。
+# 现存这批的档位官方没给，不猜 —— 参数越界会 400，400 不结算，比猜错时长安全。
+XBL_DURATION_RULES: dict = {}
 # 单文件上限（文档 11.2）
 XBL_UPLOAD_LIMITS = {".jpg": 10, ".jpeg": 10, ".png": 10, ".webp": 10,
                      ".mp3": 50, ".wav": 50, ".mp4": 60}
@@ -247,7 +252,9 @@ class RespectXiaobalongImage:
         err = data.get("error") if isinstance(data, dict) else None
         if err:
             raise RespectAPIError(f"小霸龙图片失败（应用级错误，不结算）: {json.dumps(err, ensure_ascii=False)[:300]}")
-        items = extract_image_payloads(data)
+        # 文档明写按 data 结果项数计费，所以这里必须严格数：一个元素=一张。
+        # 递归解析在 url+b64_json 同时给出时会数成两张，那会把账对错。
+        items = extract_data_array_images(data) or extract_image_payloads(data)
         if not items:
             raise RespectAPIError(
                 f"小霸龙返回 data 为空 → 按失败处理（文档：data:[] 不正式结算，但**不要自动重提**）。\n"
@@ -284,7 +291,7 @@ class RespectXiaobalongVideo:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.keik.cc"}),
-                "model": (XBL_VIDEO_MODELS, {"default": "bh2.0-720p", "tooltip": "名字区分大小写和中文；上新用 custom_model 填"}),
+                "model": (XBL_VIDEO_MODELS, {"default": "sd2-720p-933", "tooltip": "2026-08-16 实拉的清单；这家换模型很勤，拿不准先跑『模型与价格』节点。上新用 custom_model 填"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "duration": ("INT", {"default": 5, "min": 1, "max": 60, "tooltip": "整数秒。多数模型 4–15；quanneng2.0 只有5/10/15，quanneng2.0-9tu 只有15"}),
                 "aspect_ratio": (XBL_RATIOS, {"default": "9:16", "tooltip": "留空=不发（模型不认该字段时省略更安全）"}),
@@ -354,7 +361,6 @@ class RespectXiaobalongVideo:
 
         print(f"[Respect] 小霸龙 视频 {model}: duration={duration} "
               f"aspect_ratio={body.get('aspect_ratio', '省略')} 图{len(imgs)}/视频{len(vids)}/音频{len(auds)}")
-        print(f"[Respect] body={json.dumps(body, ensure_ascii=False)[:400]}")
         try:
             resp = api_request(cfg, "POST", "/v1/videos", json_body=body,
                                retries=1, timeout=max(cfg.timeout, 300))
