@@ -1,7 +1,7 @@
 # Respect ComfyUI 扩展
 
 把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙），
-并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **82 个节点**。
+并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **90 个节点**。
 
 节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
 子分类下；通用工具（配置、文本、剪辑、上传、预览）留在 **`Respect`** 根分类，分镜在 `Respect/分镜`、LLM 在 `Respect/LLM`。
@@ -131,7 +131,7 @@ pip install -r respect_comfyui/requirements.txt
 
 | 网关 | 要注意 |
 |---|---|
-| 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401**。**16 个分支的字段互不相同**（见下方节点表）：光模型名对了不代表能用，`sd2-720p-mini` 不是 `-min`、1.5 的官转/备用要带 `-fast-`。素材上传的 multipart 字段名按类型取 `image`/`video`/`audio`，单文件上限 图片 15MB / 视频音频 64MB |
+| 小裴 | 参考图走 `upload_base_url` 上传换 URL（默认 api.aione.help），**非 aicopy 的 Key 会 401**。**16 个分支的字段互不相同**（见下方节点表）：光模型名对了不代表能用，`sd2-720p-mini` 不是 `-min`、1.5 的官转/备用要带 `-fast-`。素材上传的 multipart 字段名按类型取 `image`/`video`/`audio`，单文件上限 图片 15MB / 视频音频 64MB。**2026-08-15 文档升到 3.3.53**：分支重排，「卡蒸」全部改成「**卡脸**」，`sd2-*（全系按秒）`/`火山官方sd2-*`/`grok-*-支持16s`/`*最低渠道` 这几批模型名**已下线**，且请求体换了形状（不是改个名就能用）|
 | 坤鸡 | 视频参考图 **multipart 直传**不经图床；图片 `response_format` 必填（`b64_json`）。**图片和视频的 base_url 不同**，demo 里放了两个 API 设置节点 |
 | 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
 | 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`seconds` 是**字符串**类型（发数字会 400 invalid_json）；比例必须**显式发 `aspect_ratio`+`ratio`**，只给 `size` 它会回落 16:9；**sd 系已迁到新接口**（用「SD2 视频（新接口）」节点） |
@@ -211,6 +211,14 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectXPSd2PerUse` | Respect 小裴 SD2 按次/ad渠道（嵌套input） | #11 #12：**`input{prompt, media:[{type,url}]}`** 嵌套结构，固定 15 秒，`size` 由单位名决定 |
 | `RespectXPSdRotate` | Respect 小裴 SD 轮换渠道（动态调价） | #10：固定 720p，`first_frame_url`/`last_frame_url`/`reference_image_urls` + `reference_videos`/`reference_audios` |
 | `RespectXPVeo` | Respect 小裴 VEO 视频生成 | #9：模型固定 `veo视频生成`，4/6/8 秒，固定 720p+`generate_audio`，`image_urls` 1张=首帧 / 2张=首尾帧 |
+| `RespectXPGrok10` | Respect 小裴 GROK1.0 视频 | 文档#1：`duration`+`video_length`+`video_config` **三处时长要一致**；首帧`image`、多参考`reference_images`（都是 data URL 字符串，≤7）|
+| `RespectXPGrok15` | Respect 小裴 GROK1.5-Preview | 文档#2：`seconds` 字符串(6/10/15)+`size`；`reference_images` 是**对象数组** `[{url:data-url}]`，**首帧也走它** |
+| `RespectXPHorseOfficial` | Respect 小裴 Horse官方快乐马 | 文档#3：模式由变体锁定(t2v/i2v/r2v)；参数在 `parameters{}` 里，**首帧模式禁传 `parameters.ratio`** |
+| `RespectXPH3` | Respect 小裴 Minimax-h3 | 文档#4：走 `/v1/video/generations`；`fps` 固定 24；图要带 `role`（first_frame/last_frame/reference_image）|
+| `RespectXPVolcano` | Respect 小裴 火山官方 sd稳定版 | 文档#5：素材走 **`content` 块数组**；**没有文生模式**；首帧/首尾帧**禁传 `ratio`**（否则 TaskTypeConstraint）|
+| `RespectXPSd25` | Respect 小裴 SD2.5 不卡脸 | 文档#6：**4–29 秒**；`images`/`videos`/`audios` 裸 URL 数组（30/10/10）；不发 `resolution` |
+| `RespectXPSd2Full` | Respect 小裴 SD2.0 全系列不卡脸 | 文档#7：比例和模式在 **`metadata`** 里；`enableSound` 是**字符串 `"on"`**；`modeType` 分 text2video/image2video/frames2video |
+| `RespectXPSd900` | Respect 小裴 sd-720满血-900 | 文档#11：**只支持多参考图**；`duration` 是**字符串 `"15"`**；`reference_images` 对象数组 |
 | `RespectXPOmni` | Respect 小裴 Omni 生成/编辑 | #8：固定 10 秒，`first_image_url`/`last_image_url`/`images`(≤5)/`video_url`/`videos`(≤2)，含带/无水印 4 个单位 |
 | `RespectXPGrok16` | Respect 小裴 Grok 16/20秒 | #4：`seconds`(字符串)+`size`(WxH)+`image_reference`(单首帧)，轮询优先用返回的 `status_url` |
 
