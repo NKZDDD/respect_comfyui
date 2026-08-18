@@ -201,13 +201,33 @@ def expand_image_frames(tensors: list) -> list:
 
 
 def bytes_to_tensor(content: bytes) -> torch.Tensor:
+    """字节 → tensor。**不做「截断图救回」** —— 缺角的图等于废图，宁可报错。"""
     return pil_to_tensor(Image.open(io.BytesIO(content)))
+
+
+def b64_decode_loose(data: str) -> bytes:
+    """宽松解 base64。
+
+    中转网关返回的 b64 经常不规矩，`base64.b64decode` 严格模式会直接抛：
+      · **尾部 `=` 被剥掉** —— 最常见，报 "Incorrect padding" 或
+        "number of data characters cannot be 1 more than a multiple of 4"
+      · 塞了换行/空格（有的网关按 76 字符折行）
+      · 用了 base64url 的 `-_` 而不是 `+/`
+    这三种数据其实都是完好的图，没理由让它们失败。
+    """
+    s = re.sub(r"\s+", "", data or "")
+    if "-" in s or "_" in s:
+        s = s.replace("-", "+").replace("_", "/")
+    pad = (-len(s)) % 4
+    if pad:
+        s += "=" * pad
+    return base64.b64decode(s)
 
 
 def b64_to_tensor(data: str) -> torch.Tensor:
     if data.startswith("data:"):
         data = data.split(",", 1)[1]
-    return bytes_to_tensor(base64.b64decode(data))
+    return bytes_to_tensor(b64_decode_loose(data))
 
 
 def url_to_tensor(url: str, cfg: RespectConfig) -> torch.Tensor:
@@ -253,7 +273,11 @@ def tensors_concat(tensors: Sequence[torch.Tensor]) -> torch.Tensor:
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
 _REL_PATH_RE = re.compile(r"/v1/[A-Za-z0-9_./\-]+")
-_DATA_IMG_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+# ⚠ 字符类要覆盖全：base64url 用 `-_`，有的网关还按 76 字符折行。
+# 少写一个字符，正则就会在那里**停下**，把后面的图数据全丢掉 ——
+# 结果是一串看着很正常、其实缺了尾巴的 base64，PIL 报 "image file is truncated"，
+# 而真正的元凶是这行正则，不是网关。
+_DATA_IMG_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=_\-\s]+")
 _HTML_MEDIA_RE = re.compile(
     r"<(?:video|source|audio)[^>]*\bsrc\s*=\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
@@ -321,6 +345,43 @@ def extract_image_payloads(payload: Any) -> list[str]:
     return _dedup_preserve(found)
 
 
+def extract_data_array_images(payload: Any) -> list[str]:
+    """严格按 OpenAI 风格的 `data[]` 取图：**一个元素 = 一张图**。
+
+    为什么不能只用 `extract_image_payloads`：那个是递归乱扫的兜底解析器，
+    专门对付各家五花八门的响应结构。代价是**同一张图会被数成多张** ——
+    最典型的是网关同时给了 `url` 和 `b64_json`（4K 模型常见），
+    两个字符串不相等，去重也去不掉，于是 1 张图变 2 张：
+    IMAGE 批次里出现重复画面，数量统计也是错的。
+
+    所以响应是规范的 `{"data": [{...}, ...]}` 时优先用这个；
+    取不到再退回 `extract_image_payloads`。
+    """
+    if not isinstance(payload, dict):
+        return []
+    arr = payload.get("data")
+    if not isinstance(arr, list) or not arr:
+        return []
+    out: list[str] = []
+    for item in arr:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+            continue
+        if not isinstance(item, dict):
+            continue
+        # 一个元素只取一张：url 优先（省流量），没有再用 base64
+        url = item.get("url") or item.get("image_url")
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and url.strip():
+            out.append(url.strip())
+            continue
+        b64 = item.get("b64_json") or item.get("image_b64")
+        if isinstance(b64, str) and b64.strip():
+            out.append(b64 if b64.startswith("data:") else f"data:image/png;base64,{b64}")
+    return _dedup_preserve(out)
+
+
 def extract_video_urls(payload: Any) -> list[str]:
     """从响应中提取视频地址。
 
@@ -368,6 +429,56 @@ def _dedup_preserve(items: Iterable[str]) -> list[str]:
     return out
 
 
+def _dump_bad_image(raw: bytes, why: str) -> str:
+    """把解不开的原始字节落盘，方便直接拿去验尸。返回路径。"""
+    try:
+        base = _output_dir("respect/_bad_image")
+        path = os.path.join(base, f"{why}_{int(time.time())}_{uuid.uuid4().hex[:6]}.bin")
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        return path
+    except Exception:                                       # noqa: BLE001
+        return ""
+
+
+def _b64_diag(item: str, exc: Exception) -> str:
+    """解不出图时给**确定性**结论，而不是"多半是…"。
+
+    判据是文件格式自己的结束标记：PNG 必须以 IEND 块收尾、JPEG 必须以 FFD9 收尾。
+    结束标记在 = 数据完整（那 PIL 打不开就另有原因）；不在 = 真的被截断了，
+    而且能算出缺了多少。
+    """
+    payload = item.split(",", 1)[1] if item.startswith("data:") else item
+    clean = re.sub(r"\s+", "", payload)
+    try:
+        raw = b64_decode_loose(payload)
+    except Exception as dec:                                # noqa: BLE001
+        return (f"base64 长度={len(clean)}（%4={len(clean) % 4}），**解码阶段就失败**（{dec}）。"
+                f"→ 拿到的 base64 本身就是残的")
+
+    head, tail = raw[:8], raw[-16:]
+    kb = f"{len(raw) / 1024:.0f}KB"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        if b"IEND" in tail:
+            return (f"PNG {kb}，**IEND 结束块在，数据是完整的** —— 那 PIL 打不开就不是截断问题："
+                    f"{exc}。原始字节已存：{_dump_bad_image(raw, 'png_complete') or '存盘失败'}")
+        return (f"PNG {kb}，**结尾没有 IEND 块 → 确认被截断**（尾部字节 {tail[-8:]!r}）。"
+                f"图在网关那边就没传完，不是本插件的解析问题。"
+                f"原始字节已存：{_dump_bad_image(raw, 'png_truncated') or '存盘失败'}")
+    if head.startswith(b"\xff\xd8\xff"):
+        if raw.endswith(b"\xff\xd9"):
+            return f"JPEG {kb}，结束标记 FFD9 在，数据完整 —— PIL 报：{exc}"
+        return (f"JPEG {kb}，**结尾没有 FFD9 → 确认被截断**。"
+                f"原始字节已存：{_dump_bad_image(raw, 'jpeg_truncated') or '存盘失败'}")
+    known = {b"RIFF": "WEBP", b"GIF8": "GIF"}
+    fmt = next((v for k, v in known.items() if head.startswith(k)), "")
+    if fmt:
+        return f"{fmt} {kb}，PIL 报：{exc}"
+    txt = raw[:200].decode("utf-8", "replace")
+    return (f"{kb}，**开头不是任何图片格式**（{head!r}）→ 这根本不是图片，"
+            f"网关很可能把错误信息塞进了 b64 字段。内容开头：{txt[:150]}")
+
+
 def resolve_image_to_tensor(item: str, cfg: RespectConfig) -> Optional[torch.Tensor]:
     """图片资源字符串 -> tensor。"""
     try:
@@ -377,10 +488,13 @@ def resolve_image_to_tensor(item: str, cfg: RespectConfig) -> Optional[torch.Ten
             item = cfg.normalized_base().rsplit("/v1", 1)[0] + item
         if item.startswith("http://") or item.startswith("https://"):
             return url_to_tensor(item, cfg)
-        if len(item) > 200 and re.match(r"^[A-Za-z0-9+/=\s]+$", item):
+        if len(item) > 200 and re.match(r"^[A-Za-z0-9+/=\s_-]+$", item):
             return b64_to_tensor(item)
     except Exception as exc:  # pragma: no cover - 仅记录失败
-        print(f"[Respect] 图片解析失败: {item[:120]}... err={exc}")
+        if item.startswith("data:") or not item.startswith("http"):
+            print(f"[Respect] 图片解析失败：{_b64_diag(item, exc)}")
+        else:
+            print(f"[Respect] 图片下载失败: {item[:120]}… err={exc}")
     return None
 
 
@@ -417,6 +531,107 @@ def _format_error(resp: requests.Response) -> str:
         return f"HTTP {resp.status_code}: {resp.text[:500]}"
 
 
+# ---------------------------------------------------------------------------
+# 请求日志：把真正发出去的 body 打到控制台
+#
+# 各家网关的字段形状差别极大（seconds 是字符串还是整数、参考图是 images[] 还是
+# content 块、size 是像素还是档位…），发错**多数不会报错**，只会静默丢参数 ——
+# 图照出、人不对。所以默认把创建请求的 body 原样打出来，好对着文档核。
+#
+# 关掉：设环境变量 RESPECT_LOG_BODY=0
+# ---------------------------------------------------------------------------
+
+_LOG_BODY = os.environ.get("RESPECT_LOG_BODY", "1").strip().lower() not in ("0", "false", "off", "no")
+_LOG_MAX_STR = 200          # 单个字符串超这个长度就截断（base64 参考图动辄几 MB）
+_LOG_MAX_RESP = 1500
+
+
+def _sanitize_for_log(obj: Any, depth: int = 0) -> Any:
+    """把 body 里的 base64 / 超长字符串换成占位符，其余原样保留。
+
+    不这么做的话，一张参考图就能刷几千行，真正要看的字段全被顶没了。
+    """
+    if depth > 8:
+        return "…"
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_log(v, depth + 1) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_log(v, depth + 1) for v in obj]
+    if isinstance(obj, str) and len(obj) > _LOG_MAX_STR:
+        if obj.startswith("data:"):
+            head = obj.split(",", 1)[0]
+            return f"<{head},… {len(obj) / 1024:.0f}KB base64 已省略>"
+        return obj[:_LOG_MAX_STR] + f"…<共{len(obj)}字符>"
+    return obj
+
+
+def _log_request(method: str, url: str, json_body: Any, files: Any, data: Any) -> None:
+    """打印一次请求。只打创建类（POST/PUT/PATCH）—— GET 多半是轮询，几百次没意义。"""
+    if not _LOG_BODY or method.upper() not in ("POST", "PUT", "PATCH"):
+        return
+    short = "/" + url.split("/", 3)[-1] if url.count("/") >= 3 else url
+    print(f"[Respect] → {method.upper()} {short}")
+    if json_body is not None:
+        text = json.dumps(_sanitize_for_log(json_body), ensure_ascii=False, indent=2)
+        print(f"[Respect]   body = {text}")
+    for item in (files or []):
+        # files 里两种形状：普通字段 (name, (None, 值))、文件项 (name, (文件名, 字节, 类型))
+        try:
+            name, payload = item
+            if isinstance(payload, tuple) and payload[0] is None:
+                print(f"[Respect]   {name} = {_sanitize_for_log(payload[1])}")
+            elif isinstance(payload, tuple):
+                blob = payload[1]
+                size = f"{len(blob) / 1024:.0f} KB" if isinstance(blob, (bytes, bytearray)) else "?"
+                print(f"[Respect]   {name} <- {payload[0]} ({size}, {payload[2] if len(payload) > 2 else '?'})")
+        except Exception:                                   # noqa: BLE001
+            print(f"[Respect]   {item}")
+    if data is not None and not files:
+        print(f"[Respect]   form = {_sanitize_for_log(data)}")
+
+
+def _log_response(resp: requests.Response, stream: bool) -> None:
+    """打印响应。stream=True 时**绝不能碰 body** —— 会把 SSE 流提前读掉。"""
+    if not _LOG_BODY or stream:
+        return
+    try:
+        _force_utf8(resp)
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "json" in ctype or resp.text.lstrip()[:1] in ("{", "["):
+            body = json.dumps(_sanitize_for_log(resp.json()), ensure_ascii=False)[:_LOG_MAX_RESP]
+        else:
+            body = f"<{ctype or '未知类型'} {len(resp.content)} 字节>"
+    except Exception:                                       # noqa: BLE001
+        body = resp.text[:_LOG_MAX_RESP] if resp.content else ""
+    print(f"[Respect] ← HTTP {resp.status_code} {body}")
+
+
+def _assert_full_body(resp: requests.Response, stream: bool) -> None:
+    """响应体没收完就当场报错，别把残缺的 JSON 往下传。
+
+    连接中途断掉时，requests **不一定抛异常** —— `resp.content` 会是截断的，
+    `resp.json()` 有时还能勉强解出来（尤其 base64 字段本来就是长字符串）。
+    那样错误会一路飘到「图片解析失败」，看起来像是网关给了坏图，
+    实际是本机这段网络没收完。这里拿 Content-Length 对一下，把问题钉在发生的地方。
+    """
+    if stream:
+        return
+    declared = resp.headers.get("Content-Length")
+    if not declared or resp.headers.get("Transfer-Encoding", "").lower() == "chunked":
+        return                                   # 分块传输没有可信长度，跳过
+    try:
+        want = int(declared)
+    except ValueError:
+        return
+    got = len(resp.content)
+    if got < want:
+        raise RespectAPIError(
+            f"响应体没收完：声明 {want} 字节，实际只收到 {got} 字节（少了 {want - got}）。\n"
+            f"这是**本机到网关的连接中断**，不是网关给了坏数据 —— "
+            f"查代理 / 网络稳定性，或把 timeout 调大后重试。",
+            status=resp.status_code)
+
+
 def api_request(
     cfg: RespectConfig,
     method: str,
@@ -451,6 +666,8 @@ def api_request(
 
     last_exc: Optional[Exception] = None
     for attempt in range(max(1, retries)):
+        # 每次重投都打，这样"到底发了几次"在日志里是明摆着的
+        _log_request(method, url, json_body, files, data)
         try:
             resp = requests.request(
                 method,
@@ -464,9 +681,14 @@ def api_request(
                 proxies=cfg.proxies(),
                 stream=stream,
             )
+            _assert_full_body(resp, stream)
             if resp.status_code in (429, 502, 503, 504) and attempt < retries - 1:
+                print(f"[Respect] ← HTTP {resp.status_code}，{2 ** attempt}秒后重试"
+                      f"（第 {attempt + 2}/{retries} 次）")
                 time.sleep(2 ** attempt)
                 continue
+            if method.upper() in ("POST", "PUT", "PATCH"):
+                _log_response(resp, stream)
             if resp.status_code >= 400:
                 raise RespectAPIError(_format_error(resp), status=resp.status_code)
             return resp
