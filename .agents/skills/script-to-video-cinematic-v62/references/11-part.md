@@ -1,0 +1,191 @@
+第十一部分｜空间坐标、机位Rig与多视角一致性
+目录
+核心结论、View Coverage与View Merge Eligibility Audit
+空间资产分层
+Spatial Master坐标合同
+Geometry Proxy
+Canonical Location View与VIEW_BATCH/VIEWPACK
+多视角闭环校验
+人物与道具的World Placement
+Storyboard与Video的空间执行
+空间资产冻结条件
+完整Prompt结构
+常见失败与修复
+1. 核心结论
+同一场景的不同视角不能分别让图像模型自由设计。每个视角都必须是同一个Spatial Master和同一个Geometry Proxy的投影结果。
+正式关系：
+[text]LOC Appearance Authority+ SPATIAL World Geometry Authority+ Story / Shot Spatial Demand+ approved non-redundant Camera Rig↓CANONICAL LOCATION VIEW↓ approved views onlyLOCATION VIEW SET / PR
+LOC回答“长什么样”，SPATIAL回答“物理上如何构成”，LOC_VIEW回答“从一个批准且有独立用途的机位如何看见同一物理空间”。先读[场景机位覆盖规划与重复视图控制](16-location-view-coverage-and-redundancy-control.md)：从Scene、Blocking、Shot、KF和Camera Reveal提取需求，完成Location View Coverage Plan、View Utility Contract与View Distinctness Gate。只有非冗余View才进入合并资格审计。多机位可以在生产调用层合并，但不能在Canonical身份层合并。
+View Coverage与Distinctness前置门控
+在创建View ID和Camera Rig前记录：
+[text]coverage_plan_revision_idsource_scene_and_seg_revision_idssource_shot_or_kf_demandsrequired_zones_portals_routes_barriers_anchorsrequired_action_axes_and_reverse_directionsrequired_camera_reveal_envelopescoverage_matrixuncovered_demands
+每个Candidate View再填写view_role、unique_visible_zones、独有空间关系、明确消费者、与批准View的差异、Overlap、轴线/Baseline、视差/遮挡差异、Allowed Crop和不可被裁切替代的理由。没有独有Authority的轻微横移、Zoom、焦段或裁切变化返回REDUNDANT_VIEW_REJECTED。
+View Merge Eligibility Audit
+只有通过Distinctness Gate的所需机位，才在决定“逐View生产”还是“合并生产”前填写：
+[text]view_revision_idlocation_revision_idspatial_revision_idgeo_proxy_revision_idreality_threadstory_time_and_environment_statecamera_cluster_idvisible_zonesportal_or_mirror_riskshared_landmarksrequired_output_resolutionmodel_multi_output_capabilitymerge_decision = MERGE_SAFE | SINGLE_VIEW_REQUIRED | BLOCKEDreason
+只有同时满足下列条件才允许MERGE_SAFE：
+完全相同的Location、Spatial、Geometry Proxy Revision。
+完全相同的Reality Thread、Story Time、天气、光线和永久环境状态。
+机位属于同一Camera Cluster，或沿同一连续Route观察相邻Zone；可用同一坐标和遮挡关系解释。
+至少共享两个可核对Landmark；无门窗顺序、镜像、楼层、Portal侧别或固定家具身份歧义。
+一组最多3个机位；每个机位有固定Camera Rig和独立完整LOC_VIEW ID。
+模型能一次返回独立文件，或Atlas裁切后每个子View仍达到项目最低分辨率。
+合并不会迫使模型同时表现不同人物Blocking、不同Prop状态、不同损坏状态或不同时间阶段。
+下列情况必须SINGLE_VIEW_REQUIRED：不同Location/Reality Thread；永久Geometry Revision不同；室内门窗/镜面/楼梯关系高风险；跨楼层或跨不相邻Portal；昼夜/天气不同；某一机位需要独立高分辨率细节；模型不支持多输出且Atlas像素不足；过去已发生多视图漂移且无法由Proxy闭环解释。
+合并决策只优化调用次数，不得降低Canonical粒度、视觉分辨率或空间审计标准。Camera Cluster相近只能证明调用兼容，不能证明多个相似View都值得存在。
+2. 空间资产分层
+LOC｜Appearance Kit
+控制建筑语言、材质、色彩、固定设施的视觉设计、地域和文化。LOC示例图的透视和摆放不自动成为Geometry Canon。
+SPATIAL｜World Geometry
+控制坐标系、尺度、Topology、Zone、Anchor、Route、墙体、门窗、固定家具、层高、开口和连接关系。
+GEO_PROXY｜Geometry Proxy
+把SPATIAL物理化为可从不同机位一致观察的简化3D块模、2.5D轴测体或严格测绘代理。它控制几何投影，不控制材质风格。
+LOC_VIEW｜Canonical Location View
+从同一GEO_PROXY和指定Camera Rig生成的一张批准视角。它继承LOC外观和SPATIAL几何，但不控制人物Blocking。
+VIEW_BATCH / VIEWPACK｜生产容器
+VIEW_BATCH是一次调用返回多个独立图像文件的生产任务；VIEWPACK是模型只能返回一张图时使用的固定格位Atlas。两者都不是新的地点或万能机位Authority。
+推荐优先级：
+[text]同一可渲染3D/2.5D Proxy批量输出独立文件> 图像模型一次调用返回多个独立文件> 固定2×2 Atlas + 无损裁切独立子View> 逐View独立生成
+若使用2×2 Atlas，最多放3个电影画面Panel，第四格放几何校验图或留作校验区；固定TOP_LEFT / TOP_RIGHT / BOTTOM_LEFT格位，不依赖模型生成的文字标签识别身份。每个子View裁切后必须另存为以完整LOC_VIEW Revision ID开头的文件并计算独立SHA-256。
+LOC_VIEWSET / PR｜Approved View Index
+按空间覆盖需求登记多个已批准LOC_VIEW。Sheet若存在，只是索引/展示，不是重新生成或平均融合视角。
+3. Spatial Master坐标合同
+每个Spatial Revision必须冻结：
+[text]spatial_revision_idparent_spatial_revision_idcoordinate_system = right_handed | declared alternativeorigin_anchor_idorigin_xyz_m = [0, 0, 0]axis_definition = +X / +Y / +Zunit = meterlevel_elevationsouter_boundarywalkable_surfacesfixed_geometryzonesanchors_xyzroutes_as_ordered_anchor_pathsbarriers_and_portalsseat_and_support_anchorsdoor_window_opening_directionfixed_furniture_bboxscale_anchorstemporary_obstaclesforbidden_geometry_changes
+Anchor不能只写“门边”“床旁”。至少写唯一完整Canonical Revision ID或Spatial成员ID、xyz、所属Zone、朝向和与固定结构的距离。Route必须以同一坐标系的Anchor序列表达。
+桌、柜台、墙、护栏、舞台边缘与座椅排要登记为Barrier；门、桌端空隙、通道与合法跨越点登记为Portal。座椅、病床、轮椅、车辆座位和跪靠点登记Seat/Support Anchor。完整Position Gate读取[空间状态门控与Authority完整视频参考](14-spatial-state-gating-and-video-reference-minimization.md)。
+坐标不是画面左右
++X、+Y、+Z和Anchor关系属于Physical Truth；“画面左侧”“右后方”只属于某个Camera Observation。切换机位后重新投影Screen Direction，不改变World Placement。
+4. Geometry Proxy
+以下情况默认使用3D或2.5D Geometry Proxy：
+同一场景出现三个及以上显著不同机位。
+有环绕、跟拍、穿门、跨Zone或长距离移动。
+门窗、病床、桌椅、车辆、楼梯等固定关系承担剧情。
+同一场景跨多集重复使用。
+图像模型已经出现视角无法拼合、镜像或比例漂移。
+推荐优先级：
+[text]真实3D Blockout / 摄影测量> 尺寸化2.5D平面 + 轴测> 仅文本坐标合同> 独立AI多视角图
+最后一项不能独立通过空间冻结。没有3D工具时，至少建立带尺寸的平面、立面/轴测、Anchor坐标和视角重叠Landmark。
+5. Canonical Location View
+每个View必须单独校验和登记；生成调用可以单独执行，也可以来自已批准的VIEW_BATCH/VIEWPACK。每个View始终使用独立完整Revision ID。例如：
+[text]PRJ_NOVA__LOC_001_VIEW_A01_R01PRJ_NOVA__LOC_001_VIEW_A02_R01PRJ_NOVA__LOC_001_VIEWSET01_R01
+每个View合同包含：
+[text]view_revision_idsource_loc_revision_idsource_spatial_revision_idsource_geo_proxy_revision_idsource_view_coverage_plan_revision_idview_rolestory_shot_kf_consumersblocking_functioncamera_anchor_xyz_mlook_at_xyz_mcamera_height_myaw_pitch_roll_deglens_mm_or_horizontal_fovaspect_ratiovisible_zonesoccluded_zonesvisible_landmarksscale_anchorsoverlap_landmarks_with_adjacent_viewsunique_visible_zonesunique_portals_routes_barriers_anchorsdifference_from_approved_viewsoverlap_ratio_estimateaxis_delta_degcamera_baseline_ratio_to_scene_diagonalparallax_or_occlusion_deltaallowed_cropcannot_be_replaced_by_crop_reasonutility_decisionforbidden_geometry_changessource_view_batch_or_pack_idpanel_slot_or_output_indexderived_crop_box_pxderived_resolution_pxderived_sha256
+同一View的材质、固定设施和Landmark来自LOC；其透视、遮挡顺序、相对位置和尺度来自Geometry Proxy。不得用生成结果反向改写Spatial Master。相同Camera Position只改变Shot Size、轻微Lens或Crop时，登记为一个View的allowed_crop，不得创建新View。
+Coverage不足
+Storyboard或Video所需机位超出已批准View覆盖时，只能：
+从同一Geometry Proxy建立新LOC_VIEW并批准；或
+直接使用Geometry Proxy作为该机位空间Authority。
+不得让Storyboard或Video模型补想看不见的另一侧空间。
+若需求其实能由已有View的高分辨率Allowed Crop覆盖，不新建View；若新View无法证明独有消费者或独有空间关系，返回VIEW_UTILITY_UNPROVEN。
+6. 多视角闭环校验
+每个新View必须与至少一个相邻已批准View共享两个以上可识别Landmark，并执行闭环核对。来自同一VIEWPACK的Panel不能因为“同一次生成”自动通过；仍逐View检查：
+[text]door/window count and orderingwall/opening connectivityfixed furniture identity and bboxroute continuitylandmark relative distanceceiling/floor heightmirror statusocclusion orderscale consistencyview overlap correspondence
+若A能看见门与床、B也能看见门与床，两者必须能由同一组World坐标解释。无法解释时，View保持CANDIDATE，不得进入PR、SCSTATE或Storyboard。
+一张漂亮但无法回投到Spatial坐标的图，不是Canonical Location View。
+7. 人物与道具的World Placement
+CVS、SCSTATE和KF中人物/关键Prop位置至少写：
+[text]entity_revision_idroot_or_foot_point_xyz_manchor_id + local_offset_xyz_morientation_yaw_degposture_footprint_or_bboxground_contact_surfaceeye_target_xyz_or_entityhand_contact_targetdistance_to_key_landmarksmovement_route_idzone_id / barrier_sidesupport_binding_id / support_relationlast_authorized_movement_event_id
+对于坐/躺/跪姿，用身体支撑点、身体轴线和占地包围盒补充Foot Point。道具使用自身Pivot、Holder/Container和Anchor；不能只写“在人物左边”。
+不同Camera View只投影同一World Placement。禁止为保持构图美观，让人物在切镜时静默换到另一个Zone、门的另一侧或走廊镜像位置。
+从SEATED_ON变为STANDING、离开Support或跨Barrier必须有Release、Route、Portal Crossing与到达完成。若前一状态坐在桌后，下一状态没有这条事件链，就不能出现在桌前。
+8. Storyboard与Video的空间执行
+Storyboard
+每个KF绑定：
+[text]source_spatial_revision_idsource_location_view_id_or_geo_proxy_idcamera_rigentity_world_placementscreen_projection_resultview_coverage_status = COVERED | NEW_VIEW_REQUIRED | BLOCKED
+Storyboard可重新构图和裁切，但不能修改World Placement或固定Geometry。NEW_VIEW_REQUIRED必须在出图前回到Location View生产。
+Video
+Video Window冻结Camera Path在World坐标中的起点、终点、朝向与安全范围。人物移动使用World Route，不使用画面像素平移。Camera运动不得越出已批准Geometry覆盖，也不得因遮挡重建另一套房间结构。
+9. 空间资产冻结条件
+F2 Visual Canon Freeze前必须全部通过：
+Spatial坐标、单位、原点、轴向和Revision明确。
+固定Geometry、Anchor、Route和Scale可测量。
+高风险空间已有Geometry Proxy。
+每个必要机位来自同一Proxy，不是独立自由生成。
+已完成Location View Coverage Plan、Coverage Matrix和逐View Utility Contract；视图数量由需求动态决定。
+每个批准View有独有Zone/Portal/Route/Barrier/Anchor、动作轴、反向关系、视差、遮挡或功能消费者，未用焦段、Zoom、轻微横移或裁切冒充新View。
+相邻View只控制固定结构身份、Landmark、尺度和Overlap，不控制当前Camera、Crop、Composition或Visible Zone。
+已执行View Merge Eligibility Audit，合并与拆分均有理由。
+VIEWPACK每个Panel均已派生为独立LOC_VIEW文件，分辨率、裁切、完整ID和Fingerprint明确。
+下游默认引用单一LOC_VIEW子文件，而非整张多机位Atlas。
+View间Landmark闭环一致，可解释遮挡和尺度。
+无镜像、门窗数量变化、家具换位或连接关系冲突。
+View文件、完整Revision ID、路径和Fingerprint已登记。
+任一失败，空间资产不得标记CANONICAL，下游Prompt不得用故事板融合效果掩盖问题。
+10. 完整Prompt结构
+生成单一LOC_VIEW时至少包含：
+Target Canonical Revision ID。
+Location View Coverage Plan Revision与View Utility Contract。
+View Role、完整Story/Shot/KF消费者和Blocking Function。
+LOC、SPATIAL、GEO_PROXY完整Reference Manifest。
+World Coordinate Contract与Exact Camera Rig。
+Unique Visible/Hidden Zone、Portal/Route/Barrier/Anchor、Landmark和视差/遮挡差异。
+与相邻View的Overlap、Estimated Overlap、Axis Delta、Camera Baseline、Allowed Crop与不可替代理由。
+相邻View Reference Firewall：只校验Identity/Geometry，不控制当前Camera/Composition，禁止复现邻图构图。
+MUST PRESERVE Appearance与Geometry；MUST NOT COPY示意图排版、人物、临时Prop和无关Camera。
+Forbidden Geometry Changes与单一视角输出格式。
+禁止使用“同一场景，请生成多个角度”作为唯一几何约束。
+生成VIEW_BATCH/VIEWPACK时还必须包含：
+Target VIEW_BATCH/VIEWPACK完整Revision ID。
+每个子LOC_VIEW的完整Revision ID和Exact Camera Rig。
+固定Output Index或TOP_LEFT / TOP_RIGHT / BOTTOM_LEFTPanel槽位。
+每个Panel的Visible/Hidden Zone、Landmark和与相邻Panel的Overlap合同。
+Panel Identity Map，明确整包只控制跨视图一致性，不控制人物Blocking和时间状态。
+输出后无损裁切、独立命名、独立Fingerprint和逐View Promotion步骤。
+最低派生分辨率；不足时返回VIEWPACK_RESOLUTION_BLOCKED并改用单View。
+任一Panel几何失败时只返工该Panel；禁止为修一个Panel重新生成并静默替换其余已批准View。
+11. 常见失败与修复
+失败
+根因
+修复
+同场景多视角拼不起来
+每个视角独立生图
+同一Geometry Proxy逐View投影
+A01/A02/A03看起来几乎一样
+未先提取空间需求，所有Rig都在眼平高度看向房间中心
+先建立Coverage Plan与View Role；删除轻微横移/Zoom重复图
+三张图只有焦段和裁切不同
+把Shot Size当新空间Authority
+保留一个LOC_VIEW并登记allowed_crop
+相邻View参考把当前图拉回相同构图
+邻图Authority没有防火墙
+邻图只管Identity/Landmark/Overlap；禁止控制Camera、Crop、Composition和Visible Zone
+VIEWPACK为填满格位新增第三张相似图
+先定容器后定需求
+先通过Distinctness Gate；空格位保持校验区，不新增冗余View
+门窗左右互换
+把画面左右当物理方向
+World坐标 + Camera投影
+床/桌比例变化
+无尺度和BBox
+Meter单位 + Scale Anchor + Fixed BBox
+人物切镜后换位置
+Blocking只写构图位置
+Root XYZ + Anchor Offset + Orientation
+坐着的人下一状态直接到前场
+缺Seat/Support与Position Transition
+绑定Support；通过起身、Route、Portal、Target Anchor完成后才换Zone
+环绕后出现新房间
+Camera超出视角覆盖
+新建View或使用Proxy；未覆盖则阻断
+一张多视图Sheet内部矛盾
+一次调用同时发明多视角
+单View生产、闭环批准后再汇编
+为省次数把六个机位塞进一张低分辨率Sheet
+无合并资格与像素预算
+每组最多3个；优先独立多输出；Atlas逐Panel分辨率门控
+下游上传整张VIEWPACK后机位混合
+把生产容器当Camera Authority
+无损裁切为独立LOC_VIEW；下游只上传目标子View
+合并后找不到Image里的具体机位
+无Panel Identity Map
+固定格位/Output Index + 完整子View ID + Camera Rig + Scope
+一个Panel失败导致整包反复重做
+缺子View独立Promotion
+通过的Panel独立冻结；失败Panel单独返工并单独升Revision
+Storyboard看似修好但视频仍漂
+上游空间Candidate未冻结
+不把融合效果当Geometry通过依据
+LOC图强迫PR复制机位
+Appearance与Geometry混权
+LOC仅管视觉，Proxy/View管投影

@@ -116,7 +116,38 @@ def _cm_check_meta(meta: dict, items: list, what: str) -> None:
                 f"塞进 JSON 的 base64 字段，从根上避开这个问题。")
 
 
-def _cm_finish(items: list, cfg, model: str, what: str) -> tuple:
+def _cm_check_thumbnail(meta: dict, tensors: list, what: str) -> None:
+    """比对**解出来的真实像素**和网关自报的宽高 —— 专治「拿回来的是网页缩略图」。
+
+    缩略图和残图是两种完全不同的失败：残图打不开、会报错；**缩略图打得开、
+    看着正常，只是糊**。所以任何「文件坏没坏」式的检查都抓不到它，
+    只有拿 include_metadata 给的原图规格一比才露馅。
+
+    典型成因：响应里同时给了预览图和原图，兜底解析器挑中了预览那条。
+    """
+    if not meta or not tensors:
+        return
+    want_w = meta.get("width") if isinstance(meta.get("width"), int) else 0
+    want_h = meta.get("height") if isinstance(meta.get("height"), int) else 0
+    if not (want_w and want_h):
+        return
+    t = tensors[0]
+    shape = getattr(t, "shape", None)
+    if not shape or len(shape) < 3:
+        return
+    h, w = int(shape[-3]), int(shape[-2])       # IMAGE 是 [B, H, W, C]
+    if w < want_w * 0.9 or h < want_h * 0.9:
+        raise RespectAPIError(
+            f"超模说这张图是 {want_w}x{want_h}，实际解出来只有 {w}x{h} —— "
+            f"**拿到的是缩略图，不是原图**。\n"
+            f"缩略图是一张完整合法的小图，能正常打开、也有正确的结尾标记，"
+            f"所以「文件坏没坏」那类检查发现不了它。\n"
+            f"多半是响应里同时给了预览图和原图、挑错了链接："
+            f"把控制台那行 `← HTTP 200 {{…}}` 贴出来我看下 data[] 的结构。")
+    print(f"[Respect] 超模 {what} 尺寸核验通过：{w}x{h}（网关自报 {want_w}x{want_h}）")
+
+
+def _cm_finish(items: list, cfg, model: str, what: str, meta: dict = None) -> tuple:
     """把响应里的图片资源统一转成节点输出。
 
     这家**可能一次返回多张**（4K 系尤其要留意），所以：
@@ -132,6 +163,8 @@ def _cm_finish(items: list, cfg, model: str, what: str) -> tuple:
             f"  · 「解码就失败了」/「数据不完整」→ 网关把图截断了，重跑一次；一直这样就是它那边的问题\n"
             f"  · 「开头不是任何已知图片格式」→ 返回的压根不是图（可能是错误信息），把响应贴出来看\n"
             f"首项开头：{str(items[0])[:120]}…")
+    # 解出像素之后才量得到真实尺寸 —— 缩略图就是在这一步露馅的
+    _cm_check_thumbnail(meta or {}, tensors, what)
     urls = [i for i in items if isinstance(i, str) and i.startswith("http")]
     if len(items) > 1:
         print(f"[Respect] 超模 {what} 返回 {len(items)} 张（其中 {len(urls)} 个链接）；"
@@ -328,9 +361,10 @@ class RespectChaomoImage:
             if not tid:
                 raise RespectAPIError(f"未取到图片也没有任务 ID: {json.dumps(data, ensure_ascii=False)[:400]}")
             items = _poll_image_task(cfg, tid, interval=int(poll_interval), timeout=int(poll_timeout))
-        _cm_check_meta(_cm_meta(data), items, "图片")
+        meta = _cm_meta(data)
+        _cm_check_meta(meta, items, "图片")
 
-        return _cm_finish(items, cfg, model, "图片")
+        return _cm_finish(items, cfg, model, "图片", meta)
 
 
 # ---------------------------------------------------------------------------
@@ -426,9 +460,10 @@ class RespectChaomoImageEdit:
             if not tid:
                 raise RespectAPIError(f"未取到图片也没有任务 ID: {json.dumps(data, ensure_ascii=False)[:400]}")
             items = _poll_image_task(cfg, tid, interval=int(poll_interval), timeout=int(poll_timeout))
-        _cm_check_meta(_cm_meta(data), items, "图生图")
+        meta = _cm_meta(data)
+        _cm_check_meta(meta, items, "图生图")
 
-        return _cm_finish(items, cfg, model, "图生图")
+        return _cm_finish(items, cfg, model, "图生图", meta)
 
 
 NODE_CLASS_MAPPINGS = {

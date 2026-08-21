@@ -47,15 +47,21 @@ CATEGORY = "Respect/鹤"
 # --- 视频 ---------------------------------------------------------------
 # 照当前文档的模型清单（2026-08 抓取）。**列表会变**，不确定时先跑「Respect 加载模型列表」。
 HE_VIDEO_MODELS = [
-    # 按秒计费
-    "sd2-720p", "sd2-1080p", "sd2-480p", "sd2-fast-720p", "sd2-fast-480p",
+    # 2026-08-19 实拉 GET /v1/models 的结果。**别照文档或旧材料抄** ——
+    # 上一版这里有 9 个已下线的名字（sd2-pro-720p、paisiodance2.0、
+    # seedance2.0-official2-720p 之类），跑起来只会 503 no available channel。
+    "sd2-720p", "sd2-480p", "sd2-1080p",
+    "sd2-fast-720p", "sd2-fast-480p",
+    "sd2-ultra-720p", "sd2-ultra-fast-720p",
+    "sd2-video20-mini-720p", "sd2-video20-mini-480p",
+    "sd3-720p", "sd3-480p", "sd3-1080p", "sd3-fast-720p", "sd3-fast-480p",
     "seedance2.0-selfsur-720p", "seedance2.0-selfsur-fast-720p",
-    "seedance-discount-720p", "seedance-discount-fast-720p",
-    # 按次计费
-    "paisiodance2.0", "paisiodance2.0-fast", "paisiodance2.0-mini",
-    "paisiodance2.0-720p", "paisiodance933-720p",
-    # 旧名（已不在文档清单里，留着以防你的 key 还能用；跑不通就换上面的）
-    "sd2-pro-720p", "seedance2.0-official2-720p", "seedance2.0-fast2-720p",
+    "paisiodance2.0-720p", "paisiodance2.0-fast-720p",
+    # 按次分组（模型广场「sd2,sd2.5-按次分组」）
+    "seedance2-4-1-720p", "seedance2-4-2-fast-720p",
+    "seedance2-4-4-720p", "seedance2-4-8-720p",
+    "grok-imagine-video-1.5", "grok-imagine-video-1.5-fast",
+    "minimax-h3", "mx-h3",
 ]
 HE_RATIOS = ["(不传)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 HE_TRISTATE = ["on", "off", "(不传)"]
@@ -138,7 +144,7 @@ class RespectHeVideo:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
-                "model": (HE_VIDEO_MODELS, {"default": "sd2-pro-720p", "tooltip": "上新模型用 custom_model 填"}),
+                "model": (HE_VIDEO_MODELS, {"default": "sd2-720p", "tooltip": "2026-08-19 实拉的清单；上新用 custom_model 填"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "seconds": ("INT", {"default": 12, "min": 0, "max": 60, "tooltip": "时长；0=不传。sd2 支持 4-15 秒"}),
                 "aspect_ratio": (HE_RATIOS, {"default": "9:16", "tooltip": "写进 metadata.ratio；选(不传)则不带"}),
@@ -506,7 +512,7 @@ class RespectHeAssetUpload:
                 "image": ("IMAGE", {"tooltip": "上传图片（未填 file_path 时用）"}),
                 "file_path": ("STRING", {"default": "", "multiline": False, "placeholder": "本地文件路径（视频mp4/音频mp3等），优先于 image"}),
                 "name": ("STRING", {"default": "", "multiline": False, "placeholder": "资产名，留空=文件名"}),
-                "model_id": ("STRING", {"default": "seedance2.0-official", "multiline": False, "tooltip": "目标模型（query 参数），默认 seedance2.0-official"}),
+                "model_id": ("STRING", {"default": "seedance2.5-00-720p", "multiline": False, "tooltip": "目标模型（query 参数）。2026-08-19 实拉确认 seedance2.0-official 已下线；填的值要在 /v1/models 里存在"}),
             },
         }
 
@@ -518,7 +524,7 @@ class RespectHeAssetUpload:
     OUTPUT_NODE = True
 
     def upload(self, api_config, poll_interval, poll_timeout, image=None, file_path="",
-               name="", model_id="seedance2.0-official"):
+               name="", model_id="seedance2.5-00-720p"):
         import mimetypes
         import os
 
@@ -595,31 +601,58 @@ class RespectHeAssetUpload:
 # 鹤 Seedance 2.5（新规格，和上面的旧模型完全不同）
 # ---------------------------------------------------------------------------
 
-HE_SD25_MODELS = ["seedance-2.5-720p", "seedance-2.5-480p"]
+HE_SD25_MODELS = [
+    # 2026-08-19 实拉。**上一版写的 `seedance-2.5-720p` / `-480p` 根本不存在**
+    # （多了连字符、少了档位号），跑起来必然 503。真名长这样：
+    "seedance2.5-4-1-720p",                      # 按次 3.5/次，4-30s，图10/视频0/音频0
+    "seedance2.5-00-720p", "seedance2.5-00-480p",
+    "seedance2.5-26-720p", "seedance2.5-26-480p",
+    "sd2.5-ultra-720p",
+    "paisiodance-2.5-720p", "paisiodance-2.5-480p",
+]
 HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 # 文档 2026-08 新增 start_image_url / end_image_url（「部分模型支持首尾帧控制」）。
 # 文档没说这两个能不能和 image_url 同时发，所以按模式分流、两组不混发 ——
 # 混着发万一被当成别的任务类型，错了是要计费的。
+
+# 模型广场上标出来的硬约束。**只写有依据的那几个** —— 没截到的分组留空，
+# 走下面的宽松默认；宁可让网关去 400（不计费），也别拿猜的规则拦住能跑的活。
+HE_DURATION_RULES = {
+    "seedance2-4-2-fast-720p": (10,),            # 仅有 10s
+    "seedance2-4-8-720p": (10, 15),              # 10/15s
+    "seedance2-4-1-720p": tuple(range(4, 16)),   # 4-15s
+    "seedance2-4-4-720p": tuple(range(4, 16)),   # 4-15s
+    "seedance2.5-4-1-720p": tuple(range(4, 31)),  # 4-30s
+}
+# (图, 视频, 音频) 上限。seedance2.5-4-1-720p 广场上标的是 10/0/0 ——
+# **它不支持参考视频和音频**，上一版按 30/10/10 做的，等于给了不存在的能力。
+HE_REF_LIMITS = {
+    "seedance2.5-4-1-720p": (10, 0, 0),
+}
+HE_REF_LIMITS_DEFAULT = (30, 10, 10)
+
 HE_SD25_MODES = ["多参考图", "首尾帧"]
 
 
 class RespectHeSeedance25:
-    """鹤 Seedance 2.5（`seedance-2.5-720p` / `-480p`）。
+    """鹤 Seedance 2.5（`seedance2.5-4-1-720p` 等 8 个，见 HE_SD25_MODELS）。
 
     和鹤的旧模型**不是一套字段**（旧的是 `metadata{modeType,ratio}` + `images[data URI]`），
     2.5 用文档规定的标准格式：
 
     ```json
-    {"model":"seedance-2.5-720p","prompt":"…","duration":29,"aspect_ratio":"21:9",
+    {"model":"seedance2.5-4-1-720p","prompt":"…","duration":30,"aspect_ratio":"21:9",
      "image_url":"https://…","extra_images":["https://…"],
      "extra_videos":["https://….mp4"],"extra_audios":["https://….wav"]}
     ```
     硬约束（提交前就校验，不浪费付费请求）：
-    **4–29 秒**、6 种比例、图 ≤30、视频 ≤10、音频 ≤10，
+    时长和素材上限**按模型定**（见 HE_DURATION_RULES / HE_REF_LIMITS）：
+    如 seedance2.5-4-1-720p 是 4–30 秒、图 ≤10 且**不收参考视频/音频**；
+    没列到的型号走宽松默认（4–30 秒、图30/视频10/音频10），
     且**参考素材必须是公网 http(s) URL**（接「对象存储上传」拿链接）。
     """
 
-    DESCRIPTION = ("鹤 Seedance 2.5：duration(4-29整数) + aspect_ratio + image_url/extra_images"
+    DESCRIPTION = ("鹤 Seedance 2.5：duration按模型定(4-30) + aspect_ratio + image_url/extra_images"
                    "(≤30) + extra_videos(≤10)/extra_audios(≤10)。**只收公网URL**，"
                    "参考图请接『对象存储上传』。与鹤的旧模型字段完全不同。")
 
@@ -628,9 +661,9 @@ class RespectHeSeedance25:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
-                "model": (HE_SD25_MODELS, {"default": "seedance-2.5-720p"}),
+                "model": (HE_SD25_MODELS, {"default": "seedance2.5-4-1-720p", "tooltip": "广场「按次分组」那个：3.5/次、4-30秒、图10且不收视频音频"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
-                "duration": ("INT", {"default": 15, "min": 4, "max": 29, "tooltip": "4–29 秒（整数）"}),
+                "duration": ("INT", {"default": 15, "min": 4, "max": 30, "tooltip": "按模型定：seedance2.5-4-1-720p 是 4–30 秒"}),
                 "aspect_ratio": (HE_SD25_RATIOS, {"default": "9:16"}),
                 "generation_mode": (HE_SD25_MODES, {"default": "多参考图", "tooltip": "选『首尾帧』就只发 start_image_url+end_image_url，不发 image_url —— 两组字段不混发，避免被当成别的任务类型"}),
                 "poll_interval": ("INT", {"default": 10, "min": 2, "max": 60}),
@@ -676,16 +709,29 @@ class RespectHeSeedance25:
         # 提交前把不合规的全说清楚，别发出去等 400（付费请求）
         problems = []
         dur = int(duration)
-        if not 4 <= dur <= 29:
-            problems.append(f"时长只能 4-29 秒，收到 {dur} 秒")
+        allowed = HE_DURATION_RULES.get(model)
+        if allowed and dur not in allowed:
+            rng = (f"{min(allowed)}–{max(allowed)} 秒"
+                   if len(allowed) == max(allowed) - min(allowed) + 1
+                   else "、".join(str(a) for a in allowed) + " 秒")
+            problems.append(f"{model} 的时长只能是 {rng}，收到 {dur} 秒")
+        elif not allowed and not 4 <= dur <= 30:
+            problems.append(f"时长按 4-30 秒处理，收到 {dur} 秒")
         if aspect_ratio not in HE_SD25_RATIOS:
             problems.append(f"比例只支持 {'、'.join(HE_SD25_RATIOS)}，收到 {aspect_ratio}")
-        if len(imgs) > 30:
-            problems.append(f"图片最多 30 张，收到 {len(imgs)} 张")
-        if len(vids) > 10:
-            problems.append(f"视频素材最多 10 条，收到 {len(vids)} 条")
-        if len(auds) > 10:
-            problems.append(f"音频素材最多 10 条，收到 {len(auds)} 条")
+        cap_i, cap_v, cap_a = HE_REF_LIMITS.get(model, HE_REF_LIMITS_DEFAULT)
+        if len(imgs) > cap_i:
+            problems.append(f"{model} 图片最多 {cap_i} 张，收到 {len(imgs)} 张")
+        if len(vids) > cap_v:
+            # 广场标 10/0/0 的模型压根不收视频音频 —— 发过去也是被忽略，
+            # 与其静默丢掉不如直接说，免得以为参考视频生效了
+            problems.append(f"{model} 不支持参考视频（上限 {cap_v}），收到 {len(vids)} 条"
+                            if cap_v == 0 else
+                            f"视频素材最多 {cap_v} 条，收到 {len(vids)} 条")
+        if len(auds) > cap_a:
+            problems.append(f"{model} 不支持参考音频（上限 {cap_a}），收到 {len(auds)} 条"
+                            if cap_a == 0 else
+                            f"音频素材最多 {cap_a} 条，收到 {len(auds)} 条")
         bad = [u for u in imgs + vids + auds if not u.startswith(("http://", "https://"))]
         if bad:
             problems.append(f"参考素材必须是公网 http(s) URL（接『对象存储上传』），"
@@ -762,17 +808,31 @@ class RespectHeBalance:
 
     def run(self, api_config, filter=""):
         cfg = ensure_config(api_config)
-        resp = api_request(cfg, "GET", "/v1/balance", retries=1, timeout=60)
-        data = resp.json() if resp.content else {}
+        # /v1/balance 实测在普通令牌上返回 **401**（2026-08-19 用真 Key 验过），
+        # 所以模型清单以 /v1/models 为准，价格表拿得到就顺带显示。
+        data = {}
+        try:
+            resp = api_request(cfg, "GET", "/v1/balance", retries=1, timeout=60)
+            data = resp.json() if resp.content else {}
+        except Exception as exc:                                # noqa: BLE001
+            print(f"[Respect] 鹤 /v1/balance 取不到（{exc}）—— 只列模型，不显示余额价格")
 
         prices = data.get("current_prices") or {}
+        if not prices:
+            mr = api_request(cfg, "GET", "/v1/models", retries=1, timeout=60)
+            md = mr.json() if mr.content else {}
+            prices = {m.get("id"): "" for m in (md.get("data") or []) if m.get("id")}
         kw = (filter or "").strip().lower()
         rows, ids = [], []
-        for name in sorted(prices, key=lambda k: (prices.get(k) or 0)):
+        def _order(k):
+            v = prices.get(k)
+            return (0, v) if isinstance(v, (int, float)) else (1, 0)
+
+        for name in sorted(prices, key=_order):
             if kw and kw not in name.lower():
                 continue
             ids.append(name)
-            rows.append(f"  {name:<34} {prices[name]}")
+            rows.append(f"  {name:<34} {prices[name] if prices[name] != "" else "(价格未给)"}")
 
         bal = float(data.get("balance") or 0)
         used = data.get("used")
@@ -894,7 +954,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RespectHeVideo": "Respect 鹤 视频（sd2/sd3/seedance 旧规格）",
-    "RespectHeSeedance25": "Respect 鹤 Seedance 2.5（4-29秒/30图）",
+    "RespectHeSeedance25": "Respect 鹤 Seedance 2.5（含首尾帧）",
     "RespectHeImage": "Respect 鹤 图片生成（统一接口）",
     "RespectHeImageEdit": "Respect 鹤 图生图/多图融合（≤16张）",
     "RespectHeAssetUpload": "Respect 鹤 虚拟资产上传（图/视频/音频）",
