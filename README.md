@@ -1,6 +1,6 @@
 # Respect ComfyUI 扩展
 
-把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙、好漫剧），
+把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙、好漫剧、巨轮），
 并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **90 个节点**。
 
 节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
@@ -126,6 +126,7 @@ pip install -r respect_comfyui/requirements.txt
 | **超模** | `https://www.chaomoapi.com` | 超模 图片、超模 图生图（≤9） | **超模 视频**（seedance2 / -fast / -mini） | — |
 | **小霸龙** | `https://api.keik.cc` | 小霸龙 图片（同步，6 个模型） | **小霸龙 视频**（20 个模型）（+模型价格查询、素材上传） | — |
 | **好漫剧** | `https://www.75api.com` | 好漫剧 图片（banana / gpt-image-2） | **好漫剧 视频**（GROK multipart / H3 / Omni / chat 式）| — |
+| **巨轮** | `https://julun.cc` | 巨轮 图片（`doubao-seedream-5-0-260128`，同步） | **巨轮 视频**（17 个模型 / 5 种请求格式）（+素材上传） | — |
 | 一花 Codex | `https://llm.xxttt.com` | — | — | LLM 专用，见 `2_llm_*` |
 
 各家的坑：
@@ -144,6 +145,7 @@ pip install -r respect_comfyui/requirements.txt
 | 小霸龙 / keik.cc | ⚠ **创建 POST 只能提交一次、不得自动重试**（插件已设只发一次；失败会提示先人工核对是否已计费，别重跑）。图片**同步**无轮询、比例字段是 `ratio`、数量是 `count`(1–4 按张计费)，**HTTP 200 且 `data` 非空才算成功**；视频用 **`duration` 整数**、素材是**纯字符串数组** `images`≤9/`videos`≤3/`audios`≤3（不能对象数组）。状态多一个 **`unknown`——不是失败**也不是可重投信号，只能继续查；`asset://` URI 24 小时有效且**只用于视频**，图片参考图必须公网 URL |
 | 一手 / ONE API | **只做视频**。模型和能力（秒数/比例/素材上限/单价）由 `GET /v1/models` 动态给，**别照抄别家模型名**；统一用 `seconds`、**不传 `size`**；图片/音频只收公网 HTTPS（没有图片上传接口），**只有视频**能上传（≤50MB）。创建超时别盲目重投——可能已计费建单，先查任务 |
 | 好漫剧 / 75api | **同一个端点 `/v1/videos` 上并存两种协议**：GROK 走 multipart 文件、minimax_h3 走 JSON —— 发错格式**不报错，参考图整个丢掉**。sd-2.5-c1 归在 h3 那套里 |
+| **巨轮 / julun.cc** | ⚠ **一个服务、五种请求格式，选模型即选格式**：`metadata`（content 块）/ `url_media`（`seconds`+`image_urls`）/ `openai_refs`（`duration`+`aspect_ratio`+`image_refs`）/ `grok`（**不认 `seconds`**，比例分辨率必须放 `extra` 里）/ `simple`（h3 走 `/v1/video/generations`）。**模型名带空格、中文和全角括号**（`grok-imagine-video-1.5（按次）`）照抄别手打。`sd2.5` 传错时长会被**悄悄改成 30**，`dubai_sd25_170` 同样固定 30 但**直接 400**；`SD2.0 1080P 933` **至少要 1 张参考图**；`wan3.0th` **按秒计费**（0.14 元/秒）且音频必须 WAV。查询响应**套一层 `data`、状态大写**（`IN_PROGRESS`/`SUCCESS`/`FAILURE`）、进度是字符串 `"100%"`。参考素材必须公网可达，上传件**只留 72 小时** |
 
 **模型名典型坑**：
 
