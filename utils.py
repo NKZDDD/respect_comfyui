@@ -273,6 +273,48 @@ def tensors_concat(tensors: Sequence[torch.Tensor]) -> torch.Tensor:
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
 _REL_PATH_RE = re.compile(r"/v1/[A-Za-z0-9_./\-]+")
+_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+# 这些是**接口动作词**，不是文件名。出错时网关经常把请求路径原样写进正文
+# （OpenAI 风格的 `Invalid URL (POST /v1/images/edits)` 最常见），
+# 兜底解析器一旦把它当成一张图捞回来，后果不是「多了一项」而是：
+#   1. items 非空 -> 跳过「没取到图就去轮询任务」那条分支，异步任务再也不查了
+#   2. 报错变成「解析不成图片，首项开头 /v1/images/edits」——
+#      **网关真正说的那句话被顶掉了**，看日志的人完全不知道发生了什么
+# 所以路径停在动作词上的一律不算图。
+_API_TAIL = frozenset((
+    "generations", "generation", "edits", "edit", "variations", "completions",
+    "embeddings", "uploads", "upload", "files", "videos", "video", "images",
+    "image", "models", "chat", "audio", "speech", "transcriptions",
+    "tasks", "task", "status", "query",
+))
+# ⚠ **"content" 绝不能进这张表。** `/v1/videos/{id}/content` 是小裴、阿珂、
+# 好漫剧、灵感鸭、巨轮**真正的下载地址**，挡掉它等于把成片本身当成噪音扔了。
+# 这张表只放「后面必然还跟着东西才成立」的动作词。
+
+
+def _looks_like_endpoint(u: str) -> bool:
+    """这串东西是**接口地址**、不是结果文件。
+
+    比 `_looks_like_image_ref` 松得多，专门给「字段里明说了是 url」的场合用 ——
+    那种地方本来就该信它，只把「路径停在动作词上」这一种挡掉。
+    真结果的链接不会以 /generations、/edits 结尾。
+    """
+    if not isinstance(u, str) or not u.strip():
+        return False
+    return u.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].lower() in _API_TAIL
+
+
+def _looks_like_image_ref(u: str) -> bool:
+    """这串东西像不像一张真的图（用来挡掉「把接口路径当成图」）。"""
+    u = (u or "").split("?", 1)[0].rstrip("/")
+    if not u:
+        return False
+    if u.lower().endswith(_IMG_EXTS):
+        return True
+    if u.rsplit("/", 1)[-1].lower() in _API_TAIL:   # 后面没有文件名/ID，就是个端点
+        return False
+    low = u.lower()
+    return "image" in low or "/v1/files/" in low
 # ⚠ 字符类要覆盖全：base64url 用 `-_`，有的网关还按 76 字符折行。
 # 少写一个字符，正则就会在那里**停下**，把后面的图数据全丢掉 ——
 # 结果是一串看着很正常、其实缺了尾巴的 base64，PIL 报 "image file is truncated"，
@@ -303,12 +345,11 @@ def extract_image_payloads(payload: Any) -> list[str]:
                 found.append(m.group(0))
             for m in _URL_RE.finditer(node):
                 url = m.group(0).rstrip(").,，。；;\"'>")
-                if any(url.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
-                    found.append(url)
-                elif "image" in url.lower() or "/v1/files" in url.lower():
+                if _looks_like_image_ref(url):
                     found.append(url)
             for m in _REL_PATH_RE.finditer(node):
-                found.append(m.group(0))
+                if _looks_like_image_ref(m.group(0)):
+                    found.append(m.group(0))
             return
         if isinstance(node, dict):
             for key in ("url", "image_url", "b64_json", "image_b64", "result", "image"):
@@ -320,7 +361,7 @@ def extract_image_payloads(payload: Any) -> list[str]:
                         found.append(val)
                     elif key == "image_url" and isinstance(node.get(key), dict):
                         pass
-                    else:
+                    elif not _looks_like_endpoint(val):
                         found.append(val)
                 elif isinstance(val, dict):
                     walk(val)
@@ -373,7 +414,7 @@ def extract_data_array_images(payload: Any) -> list[str]:
         url = item.get("url") or item.get("image_url")
         if isinstance(url, dict):
             url = url.get("url")
-        if isinstance(url, str) and url.strip():
+        if isinstance(url, str) and url.strip() and not _looks_like_endpoint(url):
             out.append(url.strip())
             continue
         b64 = item.get("b64_json") or item.get("image_b64")
