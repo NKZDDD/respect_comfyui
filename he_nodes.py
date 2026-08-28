@@ -47,31 +47,51 @@ CATEGORY = "Respect/鹤"
 # --- 视频 ---------------------------------------------------------------
 # 照当前文档的模型清单（2026-08 抓取）。**列表会变**，不确定时先跑「Respect 加载模型列表」。
 HE_VIDEO_MODELS = [
-    # 2026-08-19 实拉 GET /v1/models 的结果。**别照文档或旧材料抄** ——
-    # 上一版这里有 9 个已下线的名字（sd2-pro-720p、paisiodance2.0、
-    # seedance2.0-official2-720p 之类），跑起来只会 503 no available channel。
+    # 2026-08-28 实拉 GET /v1/models 的结果（上一次是 08-19，**已经过期了**）。
+    # 别照文档或上一次的快照抄 —— 留一个下线的名字，是节点上选得到、
+    # 跑起来才 503 no available channel。
+    # 这轮撤掉的：sd2-ultra-720p、sd2-ultra-fast-720p、paisiodance2.0-fast-720p、
+    # seedance2-4-8-720p、grok-imagine-video-1.5(-fast)。
+    # 这轮新增的：paisio-seedance-2.0-* / -2-mini-*、seedance2.0-standard-*、
+    # seedance2.0-26-*、doubao-seedance-2-0-*、seedance2-4-6/4-7、minimax-h3 两档。
+    # Seedance 2.5 全家不在这里 —— 它是另一套字段，见 HE_SD25_MODELS。
     "sd2-720p", "sd2-480p", "sd2-1080p",
     "sd2-fast-720p", "sd2-fast-480p",
-    "sd2-ultra-720p", "sd2-ultra-fast-720p",
     "sd2-video20-mini-720p", "sd2-video20-mini-480p",
     "sd3-720p", "sd3-480p", "sd3-1080p", "sd3-fast-720p", "sd3-fast-480p",
+    "paisio-seedance-2.0-480p", "paisio-seedance-2.0-720p",
+    "paisio-seedance-2.0-1080p", "paisio-seedance-2.0-4k",
+    "paisio-seedance-2.0-fast-480p", "paisio-seedance-2.0-fast-720p",
+    "paisio-seedance-2-mini-480p", "paisio-seedance-2-mini-720p",
+    "seedance2.0-standard-480p", "seedance2.0-standard-720p",
+    "seedance2.0-26-3-480p", "seedance2.0-26-3-720p", "seedance2.0-26-4-720p",
+    "seedance2.0-fast720p",
     "seedance2.0-selfsur-720p", "seedance2.0-selfsur-fast-720p",
-    "paisiodance2.0-720p", "paisiodance2.0-fast-720p",
+    "paisiodance2.0-720p",
+    "doubao-seedance-2-0-720p", "doubao-seedance-2-0-fast-720p",
     # 按次分组（模型广场「sd2,sd2.5-按次分组」）
     "seedance2-4-1-720p", "seedance2-4-2-fast-720p",
-    "seedance2-4-4-720p", "seedance2-4-8-720p",
-    "grok-imagine-video-1.5", "grok-imagine-video-1.5-fast",
-    "minimax-h3", "mx-h3",
+    "seedance2-4-4-720p", "seedance2-4-6-720p", "seedance2-4-7-720p",
+    "minimax-h3", "minimax-h3-2k", "minimax-h3-768p", "mx-h3",
 ]
 HE_RATIOS = ["(不传)", "9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 HE_TRISTATE = ["on", "off", "(不传)"]
 
 # --- 图片 ---------------------------------------------------------------
+# 2026-08-28 实拉：上一版这五个名字**一个都不在线上了**。
+# gpt-image2-high/medium/low 现在要带分组号 → gpt-image2-<1|2>-<画质>；
+# gemini 的两个要带尾号 → gemini-3-pro-image-preview<1|2|3>。
+# 分组号是网关通道分组，不是画质档；画质仍是 low/medium/high。
 HE_IMAGE_MODELS = [
-    "gpt-image2-high", "gpt-image2-medium", "gpt-image2-low",
-    "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
+    "gpt-image2-1-high", "gpt-image2-1-medium", "gpt-image2-1-low",
+    "gpt-image2-2-high", "gpt-image2-2-medium", "gpt-image2-2-low",
+    "gemini-3-pro-image-preview1", "gemini-3-pro-image-preview2",
+    "gemini-3-pro-image-preview3",
+    "gemini-3.1-flash-image-preview1", "gemini-3.1-flash-image-preview2",
+    "gemini-3.1-flash-image-preview3",
 ]
-HE_EDIT_MODELS = ["gpt-image2-high", "gpt-image2-medium", "gpt-image2-low"]
+HE_EDIT_MODELS = ["gpt-image2-1-high", "gpt-image2-1-medium", "gpt-image2-1-low",
+                  "gpt-image2-2-high", "gpt-image2-2-medium", "gpt-image2-2-low"]
 HE_IMAGE_SIZES = ["1K", "2K", "4K"]
 HE_IMAGE_RATIOS = ["1:1", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "21:9", "9:21"]
 HE_QUALITY = ["auto", "low", "medium", "high"]
@@ -144,7 +164,7 @@ class RespectHeVideo:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
-                "model": (HE_VIDEO_MODELS, {"default": "sd2-720p", "tooltip": "2026-08-19 实拉的清单；上新用 custom_model 填"}),
+                "model": (HE_VIDEO_MODELS, {"default": "sd2-720p", "tooltip": "2026-08-28 实拉的清单；上新或清单又变了用 custom_model 填"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "seconds": ("INT", {"default": 12, "min": 0, "max": 60, "tooltip": "时长；0=不传。sd2 支持 4-15 秒"}),
                 "aspect_ratio": (HE_RATIOS, {"default": "9:16", "tooltip": "写进 metadata.ratio；选(不传)则不带"}),
@@ -287,7 +307,7 @@ class RespectHeImage:
     单张参考图可走 `image`（URL / base64 / data URI）做图生图。
     """
 
-    DESCRIPTION = ("鹤/paisio 图片生成(同步)。gpt-image2-low/medium/high、gemini-3(.1)-image；"
+    DESCRIPTION = ("鹤/paisio 图片生成(同步)。gpt-image2-<1|2>-<low/medium/high>、gemini-3(.1)-image-preview<1|2|3>；"
                    "imageSize=1K/2K/4K + aspectRatio 自动换算像素；可选单张参考图。")
 
     @classmethod
@@ -295,7 +315,7 @@ class RespectHeImage:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
-                "model": (HE_IMAGE_MODELS, {"default": "gpt-image2-high"}),
+                "model": (HE_IMAGE_MODELS, {"default": "gpt-image2-1-high"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "imageSize": (HE_IMAGE_SIZES, {"default": "2K", "tooltip": "分辨率档，自动换算像素"}),
                 "aspectRatio": (HE_IMAGE_RATIOS, {"default": "1:1"}),
@@ -394,7 +414,7 @@ class RespectHeImageEdit:
         return {
             "required": {
                 "api_config": ("RESPECT_CONFIG", {"tooltip": "base_url 填 https://api.paisio.online"}),
-                "model": (HE_EDIT_MODELS, {"default": "gpt-image2-high"}),
+                "model": (HE_EDIT_MODELS, {"default": "gpt-image2-1-high"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "编辑/重绘指令"}),
                 "image_1": ("IMAGE", {"tooltip": "第1张参考图（必须至少一张）"}),
                 "n": ("INT", {"default": 1, "min": 1, "max": 10}),
@@ -512,7 +532,7 @@ class RespectHeAssetUpload:
                 "image": ("IMAGE", {"tooltip": "上传图片（未填 file_path 时用）"}),
                 "file_path": ("STRING", {"default": "", "multiline": False, "placeholder": "本地文件路径（视频mp4/音频mp3等），优先于 image"}),
                 "name": ("STRING", {"default": "", "multiline": False, "placeholder": "资产名，留空=文件名"}),
-                "model_id": ("STRING", {"default": "seedance2.5-00-720p", "multiline": False, "tooltip": "目标模型（query 参数）。2026-08-19 实拉确认 seedance2.0-official 已下线；填的值要在 /v1/models 里存在"}),
+                "model_id": ("STRING", {"default": "seedance2.5-4-1-720p", "multiline": False, "tooltip": "目标模型（query 参数）。填的值要在 /v1/models 里存在 —— 2026-08-28 实拉，原来的默认值 seedance2.5-00-720p 已下线，换成 seedance2.5-4-1-720p"}),
             },
         }
 
@@ -524,7 +544,7 @@ class RespectHeAssetUpload:
     OUTPUT_NODE = True
 
     def upload(self, api_config, poll_interval, poll_timeout, image=None, file_path="",
-               name="", model_id="seedance2.5-00-720p"):
+               name="", model_id="seedance2.5-4-1-720p"):
         import mimetypes
         import os
 
@@ -602,13 +622,17 @@ class RespectHeAssetUpload:
 # ---------------------------------------------------------------------------
 
 HE_SD25_MODELS = [
-    # 2026-08-19 实拉。**上一版写的 `seedance-2.5-720p` / `-480p` 根本不存在**
-    # （多了连字符、少了档位号），跑起来必然 503。真名长这样：
+    # 2026-08-28 实拉。**鹤这一轮又换了写法**：新增 `paisio-seedance-2.5-*`
+    # 这套带 paisio- 前缀的，而 `seedance2.5-00-720p` / `-480p`、
+    # `sd2.5-ultra-720p` 已经下线（上一版这三个还在清单里）。
+    # 名字只能来自 /v1/models，连「上一次实拉的结果」都不能当依据 ——
+    # 08-19 到 08-28 之间就变了两批。
     "seedance2.5-4-1-720p",                      # 按次 3.5/次，4-30s，图10/视频0/音频0
-    "seedance2.5-00-720p", "seedance2.5-00-480p",
     "seedance2.5-26-720p", "seedance2.5-26-480p",
-    "sd2.5-ultra-720p",
     "paisiodance-2.5-720p", "paisiodance-2.5-480p",
+    "paisio-seedance-2.5-720p", "paisio-seedance-2.5-480p",   # 08-28 新增
+    "doubao-seedance-2-5-720p",                  # 同一个 2.5，豆包品牌的透传名
+    "sd2.5-720p-standard",
 ]
 HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 # 文档 2026-08 新增 start_image_url / end_image_url（「部分模型支持首尾帧控制」）。
@@ -617,9 +641,13 @@ HE_SD25_RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
 
 # 模型广场上标出来的硬约束。**只写有依据的那几个** —— 没截到的分组留空，
 # 走下面的宽松默认；宁可让网关去 400（不计费），也别拿猜的规则拦住能跑的活。
+# 08-28：seedance2-4-8-720p 已下线，规则一并撤掉；新上的 seedance2-4-6/4-7-720p
+# 广场没截到档位，不写 —— 宁可让网关去 400（不计费），也别拿猜的规则拦住能跑的活。
+# 08-28 新增的那几个 2.5（paisio-seedance-2.5-* / doubao-seedance-2-5-* /
+# sd2.5-720p-standard）也不写：只有 seedance2.5-4-1-720p 有广场截图，
+# 其余走下面 4-30 的宽松默认，实跑验过了再往这里补。
 HE_DURATION_RULES = {
     "seedance2-4-2-fast-720p": (10,),            # 仅有 10s
-    "seedance2-4-8-720p": (10, 15),              # 10/15s
     "seedance2-4-1-720p": tuple(range(4, 16)),   # 4-15s
     "seedance2-4-4-720p": tuple(range(4, 16)),   # 4-15s
     "seedance2.5-4-1-720p": tuple(range(4, 31)),  # 4-30s
@@ -635,7 +663,7 @@ HE_SD25_MODES = ["多参考图", "首尾帧"]
 
 
 class RespectHeSeedance25:
-    """鹤 Seedance 2.5（`seedance2.5-4-1-720p` 等 8 个，见 HE_SD25_MODELS）。
+    """鹤 Seedance 2.5（`seedance2.5-4-1-720p` 等 9 个，见 HE_SD25_MODELS）。
 
     和鹤的旧模型**不是一套字段**（旧的是 `metadata{modeType,ratio}` + `images[data URI]`），
     2.5 用文档规定的标准格式：

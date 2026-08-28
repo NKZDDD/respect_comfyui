@@ -136,7 +136,7 @@ pip install -r respect_comfyui/requirements.txt
 | 章鱼哥 | 图片/视频都是异步；参考图 `images[]` base64 |
 | 零视工坊 | 图片接口**没写在文档索引里**（在「模型」页），且是**异步**的；`seconds` 是**字符串**类型（发数字会 400 invalid_json）；比例必须**显式发 `aspect_ratio`+`ratio`**，只给 `size` 它会回落 16:9；**sd 系已迁到新接口**（用「SD2 视频（新接口）」节点） |
 | 灵感鸭 | 三步式：提交 → 查询 → `/content`；`size` 是**比例**、`seconds` 才是时长（sd 传整数、其余字符串）；每个模型 `seconds` 是**固定档位**（sora-2 只有 4/8/12、veo 只有 8、grok 只有 10/15）；SD 系要顶层 `resolution`，且**有参考图时 `extra.reference_mode` 必填**（`media`/`frame`）；吊炸天模型在**单独文档**里（`sd-2.0`/`sd-fast`/`-special`），不在统一接口的模型表 |
-| 鹤 / paisio | **旧模型**（sd2/sd3/seedance2.0）用 `metadata`+`images`(data URI) 兼容格式；**Seedance 2.5 是另一套**：`duration` 整数 + 顶层 `aspect_ratio` + `image_url`/`extra_images`，**只收公网 URL**、4–29秒、30图/10视频/10音频 —— 两者字段不通用，用错节点参数会被忽略。另有**虚拟资产接口**可传参考视频/音频 |
+| 鹤 / paisio | **旧模型**（sd2/sd3/seedance2.0）用 `metadata`+`images`(data URI) 兼容格式；**Seedance 2.5 是另一套**：`duration` 整数 + 顶层 `aspect_ratio` + `image_url`/`extra_images`，**只收公网 URL**、4–30秒、30图/10视频/10音频 —— 两者字段不通用，用错节点参数会被忽略。另有**虚拟资产接口**可传参考视频/音频。⚠ 模型名以 `GET /v1/models` 为准：2026-08-28 实拉又换了一轮（新增 `paisio-seedance-2.5-*`，下线 `seedance2.5-00-*` / `sd2.5-ultra-720p` / `sd2-ultra-*` / grok 视频；**图片全系改名**成 `gpt-image2-<分组>-<画质>`） |
 | M86 / New API | **图片的 `size` 是比例**（`1:1`/`9:16`）不是像素；**视频比例字段叫 `ratio`**；本地图走 multipart（`images` 字段重复多次）；`seed-2.0` 固定 $1.2/次，5–15 秒同价 |
 | 阿珂 / snumom | **只做视频**。`seconds` 是**字符串**；**没有 aspect_ratio 字段**，画面全靠 `size`（只有 480p/720p × 16:9/9:16 四种组合）；参考图 ≤7 且**两个字段形状不同**：`reference_images` 是对象数组 `[{url:…}]`（只收链接）、`input_reference` 是字符串数组（URL 或 base64），**二选一别混** |
 | 超模 / chaomoapi | **视频参考素材是 OpenAI chat 风格的 `content` 块**：`[{"type":"image_url","role":"reference_image","image_url":{"url":…}}]` —— 发别家的 `images:[base64]` 过去**不报错但参考图被忽略**；视频 `size` 是**分辨率档位**（480p/720p/1080p/4k）不是像素；`seconds` 是字符串。图片那边比例字段又叫 **`ratio`**、要带 `async:true` 后轮询；图生图走 multipart，字段名是 **`image[]`**，且文档明写「参考图 URL 不能直传，必须先下载到本地再上传」 |
@@ -234,7 +234,7 @@ pip install -r respect_comfyui/requirements.txt
 | `RespectZeroImage` | Respect 零视工坊 图片 | `/v1/images/generations`，异步自动轮询；quality/style/response_format |
 | `RespectLingganyaVideo` | Respect 灵感鸭 统一视频（sora/SD） | `size`=比例、`seconds`=时长；SD 带顶层 `resolution` + `extra{}` |
 | `RespectHeVideo` | Respect 鹤 视频（旧规格） | sd2/sd3/seedance2.0 全系；`metadata`+`images`(data URI) 兼容格式；顶层也发 `aspect_ratio` |
-| `RespectHeSeedance25` | Respect 鹤 Seedance 2.5 | **新规格**：`duration`(4–29整数)+`aspect_ratio`+`image_url`/`extra_images`(≤30)+`extra_videos`/`extra_audios`(各≤10)，**只收公网URL** |
+| `RespectHeSeedance25` | Respect 鹤 Seedance 2.5 | **新规格**：`duration`(4–30整数)+`aspect_ratio`+`image_url`/`extra_images`(≤30)+`extra_videos`/`extra_audios`(各≤10)，**只收公网URL**；清单 2026-08-28 实拉，9 个 |
 | `RespectM86Video` | Respect M86 视频（`seed-2.0`） | 比例字段是 **`ratio`**；给 URL 走 JSON、接 IMAGE 自动走 multipart；$1.2/次固定，5–15 秒同价 |
 | `RespectM86Image` | Respect M86 图片（`seed-image-1.0`） | **同步**出图；**`size` 是比例**不是像素；`ref_images` 只收公网 URL |
 | `RespectYishouVideo` | Respect 一手 视频 | `seconds`+`aspect_ratio` 必填、不传 `size`；`images`/`videos`/`audios` 只收公网 HTTPS |

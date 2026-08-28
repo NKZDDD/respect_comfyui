@@ -86,7 +86,7 @@
         "Node name for S&R": "RespectHeImage"
       },
       "widgets_values": [
-        "gpt-image2-high",
+        "gpt-image2-1-high",
         "雨夜街头，霓虹倒影在湿地面，电影感",
         "2K",
         "9:16",
@@ -194,7 +194,7 @@
         "Node name for S&R": "RespectHeVideo"
       },
       "widgets_values": [
-        "sd2-pro-720p",
+        "sd2-720p",
         "雨滴落下，行人撑伞走过，镜头轻微手持感",
         12,
         "9:16",
