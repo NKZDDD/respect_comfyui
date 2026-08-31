@@ -4,8 +4,7 @@
 和公开 Schema `GET /public/model_group/info`），两边规格表由脚本比对保持一致。
 
 - 图片 `POST /v1/images/generations`（**同步**）
-- 视频 `POST /api/multimodal/create_task` 提交 → `GET /v1/videos/{id}` 轮询
-  → `GET /v1/videos/{id}/content` 下载
+- 视频 `POST /api/multimodal/create_task` 提交 → `POST /api/multimodal/get_result` 查询
 
 ⚠ 三个只有对着 Schema 才知道的坑：
 
@@ -17,13 +16,22 @@
    照发服务端会拒绝，或者**静默忽略**——后者更麻烦，你以为设了尺寸其实没设。
 2. **GPT 两个图片模型（gpt-image-1 / gpt-image-2）在当前 Schema 里只做文生图**，
    接了参考图不是少几张的问题，是这条路根本没有参考图。
-3. **视频参考素材只收公网 URL**，而且提交端点**不在 `/v1` 下**
-   （是 `/api/multimodal/create_task`），跟查询/下载不是同一个前缀。
+3. **视频的请求体是 `inputs[]` + `metadata{}`，不是扁平字段**：每条素材在
+   `inputs` 里独立一项、各带 `format`（`first_frame`/`last_frame`/
+   `reference_image`/`reference_video`/`reference_audio`），视频参数放 `metadata`。
+   文档原话：「未被模型声明的参数会被**静默丢弃**或被下游拒绝」——
+   发扁平的后果是任务建得起来、task_id 也拿得到，但提示词和参考图可能一个都没进去。
+4. **查询是 `POST /api/multimodal/get_result`**，body 要 `model` + `taskId`（小驼峰）。
+   ⚠ 曾经查的 `GET /v1/videos/{id}` 在文档里**根本不存在**，而 Gate 是 litellm 搭的，
+   `/v1/videos/*` 在 litellm 里是 **OpenAI 直通路由** —— 于是它把我们的 task_id
+   转发去了 `api.openai.com`，超时回 500。地址是 Gate 拼的，不是 base_url 配错了。
+5. 视频参考素材只收**下游能取到的公网 URL**；提交/查询端点都**不在 `/v1` 下**。
 """
 
 from __future__ import annotations
 
 import json
+import time
 
 from .utils import (RespectAPIError, api_request, download_to_output,
                     dynamic_image_inputs, dynamic_url_inputs, ensure_config,
@@ -71,8 +79,53 @@ def _gate_root(cfg) -> str:
     return cfg.normalized_base().rsplit("/v1", 1)[0]
 
 
-def _is_25(model: str) -> bool:
-    return str(model).startswith("seedance-2.5")
+# 逐模型硬约束，**直接来自 /public/model_group/info 实拉**（2026-08-31）。
+# 文档正文写「图片最多 9 张」只对 2.0 系成立，后面跟着「具体以模型 Schema 为准」。
+#
+# `banned` 是这家**主动声明**的不支持参数。Schema 里 seed 那条原话：
+#   "Unsupported by Seedance 2.0 series; declared for explicit validation
+#    instead of silent dropping."
+# 它宁可显式拒绝也不静默丢弃。我们照做。
+GATE_VIDEO_SPEC = {
+    "seedance-2.0-fast": dict(
+        duration=(4, 15), resolutions=["480p", "720p", "1080p", "4k"],
+        max_images=9, max_videos=3, max_audios=3,
+        banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
+        audio_requires=["image_url", "video_url"]),
+    "seedance-2.0-fast-official": dict(
+        duration=(4, 15), resolutions=["480p", "720p"],
+        max_images=9, max_videos=3, max_audios=3,
+        banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
+        audio_requires=["image_url", "video_url"]),
+    "seedance-2.0-mini": dict(
+        duration=(4, 15), resolutions=["480p", "720p"],
+        max_images=9, max_videos=3, max_audios=3,
+        banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
+        audio_requires=["image_url", "video_url"]),
+    "seedance-2.0-standard": dict(
+        duration=(4, 15), resolutions=["480p", "720p", "1080p", "4k"],
+        max_images=9, max_videos=3, max_audios=3,
+        banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
+        audio_requires=["image_url", "video_url"]),
+    "seedance-2.0-standard-official": dict(
+        duration=(4, 15), resolutions=["480p", "720p", "1080p", "4k"],
+        max_images=9, max_videos=3, max_audios=3,
+        banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
+        audio_requires=["image_url", "video_url"]),
+    "seedance-2.5": dict(
+        duration=(4, 30), resolutions=["480p", "720p"],
+        max_images=30, max_videos=10, max_audios=10,
+        banned=["draft"], audio_requires=None),
+    "seedance-2.5-official": dict(
+        duration=(4, 30), resolutions=["480p", "720p"],
+        max_images=30, max_videos=10, max_audios=10,
+        banned=["draft"], audio_requires=None),
+}
+
+
+def gate_spec(model: str) -> dict:
+    """认不出的按 2.0 系最保守的一套走，别拿猜的上限放行。"""
+    return GATE_VIDEO_SPEC.get(model, GATE_VIDEO_SPEC["seedance-2.0-mini"])
 
 
 def _ratio_for_size(size: str) -> str:
@@ -191,11 +244,12 @@ class RespectGateImage:
 
 
 class RespectGateVideo:
-    """Gate 视频。`POST /api/multimodal/create_task` → 轮询 `GET /v1/videos/{id}`。"""
+    """Gate 视频。`POST /api/multimodal/create_task` → `POST /api/multimodal/get_result`。"""
 
-    DESCRIPTION = ("Gate 视频(base_url=https://api-gate.astralmindai.com)。"
-                   "2.5 系 4-30 秒 / 30图 10视频 10音频；2.0 系 4-15 秒 / 9图 3视频 3音频。"
-                   "⚠ 参考素材**只收公网 URL**，本机图先过『对象存储上传』。")
+    DESCRIPTION = ("Gate 视频(base_url=https://api-gate.astralmindai.com)。请求体是 "
+                   "**inputs[]+metadata{}**，不是扁平字段；查询走 POST get_result。"
+                   "2.5 系 4-30 秒/30图·10视频·10音频；2.0 系 4-15 秒/9图·3视频·3音频。"
+                   "⚠ 参考素材只收**下游能取到的公网 URL**。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -205,10 +259,12 @@ class RespectGateVideo:
                 "model": (GATE_VIDEO_MODELS, {"default": "seedance-2.5"}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "seconds": ("INT", {"default": 15, "min": 4, "max": 30,
-                                    "tooltip": "2.5 系 4-30 秒；2.0 系只到 15 秒（超了当场报，不会白等排队）"}),
+                                    "tooltip": "2.5 系 4-30；2.0 系只到 15（超了当场报，不白等排队）"}),
                 "ratio": (GATE_RATIOS, {"default": "9:16"}),
-                "resolution": (GATE_RESOLUTIONS, {"default": "720p"}),
-                "poll_interval": ("INT", {"default": 8, "min": 2, "max": 60}),
+                "resolution": (GATE_RESOLUTIONS, {"default": "720p",
+                                                  "tooltip": "1080p/4k 只有 2.0-standard 和 2.0-fast 有"}),
+                "poll_interval": ("INT", {"default": 5, "min": 2, "max": 60,
+                                          "tooltip": "文档建议 2~5 秒"}),
                 "poll_timeout": ("INT", {"default": 2400, "min": 60, "max": 7200}),
                 "auto_download": ("BOOLEAN", {"default": True}),
             },
@@ -221,9 +277,13 @@ class RespectGateVideo:
                 "video_urls": ("STRING", {"default": "", "multiline": True,
                                           "placeholder": "参考视频 URL，每行一个"}),
                 "audio_urls": ("STRING", {"default": "", "multiline": True,
-                                          "placeholder": "参考音频 URL，每行一个"}),
+                                          "placeholder": "参考音频 URL，每行一个。⚠2.0 系必须同时给图或视频"}),
                 "generate_audio": ("BOOLEAN", {"default": True}),
                 "watermark": ("BOOLEAN", {"default": False}),
+                "first_last": ("BOOLEAN", {"default": False,
+                                           "tooltip": "开启后前两张参考图当首帧/末帧（format=first_frame/last_frame）"}),
+                "priority": ("INT", {"default": 0, "min": 0, "max": 9,
+                                     "tooltip": "0~9，越大越优先"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
@@ -241,67 +301,75 @@ class RespectGateVideo:
     def generate(self, api_config, model, prompt, seconds, ratio, resolution,
                  poll_interval, poll_timeout, auto_download,
                  video_urls="", audio_urls="", generate_audio=True, watermark=False,
-                 custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
+                 first_last=False, priority=0, custom_model="", save_dir="",
+                 filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
         if not (prompt or "").strip():
             raise RespectAPIError("prompt 必填")
 
-        is25 = _is_25(model)
-        upper = 30 if is25 else 15
-        sec = int(seconds)
-        if not 4 <= sec <= upper:
-            raise RespectAPIError(
-                f"Gate 的 {model} 只支持 4–{upper} 秒，这一项填的是 {sec} 秒。\n"
-                f"（2.5 系到 30 秒，2.0 系只到 15 秒）现在就停，别让排队时间白花。")
-
+        spec = gate_spec(model)
         images = dynamic_url_inputs(kwargs)
         videos = [ln.strip() for ln in (video_urls or "").splitlines() if ln.strip()]
         audios = [ln.strip() for ln in (audio_urls or "").splitlines() if ln.strip()]
-        max_i, max_va = (30, 10) if is25 else (9, 3)
-        if len(images) > max_i or len(videos) > max_va or len(audios) > max_va:
-            raise RespectAPIError(
-                f"Gate 的 {model} 素材超限：图 {len(images)}/{max_i}、"
-                f"视频 {len(videos)}/{max_va}、音频 {len(audios)}/{max_va}。\n"
-                f"**不会自动裁掉多的** —— 裁掉哪一项都不报错，而片子里就少一个人。")
+        sec, lo, hi = int(seconds), *spec["duration"]
+
+        problems = []
+        if not lo <= sec <= hi:
+            problems.append(f"时长只支持 {lo}–{hi} 秒，填的是 {sec} 秒")
+        if resolution not in spec["resolutions"]:
+            problems.append(f"分辨率只支持 {'、'.join(spec['resolutions'])}，选的是 {resolution}")
+        for got, cap, what in ((images, spec["max_images"], "图片"),
+                               (videos, spec["max_videos"], "视频"),
+                               (audios, spec["max_audios"], "音频")):
+            if len(got) > cap:
+                problems.append(f"{what}素材最多 {cap} 个，给了 {len(got)} 个")
+        if audios and spec["audio_requires"] and not (images or videos):
+            problems.append(f"{model} 的音频素材必须搭配参考图或参考视频一起给（Schema 的 x-requires-any-of）")
         bad = [r for r in images + videos + audios
                if not str(r).startswith(("http://", "https://"))]
         if bad:
+            problems.append(f"参考素材必须是**下游能取到的公网 URL**，有 {len(bad)} 条不是")
+        if first_last and len(images) < 2:
+            problems.append("开了首尾帧但参考图不足 2 张")
+        if problems:
             raise RespectAPIError(
-                f"Gate 的视频参考素材**只收公网 http/https URL**，这一项有 {len(bad)} 条不是。\n"
-                f"少一张参考图出来的就不是同一个人，所以这一条不出。\n"
-                f"把图接『Respect 对象存储上传』，把返回的 url 填进 ref_url_N。")
+                f"Gate {model} 的参数不符合它的 Schema：\n  · " + "\n  · ".join(problems)
+                + "\n现在就停，别让排队时间和钱白花。")
 
-        body: dict = {
+        # 每条素材是 inputs[] 里**独立一项**，各带自己的 format —— 不是数组字段
+        inputs = [{"name": "prompt", "value": prompt, "format": "text"}]
+        for n, url in enumerate(images):
+            fmt = "reference_image"
+            if first_last:
+                fmt = "first_frame" if n == 0 else "last_frame" if n == 1 else "reference_image"
+            inputs.append({"name": "image_url", "value": url, "format": fmt})
+        for url in videos:
+            inputs.append({"name": "video_url", "value": url, "format": "reference_video"})
+        for url in audios:
+            inputs.append({"name": "audio_url", "value": url, "format": "reference_audio"})
+
+        body = {
             "model": model,
-            "prompt": prompt,
-            "duration": sec,
-            "ratio": ratio,
-            "resolution": (resolution or "720p").lower(),
-            "generate_audio": bool(generate_audio),
-            "watermark": bool(watermark),
+            "inputs": inputs,
+            "metadata": {"ratio": ratio, "duration": sec, "resolution": resolution,
+                         "watermark": bool(watermark),
+                         "generate_audio": bool(generate_audio)},
         }
-        if images:
-            body["image_url"] = images
-        if videos:
-            body["video_url"] = videos
-        if audios:
-            body["audio_url"] = audios
+        if int(priority):
+            body["priority"] = int(priority)
 
-        print(f"[Respect] Gate 视频 {model}: {sec}s {body['resolution']} {ratio} "
-              f"图{len(images)}/视频{len(videos)}/音频{len(audios)}")
-        # 提交端点**不在 /v1 下**，自己拼绝对地址（见 _gate_root）
+        print(f"[Respect] Gate 视频 {model}: {sec}s {resolution} {ratio} "
+              f"素材 {len(inputs) - 1} 项（图{len(images)}/视频{len(videos)}/音频{len(audios)}）")
         resp = api_request(cfg, "POST", f"{_gate_root(cfg)}/api/multimodal/create_task",
                            json_body=body, retries=1, timeout=300)
         data = resp.json() if resp.content else {}
-        task_id = str(data.get("task_id") or data.get("id") or "") if isinstance(data, dict) else ""
-        video_url = _gate_pick_url(data)
-        if not video_url:
-            if not task_id:
-                raise RespectAPIError(
-                    f"Gate 创建任务没返回 ID：{json.dumps(data, ensure_ascii=False)[:400]}")
-            video_url = _gate_poll(cfg, task_id, int(poll_interval), int(poll_timeout))
+        task_id = str(data.get("task_id") or "") if isinstance(data, dict) else ""
+        if not task_id:
+            raise RespectAPIError(
+                f"Gate 创建任务没返回 task_id：{json.dumps(data, ensure_ascii=False)[:400]}")
 
+        video_url = _gate_poll(cfg, model, task_id, int(poll_interval), int(poll_timeout))
         local = ""
         if auto_download and video_url:
             try:
@@ -312,40 +380,74 @@ class RespectGateVideo:
         return (video_url, local, task_id)
 
 
-def _gate_pick_url(payload) -> str:
-    """从响应里取成片地址。只认明确的字段，不做模糊猜测。"""
+def _gate_result_url(payload) -> str:
+    """从 get_result 响应取成片地址。
+
+    文档 4.4 的成功响应把它放在两处，两处都取：
+      results[].parameters[] 里 name == "video_url" 的 value（官方列出的取值口）
+      results[].result.content.video_url
+    """
     if not isinstance(payload, dict):
         return ""
-    for key in ("video_url", "url", "result_url", "download_url"):
-        val = payload.get(key)
-        if isinstance(val, str) and val.startswith("http"):
-            return val
-    inner = payload.get("data")
-    return _gate_pick_url(inner) if isinstance(inner, dict) else ""
+    for item in payload.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        for par in item.get("parameters") or []:
+            if (isinstance(par, dict) and par.get("name") == "video_url"
+                    and isinstance(par.get("value"), str)
+                    and par["value"].startswith("http")):
+                return par["value"]
+        url = ((item.get("result") or {}).get("content") or {}).get("video_url")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    return ""
 
 
-def _gate_poll(cfg, task_id: str, interval: int, timeout: int) -> str:
-    import time
-    start, last = time.time(), ""
+def _gate_poll(cfg, model: str, task_id: str, interval: int, timeout: int) -> str:
+    """查询任务。**POST /api/multimodal/get_result，body 要 model + taskId（小驼峰）。**
+
+    ⚠ 这里以前查的是 `GET /v1/videos/{id}` —— 那个端点在 Gate 的文档里**根本没有**，
+    是编的。而 Gate 是 litellm 搭的网关，`/v1/videos/*` 在 litellm 里是 **OpenAI 直通
+    路由**，于是它把我们的 task_id 转发去了 `api.openai.com/v1/videos/{uuid}`，
+    超时回 500，日志刷一屏 `litellm.APIConnectionError`。
+    地址是 Gate 拼的，不是 base_url 配错了。
+    """
+    start, last, stuck = time.time(), "", 0
     while time.time() - start < timeout:
-        resp = api_request(cfg, "GET", f"/v1/videos/{task_id}", retries=1, timeout=60)
-        data = resp.json() if resp.content else {}
-        inner = data.get("data") if isinstance(data.get("data"), dict) else data
-        status = str((inner or {}).get("status") or "").lower()
+        try:
+            resp = api_request(cfg, "POST", f"{_gate_root(cfg)}/api/multimodal/get_result",
+                               json_body={"model": model, "taskId": task_id},
+                               retries=1, timeout=60)
+            data = resp.json() if resp.content else {}
+            stuck = 0
+        except Exception as exc:                            # noqa: BLE001
+            # 同一个错一直回 = 端点/参数不对，不是网络抖动。别拖满超时。
+            stuck += 1
+            if stuck >= 3:
+                raise RespectAPIError(
+                    f"Gate 查询任务连续 {stuck} 次同样失败，停止等待：{exc}\n"
+                    f"任务 {task_id} 可能仍在它那边跑。这类错重试无意义 —— "
+                    f"多半是端点或参数不对。")
+            print(f"[Respect] Gate 查询出错（第 {stuck} 次，继续）：{exc}")
+            time.sleep(interval)
+            continue
+
+        status = str(data.get("status") or "").lower() if isinstance(data, dict) else ""
         if status != last:
             print(f"[Respect] Gate {task_id}: {status or '(无状态字段)'}")
             last = status
-        if status in ("failed", "failure", "error"):
+        if status == "failed":
             raise RespectAPIError(
-                f"Gate 任务失败：{json.dumps(data, ensure_ascii=False)[:300]}")
-        url = _gate_pick_url(data)
+                f"Gate 任务失败：{json.dumps(data.get('error'), ensure_ascii=False)[:300]}")
+        url = _gate_result_url(data)
         if url:
             return url
-        if status in ("succeeded", "success", "completed"):
-            # 状态说成了但没给链接 —— 退回下载端点
-            return f"{_gate_root(cfg)}/v1/videos/{task_id}/content"
+        if status == "success":
+            raise RespectAPIError(
+                f"Gate 说任务成功了，但 results 里没有 video_url："
+                f"{json.dumps(data, ensure_ascii=False)[:400]}")
         time.sleep(interval)
-    raise RespectAPIError(f"Gate 任务超时：{task_id}（可调大 poll_timeout）")
+    raise RespectAPIError(f"Gate 任务超时：{task_id}（文档建议 2~5 秒轮询，可调大 poll_timeout）")
 
 
 NODE_CLASS_MAPPINGS = {
