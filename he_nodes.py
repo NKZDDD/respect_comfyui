@@ -151,13 +151,21 @@ def _he_items_to_tensor(items: list, cfg) -> torch.Tensor:
 class RespectHeVideo:
     """鹤/paisio 视频。`POST /v1/videos` 提交 + `GET /v1/videos/{task_id}` 轮询。
 
-    body：文档字段 `{model, prompt, image_url}`，另按**实测**附带即梦/豆包兼容字段
-    （`metadata{modeType,ratio,enableSound}` + `images[]` data URI + `seconds/duration`）。
-    `compat_metadata` 关掉就只发文档里那三个字段。
+    body 按文档发：`{model, prompt, duration, aspect_ratio, image_url, extra_images}`。
+
+    ⚠ 2026-08-31 对着文档核过（「提交视频生成任务」）：**所有视频模型使用完全
+    相同的请求参数格式**，字段表里**没有 `metadata`、没有裸 `images`**，
+    `image_url` / `extra_images` 写明「字符串 URL」——**没有能塞 data URI 的字段**。
+    正文里引用素材的写法是 `@Image1` / `@Img1`，也没有 `@图N`。
+
+    所以 `compat_metadata`（即梦/豆包那套 `metadata`+`images[]` data URI）默认**关**。
+    它当初的「实测跑通」是在 `sd2-pro-720p` 上做的，而那个模型 08-28 已经下线。
+    留着这个开关只是逃生口：万一你那条线路真吃这套，打开还能用。
     """
 
-    DESCRIPTION = ("鹤/paisio 视频(base_url=https://api.paisio.online)。sd2/sd3/seedance2.0 全系按秒计费；"
-                   "参考图自动转 data URI 内联(该网关不吃外部图床)；compat_metadata 默认开(实测可用)。")
+    DESCRIPTION = ("鹤/paisio 视频(base_url=https://api.paisio.online)。sd2/sd3/seedance2.0 全系按秒计费。"
+                   "⚠ 参考图**只收公网 http/https URL**(文档字段 image_url/extra_images)，"
+                   "IMAGE 输入口要先过『对象存储上传』换成 URL 再填进 image_url。")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict:
@@ -173,13 +181,13 @@ class RespectHeVideo:
                 "auto_download": ("BOOLEAN", {"default": True}),
             },
             "optional": {
-                "image_1": ("IMAGE", {"tooltip": "参考图/首帧 → images[] data URI；接批次会展开"}),
+                "image_1": ("IMAGE", {"tooltip": "⚠ 鹤只收公网 URL。这些口只在 compat_metadata 打开时才发得出去；正常路径是先过『对象存储上传』，把 url 填进 image_url"}),
                 "image_2": ("IMAGE",),
                 "image_3": ("IMAGE",),
                 "image_4": ("IMAGE",),
                 "image_url": ("STRING", {"default": "", "multiline": True, "placeholder": "公网参考图URL，每行一个：第1行→image_url(首帧)，其余→extra_images", "tooltip": "文档路径：只收 http/https（jpg/png/webp）。接『对象存储上传』的 url 最稳"}),
                 "enable_sound": (HE_TRISTATE, {"default": "on", "tooltip": "metadata.enableSound"}),
-                "compat_metadata": ("BOOLEAN", {"default": True, "tooltip": "带即梦/豆包兼容字段(metadata/images/seconds)；关掉=只发文档三字段"}),
+                "compat_metadata": ("BOOLEAN", {"default": False, "tooltip": "即梦/豆包那套 metadata+images[]。⚠ 鹤的文档里没有这两个字段，默认关；当初的实测是在已下线的 sd2-pro-720p 上做的。只有确认你那条线路吃这套才打开"}),
                 "custom_model": ("STRING", {"default": "", "multiline": False, "placeholder": "可选，覆盖模型"}),
                 "save_dir": ("STRING", {"default": "", "multiline": False, "placeholder": "保存目录：留空=output/respect"}),
                 "filename": ("STRING", {"default": "", "multiline": False, "placeholder": "文件名：留空=自动加时间戳"}),
@@ -194,7 +202,7 @@ class RespectHeVideo:
     CATEGORY = CATEGORY
 
     def generate(self, api_config, model, prompt, seconds, aspect_ratio, poll_interval, poll_timeout,
-                 auto_download, image_url="", enable_sound="on", compat_metadata=True,
+                 auto_download, image_url="", enable_sound="on", compat_metadata=False,
                  custom_model="", save_dir="", filename="", inputcount=4, **kwargs):
         cfg = ensure_config(api_config)
         model = (custom_model or "").strip() or model
@@ -228,9 +236,25 @@ class RespectHeVideo:
             if not enable_sound.startswith("("):
                 meta["enableSound"] = enable_sound
             body["metadata"] = meta
-        elif refs and not ref_urls:
-            print("[Respect] compat_metadata 已关且没填公网URL —— 文档的 image_url 要求 http/https，"
-                  "base64 会被拒。请把图先过『对象存储上传』，把 url 填进 image_url。")
+        elif refs:
+            # **接了 IMAGE 口但发不出去 —— 这里必须停,不能只 print。**
+            #
+            # 以前是打一行字继续跑:参考图被悄悄丢掉,片子照出、照计费,
+            # 而正文里写的「@Image1 是谁」在请求里根本没有对应的图 ——
+            # 出来的脸不是本人,一处都不报错。这正是「参考图失效」的成因。
+            #
+            # 文档(提交视频生成任务)的字段只有 image_url / extra_images,
+            # 写明「字符串 URL」,没有能塞 data URI 的地方。
+            raise RespectAPIError(
+                f"接了 {len(refs)} 张 IMAGE,但鹤的视频接口**只收公网 http/https URL** ——"
+                f"文档字段是 image_url / extra_images,没有能塞 base64 的地方。\n"
+                f"少一张参考图出来的就不是同一个人,所以这一条不出,不会悄悄丢掉。\n"
+                f"两条路走:\n"
+                f"  · 正路:把图接『Respect 对象存储上传』,把返回的 url 按行填进 image_url"
+                f"（第 1 行 → image_url 首帧,其余 → extra_images）\n"
+                f"  · 逃生口:打开 compat_metadata,走即梦/豆包那套 metadata+images[]。"
+                f"**文档里没有这两个字段**,当初的实测是在已下线的 sd2-pro-720p 上做的,"
+                f"出片不参考图就是它")
 
         print(f"[Respect] 鹤 视频提交 POST /v1/videos  body={_he_brief(body)}")
         if refs and "images" in body:
