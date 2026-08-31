@@ -1,6 +1,6 @@
 # Respect ComfyUI 扩展
 
-把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙、好漫剧、巨轮、Gate），
+把**多个中转 / 直连 API 网关**封装成 ComfyUI 节点（小裴 aicopy、一花 Codex、坤鸡、章鱼哥、零视工坊、灵感鸭、鹤 paisio、M86、一手 ONE API、阿珂、超模、小霸龙、好漫剧、巨轮、Gate、无限画布），
 并附带一整套文本 / PDF / 剪辑 / 分镜流水线工具节点。共 **90 个节点**。
 
 节点按网关分在 **`Respect/小裴`**、`Respect/坤鸡`、`Respect/章鱼哥`、`Respect/零视工坊`、`Respect/灵感鸭`、`Respect/鹤`
@@ -128,6 +128,7 @@ pip install -r respect_comfyui/requirements.txt
 | **好漫剧** | `https://www.75api.com` | 好漫剧 图片（banana / gpt-image-2） | **好漫剧 视频**（GROK multipart / H3 / Omni / chat 式）| — |
 | **巨轮** | `https://julun.cc` | 巨轮 图片（`doubao-seedream-5-0-260128`，同步） | **巨轮 视频**（17 个模型 / 5 种请求格式）（+素材上传） | — |
 | **Gate** | `https://api-gate.astralmindai.com` | Gate 图片（14 个模型） | **Gate 视频**（2.5 系 4-30 秒 / 2.0 系 4-15 秒） | — |
+| **无限画布** | `https://videogogo.top/api` | — | **无限画布 视频**（Seedance 2.5，本机图自动传 asset） | — |
 | 一花 Codex | `https://llm.xxttt.com` | — | — | LLM 专用，见 `2_llm_*` |
 
 各家的坑：
@@ -148,6 +149,7 @@ pip install -r respect_comfyui/requirements.txt
 | 好漫剧 / 75api | **同一个端点 `/v1/videos` 上并存两种协议**：GROK 走 multipart 文件、minimax_h3 走 JSON —— 发错格式**不报错，参考图整个丢掉**。sd-2.5-c1 归在 h3 那套里 |
 | **巨轮 / julun.cc** | ⚠ **一个服务、五种请求格式，选模型即选格式**：`metadata`（content 块）/ `url_media`（`seconds`+`image_urls`）/ `openai_refs`（`duration`+`aspect_ratio`+`image_refs`）/ `grok`（**不认 `seconds`**，比例分辨率必须放 `extra` 里）/ `simple`（h3 走 `/v1/video/generations`）。**模型名带空格、中文和全角括号**（`grok-imagine-video-1.5（按次）`）照抄别手打。`sd2.5` 传错时长会被**悄悄改成 30**，`dubai_sd25_170` 同样固定 30 但**直接 400**；`SD2.0 1080P 933` **至少要 1 张参考图**；`wan3.0th` **按秒计费**（0.14 元/秒）且音频必须 WAV。查询响应**套一层 `data`、状态大写**（`IN_PROGRESS`/`SUCCESS`/`FAILURE`）、进度是字符串 `"100%"`。参考素材必须公网可达，上传件**只留 72 小时** |
 | Gate / astralmindai | **图片不是一套字段硬套所有模型**：Kling 用 `resolution`+`aspect_ratio`（没有 `size`）、数量字段叫 `num_images`；Qwen 尺寸分隔符是 **`*`** 不是 `x`；`seedream-4-5` 只收 `2K`/`4K`；Seedream/Kling 一族**不收 `n`**。发错要么被拒、要么**被静默忽略**（你以为设了尺寸其实没设）。`gpt-image-1/2` **只做文生图**。视频参考素材只收公网 URL，且提交端点 **`/api/multimodal/create_task` 不在 `/v1` 下** |
+| 无限画布 / videogogo | **不是阿珂。** 只做视频，**分辨率由模型名决定**（`-720p` → 720p，`seedance-2.5-hf` → 480p），没有单独的分辨率参数。本机图走 **`POST /v1/assets`**（裸字节 + `X-File-Name` 头）换 `asset_id`，所以 IMAGE 口能直接用、不用先配对象存储。提交带 **`Idempotency-Key`**，重投不重复计费 |
 
 **模型名典型坑**：
 
