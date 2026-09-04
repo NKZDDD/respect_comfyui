@@ -148,6 +148,11 @@ class Run:
         self.cfg = cfg
         self.status = "排队中"
         self.message = ""
+        # 整批致命是否已触发。**它不能直接把 status 改成终态** ——
+        # 线程池这时还在收尾，剩下的任务还没标完。谁按 status 判断"跑完了"
+        # （命令行那个循环、任何轮询脚本），读到的就是一份半截的统计，
+        # 并据此定退出码。终态只由 go() 在池子排干之后定这一处。
+        self.stopped = False
         self.started = time.time()
         self.ended = 0.0
         self._cancel = threading.Event()
@@ -292,7 +297,7 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
                 # 整批性质的（余额没了、密钥失效）：剩下的挨个去撞没有意义
                 task.status = "失败"
                 task.ended = time.time()
-                run.status = "已停止"
+                run.stopped = True
                 run.message = f"整批停止：{exc}"
                 run._cancel.set()
                 log(f"[{task.idx}] 整批致命，后续任务不再发：{exc}")
@@ -417,8 +422,7 @@ def start(spec: dict, cfg: dict) -> Run:
             run.log(run.message)
         run.ended = time.time()
         c = run.counts()
-        if run.status != "已停止":
-            run.status = "已完成"
+        run.status = "已停止" if (run.stopped or run.cancelled()) else "已完成"
         if not run.message:
             parts = [f"完成 {c['完成']}", f"失败 {c['失败']}"]
             if c["未发"]:

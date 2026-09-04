@@ -283,6 +283,10 @@ def test_整批致命就整批停_而且没发的不算失败(tmp_path):
         _spec(tmp_path, n=20, model="broke", concurrency=2, max_retry=3), _cfg()))
     c = run.counts()
     assert run.status == "已停止"
+    # 终态一出现，统计就必须是**最终的**。原来 batch_fatal 当场把 status 改成
+    # 「已停止」，而线程池还在收尾 —— 谁按 status 判断"跑完了"（命令行那个
+    # 循环、任何轮询脚本）读到的就是半截统计，还据此定退出码。
+    assert c["待跑"] == 0 and c["进行中"] == 0, f"终态时还有没结的任务：{c}"
     assert c["未发"] >= 15, c
     assert c["失败"] + c["未发"] == 20
     assert all(t.attempts <= 1 for t in run.tasks), "对整批致命做了无谓重试"
