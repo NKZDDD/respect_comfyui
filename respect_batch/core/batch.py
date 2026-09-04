@@ -85,6 +85,10 @@ def parse_lines(text: str) -> list:
 
     空行和 `#` 开头的行跳过 —— 方便把不要的那几条注释掉重跑，而不是删掉
     （删掉之后就再也想不起来当时写的是什么）。
+
+    ⚠ **这套语法只服务命令行**（`run.py run --file`），那条路的用户是写脚本的。
+    界面走的是 `spec["tasks"]` 结构化清单，不要求任何人知道 `|` `;` `#`。
+    用户原话：「不要训练用户去用什么换行啊本地地址什么的」。
     """
     rows = []
     for raw in (text or "").splitlines():
@@ -102,12 +106,37 @@ def parse_lines(text: str) -> list:
     return rows
 
 
+def _rows_of(spec: dict) -> list:
+    """清单：界面给的结构化优先，没有才回落命令行那套文本语法。"""
+    raw = spec.get("tasks")
+    if isinstance(raw, list) and raw:
+        rows = []
+        for r in raw:
+            prompt = str((r or {}).get("prompt") or "").strip()
+            if not prompt:
+                continue          # 空卡片当没填，不当成一条任务发出去
+            rows.append({
+                "prompt": prompt,
+                "refs": [str(x).strip() for x in ((r or {}).get("refs") or [])
+                         if str(x).strip()],
+                "name": str((r or {}).get("name") or "").strip(),
+            })
+        return rows
+    return parse_lines(spec.get("lines") or "")
+
+
 def build_tasks(spec: dict) -> list:
     """把界面上填的东西展开成任务清单。
 
     「每条出几张」展开成**几条独立任务**，而不是给服务商传 n=N：
     一条失败不牵连另一条，重跑也只重跑失败的那一张。多花的只是几次请求，
     换来的是失败粒度 —— n=4 里坏一张，整条都得重来，等于白付三张的钱。
+
+    清单有两个来源，**结构化的优先**：
+      · `spec["tasks"]`  界面给的 `[{prompt, refs, name}]` —— 没有任何语法
+      · `spec["lines"]`  命令行给的一行一条文本，见 `parse_lines`
+    另外 `spec["refs"]` 是**这一批共用的参考图**，会拼在每条自己的参考图前面
+    （同一个角色出 20 个动作，图只拖一次）。
     """
     kind = spec.get("kind") or "image"
     provider = spec.get("provider") or ""
@@ -116,9 +145,14 @@ def build_tasks(spec: dict) -> list:
         spec.get("out_dir") or paths.default_out_dir()))
     ext = ".png" if kind == "image" else ".mp4"
     repeat = max(1, int(spec.get("repeat") or 1))
+    shared = [str(r).strip() for r in (spec.get("refs") or []) if str(r).strip()]
 
+    rows = _rows_of(spec)
     tasks, idx = [], 0
-    for i, row in enumerate(parse_lines(spec.get("lines") or ""), 1):
+    for i, row in enumerate(rows, 1):
+        # 共用的在前、这条自己的在后 —— 顺序就是各家的「图1、图2」，
+        # 反过来会让「@Image1 指谁」变掉，而那不会报错，只是出来的不对。
+        row_refs = shared + [r for r in row["refs"] if r not in shared]
         for k in range(repeat):
             idx += 1
             stem = row["name"] or _safe_name(row["prompt"], f"{idx:04d}")
@@ -128,7 +162,7 @@ def build_tasks(spec: dict) -> list:
             # 硬盘上只有 12 个文件，状态还全是「完成」。
             dest = os.path.join(out_dir, f"{i:03d}_{stem}{ext}")
             tasks.append(Task(
-                idx, kind, provider, model, row["prompt"], row["refs"], dest,
+                idx, kind, provider, model, row["prompt"], row_refs, dest,
                 size=spec.get("size") or "", ratio=spec.get("ratio") or "",
                 duration=int(spec.get("duration") or 0),
                 resolution=spec.get("resolution") or "",
@@ -208,8 +242,10 @@ class Run:
         write_json(self.manifest_path, {
             "id": self.id, "status": self.status, "message": self.message,
             # spec 里不落 lines（可能几百行）和任何凭据
+            # tasks/lines 不落：每条的提示词和参考图在下面 tasks 里已经有了，
+            # 重复一份只会让 manifest 大一倍。凭据更是一个字都不能落。
             "spec": {k: v for k, v in self.spec.items()
-                     if k not in ("lines", "api_key", "proxy")},
+                     if k not in ("lines", "tasks", "api_key", "proxy")},
             "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started)),
             "seconds": round((self.ended or time.time()) - self.started, 1),
             "counts": self.counts(),
@@ -342,7 +378,7 @@ def start(spec: dict, cfg: dict) -> Run:
         return run
 
     if not tasks:
-        return stop_now("任务清单是空的 —— 提示词一行一条，写在中间那个大框里。")
+        return stop_now("一条任务都没有 —— 至少填一条提示词再开跑。")
 
     pid = spec.get("provider") or ""
     kind = spec.get("kind") or "image"

@@ -208,7 +208,7 @@ def test_没填密钥说清楚去哪填(tmp_path):
 def test_空清单不当成正常跑完(tmp_path):
     from core import batch
     run = batch.start(_spec(tmp_path, lines="# 全是注释\n\n"), _cfg())
-    assert run.status == "已停止" and "空的" in run.message
+    assert run.status == "已停止" and "一条任务都没有" in run.message
 
 
 # ---------------------------------------------------------------- 并发本身
@@ -398,3 +398,125 @@ def test_每家的能力声明都渲染得出来():
         assert cap.get("name") and cap.get("supports")
         for kind in cap["supports"]:
             assert kind in cap, f"{cap['id']} 声明支持 {kind} 却没有这一节"
+
+
+# ---------------------------------------------------------------- 界面给的结构化清单
+#
+# 界面**不再要求用户懂任何符号**（用户原话：「不要训练用户去用什么换行啊
+# 本地地址什么的」）。`|` `;` `#` 那套只留给命令行 `run.py run --file`。
+
+def test_结构化清单优先于文本语法(tmp_path):
+    from core import batch
+    ts = batch.build_tasks(_spec(
+        tmp_path, lines="这行不该被用到",
+        tasks=[{"prompt": "卡片一"}, {"prompt": "卡片二"}]))
+    assert [t.prompt for t in ts] == ["卡片一", "卡片二"]
+
+
+def test_空卡片不当成一条任务(tmp_path):
+    """界面上「＋加一条」留着没填是常态，不该变成一条空提示词发出去。"""
+    from core import batch
+    ts = batch.build_tasks(_spec(
+        tmp_path, tasks=[{"prompt": "真的"}, {"prompt": "   "}, {"prompt": ""}]))
+    assert len(ts) == 1
+
+
+def test_共用参考图拼在每条前面且去重(tmp_path):
+    """顺序就是各家的「图1、图2」—— 反过来会让 @Image1 指向别人，
+    而那不会报错，只是出来的不对。"""
+    from core import batch
+    ts = batch.build_tasks(_spec(
+        tmp_path, refs=["A.png", "B.png"],
+        tasks=[{"prompt": "只用共用的"},
+               {"prompt": "另加一张", "refs": ["C.png"]},
+               {"prompt": "重复给了共用的", "refs": ["A.png"]}]))
+    assert ts[0].refs == ["A.png", "B.png"]
+    assert ts[1].refs == ["A.png", "B.png", "C.png"]
+    assert ts[2].refs == ["A.png", "B.png"], "重复的参考图没去掉"
+
+
+def test_每条自己的文件名跟着卡片走(tmp_path):
+    from core import batch
+    ts = batch.build_tasks(_spec(
+        tmp_path, tasks=[{"prompt": "随便", "name": "我起的名字"}]))
+    assert "我起的名字" in os.path.basename(ts[0].dest)
+
+
+# ---------------------------------------------------------------- 拖进来的图
+
+def test_拖进来的图按内容去重(tmp_path):
+    """同一张图拖十次只存一份 —— 也就不会在参考图列表里出现十遍。"""
+    from core import assets
+    data = b"\x89PNG\r\n\x1a\n" + b"x" * 900
+    a = assets.save(data, "角色.png")
+    b = assets.save(data, "角色.png")
+    assert a["path"] == b["path"]
+    assert os.path.isfile(a["path"])
+
+
+def test_只收图片(tmp_path):
+    from core import assets
+    with pytest.raises(ValueError) as e:
+        assets.save(b"hello world", "密码.txt")
+    assert "只收图片" in str(e.value)
+
+
+def test_空图片当场拒掉(tmp_path):
+    """0 字节的参考图发出去不报错，服务商收到的是「有参考图」，实际什么都没有。"""
+    from core import assets
+    with pytest.raises(ValueError) as e:
+        assets.save(b"", "空的.png")
+    assert "空文件" in str(e.value)
+
+
+def test_只有uploads目录里的图能被页面读到(tmp_path):
+    """不限制的话这个进程就成了本机文件读取器 ——
+    服务只绑 127.0.0.1，但浏览器里任何一个页面都能往它发请求。"""
+    from core import assets
+    inside = assets.save(b"\x89PNG\r\n\x1a\n" + b"x" * 900, "ok.png")["path"]
+    outside = tmp_path / "偷看.txt"
+    outside.write_text("secret", encoding="utf-8")
+    assert assets.readable(inside)
+    assert not assets.readable(str(outside))
+    assert not assets.readable(r"C:\Windows\win.ini")
+    # 用 .. 绕出去也不行
+    assert not assets.readable(os.path.join(assets.uploads_dir(), "..", "..", "config.json"))
+
+
+# ---------------------------------------------------------------- 模板
+
+def test_模板只存怎么跑_不存提示词和凭据():
+    """白名单而不是黑名单：将来 spec 里加了新字段（比如临时塞进去的凭据），
+    黑名单会把它一起写进模板文件。"""
+    from core import templates
+    d = templates.save_one("竖屏10秒", {
+        "provider": "paisio", "kind": "video", "model": "sd2-pro-720p",
+        "ratio": "9:16", "duration": 10, "concurrency": 6,
+        "api_key": "sk-绝对不能进模板", "tasks": [{"prompt": "秘密"}],
+        "refs": ["C:/私密/图.png"]})
+    spec = d["templates"][0]["spec"]
+    assert spec["ratio"] == "9:16" and spec["concurrency"] == 6
+    for leak in ("api_key", "tasks", "refs", "lines"):
+        assert leak not in spec, f"{leak} 漏进模板了"
+
+
+def test_模板同名覆盖而不是攒一堆():
+    from core import templates
+    templates.save_one("一样的名字", {"provider": "a"})
+    d = templates.save_one("一样的名字", {"provider": "b"})
+    assert len([t for t in d["templates"] if t["name"] == "一样的名字"]) == 1
+    assert d["templates"][-1]["spec"]["provider"] == "b"
+
+
+# ---------------------------------------------------------------- 逐模型参数收窄
+
+def test_逐模型的可选项能盖过这一家的通用值():
+    """界面「只显示这个模型真的要的参数」靠的就是 model_options ——
+    全露出来等于把「这个参数对当前模型有没有用」推给用户去判断。"""
+    from core import providers
+    cap = [c for c in providers.list_capabilities() if c["id"] == "wuxianhuabu"][0]
+    mo = (cap.get("video") or {}).get("model_options") or {}
+    assert mo, "无限画布应该有逐模型约束（它的清单是实拉的）"
+    durs = {m: tuple(v.get("durations") or ()) for m, v in mo.items() if v.get("durations")}
+    assert len(set(durs.values())) > 1, \
+        f"逐模型时长应该不一样，实际全一样：{durs}"

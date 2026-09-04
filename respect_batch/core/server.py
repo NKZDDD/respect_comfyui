@@ -18,9 +18,10 @@ import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from . import accounts, batch, config, paths, providers, uploader
+from . import (accounts, assets, batch, config, paths, providers,
+               templates, uploader)
 
 # 当前这一次跑批。**故意只留一个**：并发在批内部，不在批之间。
 # 允许同时开几批的话，三层闸还是全局的，两批会互相抢槽，
@@ -97,6 +98,7 @@ class Handler(BaseHTTPRequestHandler):
                     "config": config.masked(cfg),
                     "data_dir": paths.data_dir(),
                     "default_out_dir": paths.default_out_dir(),
+                    "templates": templates.load(),
                     "upload_ready": uploader.configured(cfg.get("upload") or {}),
                 })
 
@@ -109,6 +111,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ok({"ok": True, "idle": False,
                                  **run.snapshot(log_from=frm)})
 
+            if u.path == "/api/file":
+                # 只放行 uploads 目录里的 —— 不限制的话这个进程就成了
+                # 本机文件读取器，而浏览器里任何页面都能往 127.0.0.1 发请求。
+                path = (q.get("path") or [""])[0]
+                if not assets.readable(path):
+                    return self._err("这个文件不给看", 403)
+                with open(path, "rb") as f:
+                    return self._send(200, f.read(), assets.content_type(path))
+
             return self._err("没有这个地址", 404)
         except FileNotFoundError as exc:
             return self._err(f"找不到界面文件：{exc}", 500)
@@ -119,6 +130,21 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------- POST
     def do_POST(self) -> None:                              # noqa: N802
         u = urlparse(self.path)
+
+        # 上传走**裸字节**，必须在 _body() 之前拦掉 —— 它会把同一个流当 JSON 读，
+        # 读完之后字节就没了。文件名放 query 里（不进 body），省一个 multipart 解析器。
+        if u.path == "/api/upload":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                data = self.rfile.read(n) if n else b""
+                name = unquote((parse_qs(u.query).get("name") or [""])[0])
+                return self._ok({"ok": True, **assets.save(data, name)})
+            except ValueError as exc:
+                return self._err(str(exc), 400)
+            except Exception as exc:                        # noqa: BLE001
+                traceback.print_exc()
+                return self._err(f"存不下这张图：{exc}", 500)
+
         try:
             body = self._body()
         except ValueError as exc:
@@ -176,6 +202,16 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/upload_selftest":
                 cfg = config.load()
                 return self._ok(uploader.selftest(cfg.get("upload") or {}))
+
+            if u.path == "/api/pick_dir":
+                return self._ok(assets.pick_dir(body.get("start") or ""))
+
+            if u.path == "/api/template_save":
+                return self._ok(templates.save_one(body.get("name") or "",
+                                                   body.get("spec") or {}))
+
+            if u.path == "/api/template_delete":
+                return self._ok(templates.delete(body.get("name") or ""))
 
             if u.path == "/api/accounts":
                 pid = body.get("provider") or ""

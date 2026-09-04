@@ -36,12 +36,16 @@ a = Analysis(
         + ["core.providers.base",
            # boto3/botocore 的数据文件靠它自己的 hook 带，但 s3 那份 client
            # 是运行时按名字找的，显式点一下更保险
-           "boto3", "botocore", "PIL.Image"]
+           "boto3", "botocore", "PIL.Image",
+           "tkinter", "tkinter.filedialog"]
     ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "pytest"],
+    # ⚠ tkinter **不能 exclude**：「换个地方」那个原生选目录框靠它
+    # （core/assets.pick_dir）。排掉之后按钮点下去只报一句 ImportError，
+    # 而人只会觉得"这按钮坏了"，然后回去手打路径 —— 正是要消灭的那件事。
+    excludes=["matplotlib", "numpy", "pytest"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

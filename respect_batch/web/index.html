@@ -6,70 +6,130 @@
 <title>Respect 批量并发</title>
 <style>
   :root{
-    --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --ink:#1c2024; --dim:#6b7480;
-    --acc:#2f6fed; --ok:#12805c; --bad:#c0342b; --warn:#9a6400; --run:#7a3fb8;
+    --bg:#f4f6f8; --card:#fff; --line:#e2e6eb; --ink:#1b1f24; --dim:#69727e;
+    --acc:#2f6fed; --acc2:#e8f0ff; --ok:#12805c; --bad:#c0342b; --warn:#9a6400;
+    --run:#7a3fb8; --soft:#f9fafb;
   }
   @media (prefers-color-scheme:dark){
-    :root{--bg:#15181c;--card:#1d2126;--line:#2c323a;--ink:#e8eaed;--dim:#98a1ad;
-          --acc:#6f9bff;--ok:#4bc79a;--bad:#ff8175;--warn:#e0ac4a;--run:#c092f0;}
+    :root{--bg:#14171b;--card:#1c2026;--line:#2b313a;--ink:#e7eaee;--dim:#98a1ad;
+          --acc:#6f9bff;--acc2:#1e2a44;--ok:#4bc79a;--bad:#ff8175;--warn:#e0ac4a;
+          --run:#c092f0;--soft:#191d22;}
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:14px/1.55 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
-  header{display:flex;align-items:center;gap:16px;padding:10px 18px;
-         background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
-  header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.3px}
-  .tabs{display:flex;gap:4px;margin-left:8px}
-  .tab{padding:5px 14px;border-radius:7px;cursor:pointer;color:var(--dim);font-weight:600}
+  header{display:flex;align-items:center;gap:14px;padding:9px 18px;background:var(--card);
+         border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+  header h1{font-size:15px;margin:0;font-weight:700}
+  .tabs{display:flex;gap:4px}
+  .tab{padding:5px 15px;border-radius:7px;cursor:pointer;color:var(--dim);font-weight:600}
   .tab.on{background:var(--acc);color:#fff}
   .grow{flex:1}
   .hint{color:var(--dim);font-size:12px}
-  main{padding:16px;max-width:1500px;margin:0 auto}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
-        padding:14px 16px;margin-bottom:14px}
-  .card h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:700;
-           text-transform:none;letter-spacing:.5px}
-  .row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+  main{padding:16px;max-width:1180px;margin:0 auto;padding-bottom:96px}
+
+  .step{background:var(--card);border:1px solid var(--line);border-radius:11px;
+        padding:14px 16px 16px;margin-bottom:13px;position:relative}
+  .step>h2{font-size:13px;margin:0 0 13px;font-weight:700;display:flex;
+           align-items:center;gap:9px;color:var(--ink)}
+  .step>h2 i{width:21px;height:21px;border-radius:50%;background:var(--acc);color:#fff;
+             font-style:normal;font-size:12px;display:grid;place-items:center;flex:0 0 auto}
+  .step>h2 small{font-weight:400;color:var(--dim);font-size:12px}
+
+  .row{display:flex;flex-wrap:wrap;gap:11px;align-items:flex-end}
   .f{display:flex;flex-direction:column;gap:4px}
   .f>label{font-size:12px;color:var(--dim)}
   input,select,textarea,button{font:inherit;color:var(--ink);background:var(--bg);
         border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+  select{cursor:pointer}
   input:focus,select:focus,textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
-  textarea{width:100%;min-height:180px;resize:vertical;font-family:Consolas,"Cascadia Mono",monospace;
-           font-size:13px;line-height:1.6}
   button{cursor:pointer;background:var(--card);font-weight:600}
-  button:hover{border-color:var(--acc)}
-  button.primary{background:var(--acc);color:#fff;border-color:var(--acc);padding:8px 22px}
-  button.danger{color:var(--bad);border-color:var(--bad)}
+  button:hover{border-color:var(--acc);color:var(--acc)}
+  button.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+  button.primary:hover{color:#fff;filter:brightness(1.08)}
+  button.ghost{background:transparent;border-style:dashed;color:var(--dim)}
   button:disabled{opacity:.45;cursor:not-allowed}
+  .mini{padding:3px 9px;font-size:12px;border-radius:6px}
+
+  details{margin-top:12px} summary{cursor:pointer;color:var(--dim);font-size:12.5px;
+          font-weight:600;user-select:none} summary:hover{color:var(--acc)}
+  details>.row{margin-top:11px}
+
+  /* 参考图 */
+  .drop{border:1.5px dashed var(--line);border-radius:9px;padding:14px;text-align:center;
+        color:var(--dim);cursor:pointer;transition:.15s;background:var(--soft);font-size:13px}
+  .drop:hover,.drop.over{border-color:var(--acc);background:var(--acc2);color:var(--acc)}
+  .thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .th{position:relative;width:70px;height:70px;border-radius:8px;overflow:hidden;
+      border:1px solid var(--line);background:var(--soft)}
+  .th img{width:100%;height:100%;object-fit:cover;display:block}
+  .th b{position:absolute;left:0;bottom:0;background:rgba(0,0,0,.62);color:#fff;
+        font-size:10px;padding:1px 4px;border-radius:0 4px 0 0;font-weight:600}
+  .th x{position:absolute;top:2px;right:2px;width:17px;height:17px;border-radius:50%;
+        background:rgba(0,0,0,.62);color:#fff;font-size:12px;display:grid;place-items:center;
+        cursor:pointer;line-height:1}
+  .th x:hover{background:var(--bad)}
+
+  /* 任务卡片 */
+  .cards{display:flex;flex-direction:column;gap:8px}
+  .cd{display:flex;gap:9px;align-items:flex-start;background:var(--soft);
+      border:1px solid var(--line);border-radius:9px;padding:8px 9px;transition:.15s}
+  .cd.over{border-color:var(--acc);background:var(--acc2)}
+  .cd>.n{width:24px;flex:0 0 auto;text-align:center;color:var(--dim);font-size:12px;
+         font-weight:700;padding-top:7px}
+  .cd textarea{flex:1;min-height:38px;max-height:150px;resize:vertical;border-radius:7px;
+               background:var(--card);padding:7px 9px;line-height:1.5}
+  .cd .side{display:flex;flex-direction:column;gap:5px;flex:0 0 auto;padding-top:1px}
+  .cd .thumbs{margin:0;flex-basis:100%;padding-left:33px}
+
+  .msg{padding:9px 13px;border-radius:8px;margin-top:10px;font-size:13px;white-space:pre-wrap}
+  .msg.ok{background:rgba(18,128,92,.13);color:var(--ok)}
+  .msg.bad{background:rgba(192,52,43,.13);color:var(--bad)}
+  .note{background:var(--soft);border-left:3px solid var(--acc);padding:8px 12px;
+        border-radius:0 6px 6px 0;color:var(--dim);font-size:12.5px;margin-top:11px;
+        white-space:pre-wrap}
+  .warn{border-left-color:var(--warn);color:var(--warn)}
+
+  /* 底部固定的开跑条 */
+  .gobar{position:fixed;left:0;right:0;bottom:0;background:var(--card);
+         border-top:1px solid var(--line);padding:10px 18px;display:flex;gap:14px;
+         align-items:center;z-index:19}
+  .gobar .inner{max-width:1180px;margin:0 auto;width:100%;display:flex;gap:14px;
+                align-items:center}
+  .gobar b{font-size:15px}
+
+  /* 进度 */
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
-        vertical-align:top}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
   th{color:var(--dim);font-size:12px;font-weight:600;position:sticky;top:0;background:var(--card)}
-  .wrapbox{max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .wrapbox{max-height:44vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
   .s-待跑{color:var(--dim)} .s-进行中{color:var(--run);font-weight:700}
   .s-完成{color:var(--ok);font-weight:700} .s-失败{color:var(--bad);font-weight:700}
   .s-跳过{color:var(--warn)} .s-未发{color:var(--dim)}
-  pre.log{margin:0;padding:10px;max-height:34vh;overflow:auto;background:var(--bg);
+  pre.log{margin:0;padding:10px;max-height:30vh;overflow:auto;background:var(--soft);
       border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.6;
       font-family:Consolas,"Cascadia Mono",monospace;white-space:pre-wrap;word-break:break-all}
-  .pills{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-weight:700}
-  .pill{padding:3px 12px;border-radius:20px;background:var(--bg);border:1px solid var(--line);
+  .pills{display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-weight:700}
+  .pill{padding:3px 12px;border-radius:20px;background:var(--soft);border:1px solid var(--line);
         font-size:13px}
-  .bar{height:7px;background:var(--bg);border-radius:5px;overflow:hidden;margin:10px 0 0;
+  .bar{height:7px;background:var(--soft);border-radius:5px;overflow:hidden;margin-top:10px;
        border:1px solid var(--line)}
   .bar>i{display:block;height:100%;background:var(--acc);transition:width .4s}
-  .note{background:var(--bg);border-left:3px solid var(--acc);padding:8px 12px;
-        border-radius:0 6px 6px 0;color:var(--dim);font-size:12.5px;margin:10px 0 0;
-        white-space:pre-wrap}
-  .pv{display:grid;grid-template-columns:150px 1fr 220px 130px;gap:8px;align-items:center;
+
+  /* 设置 */
+  .pv{display:grid;grid-template-columns:150px 1fr 210px 118px;gap:8px;align-items:center;
       padding:7px 0;border-bottom:1px solid var(--line)}
   .pv b{font-weight:700} .pv small{color:var(--dim);display:block;font-weight:400}
-  .msg{padding:9px 13px;border-radius:8px;margin:10px 0 0;font-size:13px;white-space:pre-wrap}
-  .msg.ok{background:rgba(18,128,92,.13);color:var(--ok)}
-  .msg.bad{background:rgba(192,52,43,.13);color:var(--bad)}
+
+  /* 提示气泡 */
+  #toast{position:fixed;left:50%;top:64px;transform:translateX(-50%) translateY(-14px);
+         background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:9px;
+         font-weight:600;font-size:13px;opacity:0;pointer-events:none;transition:.22s;z-index:99;
+         box-shadow:0 6px 22px rgba(0,0,0,.22);max-width:70vw;text-align:center}
+  #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .hide{display:none!important}
-  code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
+  code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size:12px}
+  .badkey{color:var(--bad);font-size:12px;font-weight:600}
 </style>
 </head>
 <body>
@@ -82,87 +142,106 @@
   <div class="grow"></div>
   <span class="hint" id="gateInfo"></span>
 </header>
+<div id="toast"></div>
 
 <main>
-<!-- ============================ 跑批 ============================ -->
+<!-- ═════════════════════════ 跑批 ═════════════════════════ -->
 <section id="tab-run">
-  <div class="card">
-    <h2>怎么跑</h2>
+
+  <!-- ── 1 选服务商 ── -->
+  <div class="step">
+    <h2><i>1</i>选服务商<small>选完下面只会留下它真正要填的东西</small></h2>
     <div class="row">
-      <div class="f"><label>服务商</label><select id="prov" style="min-width:190px"></select></div>
-      <div class="f"><label>做什么</label>
-        <select id="kind"><option value="image">出图</option><option value="video">出视频</option></select></div>
-      <div class="f"><label>模型</label>
-        <select id="model" style="min-width:230px"></select></div>
-      <div class="f" id="wrapSize"><label>尺寸</label><input id="size" list="sizeList" style="width:130px"><datalist id="sizeList"></datalist></div>
-      <div class="f hide" id="wrapRatio"><label>比例</label><input id="ratio" list="ratioList" style="width:100px"><datalist id="ratioList"></datalist></div>
-      <div class="f hide" id="wrapDur"><label>时长(秒)</label><input id="duration" list="durList" style="width:90px"><datalist id="durList"></datalist></div>
-      <div class="f hide" id="wrapRes"><label>分辨率</label><input id="resolution" list="resList" style="width:110px"><datalist id="resList"></datalist></div>
-      <button id="btnModels" title="用这把 Key 实拉一次模型清单">实拉模型</button>
+      <div class="f"><label>服务商</label>
+        <select id="prov" style="min-width:200px"></select></div>
+      <div class="f"><label>做什么</label><select id="kind"></select></div>
+      <div class="f"><label>模型</label><select id="model" style="min-width:250px"></select></div>
+      <button class="mini" id="btnModels" title="用这把 Key 实拉一次真正能用的模型">实拉模型</button>
+      <div class="grow"></div>
+      <div class="f"><label>模板</label>
+        <select id="tpl" style="min-width:160px"></select></div>
+      <button class="mini" id="btnTplSave">存为模板</button>
+      <button class="mini" id="btnTplDel" title="删掉当前选中的模板">删</button>
     </div>
+    <div id="keyWarn"></div>
     <div class="note hide" id="provNote"></div>
   </div>
 
-  <div class="card">
-    <h2>做什么 —— 一行一条，写多少条就并发跑多少条</h2>
-    <textarea id="lines" spellcheck="false" placeholder="每行一条任务。可选用 | 分三段：
-
-  提示词
-  提示词 | 参考图1;参考图2
-  提示词 | 参考图1;参考图2 | 输出文件名
-
-参考图填本机绝对路径或 http 链接。
-空行、以 # 开头的行会跳过 —— 不要的那条注释掉就行，别删。
-
-例：
-一个穿红裙的女孩站在雨中的霓虹街道，电影感，浅景深
-同一个女孩转身回望 | D:\ref\girl.png | 女孩_回望
-# 这条先不跑
-海面日出的空镜，无人物"></textarea>
+  <!-- ── 2 参数 ── -->
+  <div class="step">
+    <h2><i>2</i>参数<small id="paramHint"></small></h2>
+    <div class="row" id="paramRow"></div>
     <div class="row" style="margin-top:12px">
-      <div class="f"><label>并发数（同时发几条）</label>
-        <input id="conc" type="number" min="1" max="64" value="4" style="width:90px"></div>
-      <div class="f"><label>每条出几张/几条</label>
-        <input id="repeat" type="number" min="1" max="20" value="1" style="width:90px"></div>
-      <div class="f"><label>失败重试次数</label>
-        <input id="retry" type="number" min="0" max="8" value="2" style="width:90px"></div>
-      <div class="f" style="flex:1;min-width:280px"><label>输出目录</label>
-        <input id="outDir" style="width:100%"></div>
-      <div class="f"><label>&nbsp;</label>
-        <label class="hint" style="display:flex;gap:6px;align-items:center;padding:7px 0">
-          <input type="checkbox" id="skip" checked style="width:auto">成品已存在就跳过</label></div>
-      <button class="primary" id="btnRun">开跑</button>
-      <button class="danger hide" id="btnStop">停止</button>
+      <div class="f"><label>同时跑几条</label>
+        <input id="conc" type="number" min="1" max="64" value="4" style="width:92px"></div>
+      <div class="f" style="flex:1;min-width:300px"><label>成品放哪</label>
+        <div style="display:flex;gap:6px">
+          <input id="outDir" style="flex:1" readonly
+                 title="点右边的按钮选目录，不用手打">
+          <button id="btnPickDir">换个地方</button>
+        </div></div>
     </div>
     <div class="note" id="concNote"></div>
-    <div id="startMsg"></div>
+    <details>
+      <summary>高级（一般不用动）</summary>
+      <div class="row">
+        <div class="f"><label>每条出几份</label>
+          <input id="repeat" type="number" min="1" max="20" value="1" style="width:92px"></div>
+        <div class="f"><label>失败重试次数</label>
+          <input id="retry" type="number" min="0" max="8" value="2" style="width:92px"></div>
+        <div class="f"><label>&nbsp;</label>
+          <label class="hint" style="display:flex;gap:6px;align-items:center;padding:7px 0">
+            <input type="checkbox" id="skip" checked style="width:auto">
+            成品已存在就跳过（重跑不再花钱）</label></div>
+      </div>
+    </details>
   </div>
 
-  <div class="card hide" id="progCard">
-    <h2>进度</h2>
+  <!-- ── 3 要做什么 ── -->
+  <div class="step">
+    <h2><i>3</i>要做什么<small id="taskHint"></small></h2>
+
+    <div class="f" style="margin-bottom:6px"><label id="sharedLabel">参考图（这一批都用它们）</label></div>
+    <div class="drop" id="sharedDrop">把图拖进来，或者点这里选 —— 不用管文件路径</div>
+    <div class="thumbs" id="sharedThumbs"></div>
+    <div id="refWarn"></div>
+
+    <div class="f" style="margin:16px 0 6px"><label>任务（一条一行，粘贴多行会自动拆开）</label></div>
+    <div class="cards" id="cards"></div>
+    <div class="row" style="margin-top:9px">
+      <button class="ghost" id="btnAdd">＋ 加一条</button>
+      <button class="ghost mini" id="btnClear">清空</button>
+      <span class="hint">想批量：把写好的一段文字粘进任意一个框，会自动拆成多条</span>
+    </div>
+  </div>
+
+  <!-- ── 进度 ── -->
+  <div class="step hide" id="progCard">
+    <h2><i>▶</i>进度</h2>
     <div class="pills" id="pills"></div>
     <div class="bar"><i id="barFill" style="width:0"></i></div>
-    <div class="row" style="margin-top:10px">
-      <button id="btnOpenOut">打开输出目录</button>
-      <button id="btnOpenManifest">打开这次的记录</button>
+    <div class="row" style="margin-top:11px">
+      <button class="mini" id="btnOpenOut">打开成品目录</button>
+      <button class="mini" id="btnOpenManifest">打开这次的记录</button>
       <span class="hint" id="runMsg"></span>
     </div>
     <div class="wrapbox" style="margin-top:12px">
       <table><thead><tr>
-        <th style="width:44px">#</th><th>提示词</th><th style="width:78px">状态</th>
-        <th style="width:64px">耗时</th><th style="width:46px">次数</th><th>结果 / 失败原因</th>
+        <th style="width:40px">#</th><th>提示词</th><th style="width:74px">状态</th>
+        <th style="width:62px">耗时</th><th style="width:42px">次数</th>
+        <th>结果 / 失败原因</th>
       </tr></thead><tbody id="taskBody"></tbody></table>
     </div>
-    <h2 style="margin-top:16px">日志</h2>
-    <pre class="log" id="logBox"></pre>
+    <details open style="margin-top:13px"><summary>日志</summary>
+      <pre class="log" id="logBox" style="margin-top:9px"></pre></details>
   </div>
 </section>
 
-<!-- ============================ 设置 ============================ -->
+<!-- ═════════════════════════ 设置 ═════════════════════════ -->
 <section id="tab-set" class="hide">
-  <div class="card">
-    <h2>服务商密钥</h2>
-    <div class="row" style="margin-bottom:10px">
+  <div class="step">
+    <h2><i>·</i>服务商密钥<small>填过的家才会出现在跑批页的下拉里</small></h2>
+    <div class="row" style="margin-bottom:11px">
       <button id="btnImport">从 Studio 导入密钥</button>
       <button id="btnRescan">重新扫描服务商</button>
       <span class="hint" id="dataDir"></span>
@@ -171,322 +250,574 @@
     <div id="setMsg"></div>
   </div>
 
-  <div class="card">
-    <h2>参考图上传（对象存储）—— 只收公网链接的那几家靠它</h2>
-    <div class="note">鹤 SD2、一手、智 这些家的参考图**只收公网链接**。没配这里的话，
-带参考图的任务会直接报错停下（而不是把参考图悄悄丢掉照样出图 —— 那种"图在、人不对"最难查）。
-R2 的 public 域名别填 *.r2.cloudflarestorage.com，那是 S3 API 域名，不对外。</div>
+  <div class="step">
+    <h2><i>·</i>参考图上传<small>只在用「只收公网链接」的家（鹤 SD2、一手、智）时才需要</small></h2>
+    <div class="note">不配也能用别的家。配了之后这几家才能带参考图 —— 没配时程序会**直接停下来报错**，
+而不是把参考图悄悄丢掉照样出图（那种「图在、人不对」最难查）。
+R2 的公开域名别填 *.r2.cloudflarestorage.com，那是 S3 API 域名、不对外。</div>
     <div class="row" style="margin-top:12px">
-      <div class="f"><label>endpoint</label><input id="up_endpoint" style="width:290px"></div>
-      <div class="f"><label>region</label><input id="up_region" style="width:90px"></div>
-      <div class="f"><label>bucket</label><input id="up_bucket" style="width:150px"></div>
-      <div class="f"><label>access_key</label><input id="up_access_key" type="password" style="width:180px"></div>
-      <div class="f"><label>secret_key</label><input id="up_secret_key" type="password" style="width:180px"></div>
-      <div class="f"><label>公开访问域名</label><input id="up_public_base_url" style="width:260px"></div>
-      <div class="f"><label>路径前缀</label><input id="up_prefix" style="width:110px"></div>
-      <button id="btnUpTest">测一下（传+读回）</button>
+      <div class="f"><label>endpoint</label><input id="up_endpoint" style="width:280px"></div>
+      <div class="f"><label>region</label><input id="up_region" style="width:88px"></div>
+      <div class="f"><label>bucket</label><input id="up_bucket" style="width:148px"></div>
+      <div class="f"><label>access_key</label><input id="up_access_key" type="password" style="width:170px"></div>
+      <div class="f"><label>secret_key</label><input id="up_secret_key" type="password" style="width:170px"></div>
+      <div class="f"><label>公开访问域名</label><input id="up_public_base_url" style="width:250px"></div>
+      <div class="f"><label>路径前缀</label><input id="up_prefix" style="width:100px"></div>
+      <button id="btnUpTest">测一下（传 + 读回）</button>
     </div>
     <div id="upMsg"></div>
   </div>
 
-  <div class="card">
-    <h2>并发上限</h2>
-    <div class="note">这是第二、三层闸。批内并发（跑批页那个数）之上还有：每家一个配额、
-全局一个总闸。混着跑几家时，靠它们防止把某一家打爆 —— 打爆的表现不是"429 太快了"这种明白话，
-多半只是"生成失败"，看不出是自己撞的自己。</div>
-    <div class="row" style="margin-top:12px">
-      <div class="f"><label>全局总闸（所有在途请求）</label>
-        <input id="lim_global" type="number" min="1" max="128" style="width:100px"></div>
-    </div>
-    <div id="limList" style="margin-top:12px"></div>
+  <div class="step">
+    <h2><i>·</i>并发上限<small>不懂就别动，默认值是安全的</small></h2>
+    <details><summary>展开</summary>
+      <div class="note">跑批页填的「同时跑几条」之上还有两层：每家一个配额、全局一个总闸。
+实际在跑的 = 三个数里最小的。混着跑几家时靠它们防止把某一家打爆 ——
+打爆的表现不是「429 太快了」这种明白话，多半只是「生成失败」，看不出是自己撞的自己。</div>
+      <div class="row" style="margin-top:11px">
+        <div class="f"><label>全局总闸</label>
+          <input id="lim_global" type="number" min="1" max="128" style="width:96px"></div>
+      </div>
+      <div id="limList" style="margin-top:12px"></div>
+    </details>
   </div>
 
-  <div class="row"><button class="primary" id="btnSave">保存设置</button></div>
+  <div class="row"><button class="primary" id="btnSave" style="padding:8px 24px">保存设置</button></div>
 </section>
 </main>
 
+<!-- 底部开跑条 -->
+<div class="gobar" id="gobar">
+  <div class="inner">
+    <button class="primary" id="btnRun" style="padding:9px 30px;font-size:15px">开跑</button>
+    <button class="hide" id="btnStop" style="color:var(--bad);border-color:var(--bad)">停止</button>
+    <b id="goCount"></b>
+    <span class="hint" id="goWhat"></span>
+    <div class="grow"></div>
+    <span class="hint" id="goOut"></span>
+  </div>
+</div>
+
+<input type="file" id="filePick" accept="image/*" multiple class="hide">
+
 <script>
 const $ = s => document.querySelector(s);
-const el = (t, c, x) => { const n = document.createElement(t); if(c) n.className = c;
-                          if(x !== undefined) n.textContent = x; return n; };
-let CAPS = [], CFG = null, TIMER = null, LOGN = 0, RUNNING = false;
+const el = (t,c,x) => { const n=document.createElement(t); if(c) n.className=c;
+                        if(x!==undefined) n.textContent=x; return n; };
+let CAPS=[], CFG=null, TPLS=[], TIMER=null, LOGN=0;
+let SHARED=[];                 // 全批共用参考图 [{path,name}]
+let TASKS=[{prompt:'',refs:[]}];
+let PICK_TARGET=null;          // 文件选择框这次是给谁选的
 
-async function api(path, body){
-  const r = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'},
-                                      body:JSON.stringify(body)} : {});
+async function api(p,b){
+  const r = await fetch(p, b ? {method:'POST',headers:{'Content-Type':'application/json'},
+                               body:JSON.stringify(b)} : {});
   return await r.json();
 }
-function msg(box, ok, text){
-  const b = $(box); b.innerHTML = '';
-  if(!text) return;
-  b.appendChild(el('div', 'msg ' + (ok ? 'ok' : 'bad'), text));
-}
+let TT;
+function toast(t){ const n=$('#toast'); n.textContent=t; n.classList.add('on');
+  clearTimeout(TT); TT=setTimeout(()=>n.classList.remove('on'), 2600); }
+function msg(box, ok, text){ const b=$(box); b.innerHTML='';
+  if(text) b.appendChild(el('div','msg '+(ok?'ok':'bad'), text)); }
 
-/* ------------------------------------------------------------ 启动 */
+/* ══════════════════════ 启动 ══════════════════════ */
 async function boot(){
   const d = await api('/api/boot');
-  CAPS = d.providers || []; CFG = d.config;
+  CAPS = d.providers||[]; CFG = d.config; TPLS = d.templates||[];
+  CFG.__uploadReady = !!d.upload_ready;   // refWarn 靠它判断配没配对象存储
   $('#dataDir').textContent = '配置在 ' + d.data_dir;
 
-  const sel = $('#prov'); sel.innerHTML = '';
-  CAPS.filter(c => !c.broken).forEach(c => {
-    const o = el('option', '', c.name + '（' + (c.supports || []).map(
-      s => s === 'image' ? '图' : '视频').join('+') + '）');
-    o.value = c.id; sel.appendChild(o);
+  const sel=$('#prov'); sel.innerHTML='';
+  CAPS.filter(c=>!c.broken).forEach(c=>{
+    const has = !!((CFG.providers||{})[c.id]||{}).api_key;
+    const o = el('option','', (has?'':'○ ') + c.name);
+    o.value=c.id; sel.appendChild(o);
   });
-  const dd = CFG.defaults || {};
+  // 已经填了密钥的家排前面并默认选中 —— 一进来就能跑的那个才是默认
+  const ready = CAPS.find(c=>!c.broken && ((CFG.providers||{})[c.id]||{}).api_key);
+  if(ready) sel.value = ready.id;
+
+  const dd = CFG.defaults||{};
   $('#outDir').value = dd.out_dir || d.default_out_dir;
-  $('#conc').value = dd.concurrency || 4;
+  $('#conc').value = dd.concurrency||4;
   $('#retry').value = dd.max_retry ?? 2;
   $('#skip').checked = dd.skip_existing !== false;
-  $('#lim_global').value = (CFG.limits || {}).global || 8;
+  $('#lim_global').value = (CFG.limits||{}).global||8;
   for(const k of ['endpoint','region','bucket','access_key','secret_key',
-                  'public_base_url','prefix'])
-    $('#up_' + k).value = (CFG.upload || {})[k] || '';
+                  'public_base_url','prefix']) $('#up_'+k).value=(CFG.upload||{})[k]||'';
 
-  drawProviders(); drawLimits(); onProv();
+  drawTemplates(); drawProviders(); drawLimits(); onProv(); render();
 }
 
-function cap(){ return CAPS.find(c => c.id === $('#prov').value) || {}; }
+const cap = () => CAPS.find(c=>c.id===$('#prov').value) || {};
+/** 这个模型真正的可选项：这一家的声明 + 该模型自己的覆盖。 */
+function block(){
+  const c=cap(), k=$('#kind').value, b={...(c[k]||{})};
+  const mo = (c[k]||{}).model_options || {};
+  const my = mo[$('#model').value];
+  return my ? {...b, ...my} : b;     // 逐模型的覆盖掉这一家的通用值
+}
 
-/* --------------------------------------------- 服务商换了 → 重画表单 */
+/* ══════════════════════ 1 选服务商 ══════════════════════ */
 function onProv(){
-  const c = cap(), sup = c.supports || [];
-  const ks = $('#kind');
-  // 这家不做的那一类**从下拉里去掉**，而不是留着等它报错 ——
-  // 留着的话人会选中它、写满一屏提示词、点开跑，才被告知这家不做视频。
-  ks.innerHTML = '';
-  if(sup.includes('image')) ks.appendChild(Object.assign(el('option','', '出图'), {value:'image'}));
-  if(sup.includes('video')) ks.appendChild(Object.assign(el('option','', '出视频'), {value:'video'}));
+  const c=cap(), sup=c.supports||[], ks=$('#kind');
+  // 这家不做的那一类**从下拉里去掉**，不留着等它报错 ——
+  // 留着的话人会选中它、填满一屏、点开跑，才被告知这家不做视频。
+  ks.innerHTML='';
+  if(sup.includes('image')) ks.appendChild(Object.assign(el('option','','出图'),{value:'image'}));
+  if(sup.includes('video')) ks.appendChild(Object.assign(el('option','','出视频'),{value:'video'}));
+
+  const has = !!((CFG.providers||{})[c.id]||{}).api_key;
+  $('#keyWarn').innerHTML='';
+  if(!has){
+    const w = el('div','msg bad');
+    w.append(`${c.name} 还没填密钥，跑不了。`);
+    const b = el('button','mini','去设置填'); b.style.marginLeft='10px';
+    b.onclick = ()=>document.querySelector('.tab[data-tab=set]').click();
+    w.appendChild(b);
+    $('#keyWarn').appendChild(w);
+  }
   onKind();
 }
 
-function fill(listId, arr, inputId, dflt){
-  const dl = $('#' + listId); dl.innerHTML = '';
-  (arr || []).forEach(v => dl.appendChild(Object.assign(el('option'), {value:String(v)})));
-  if(dflt !== undefined && dflt !== null && dflt !== '') $('#' + inputId).value = String(dflt);
-}
-
 function onKind(){
-  const c = cap(), k = $('#kind').value, b = (c[k] || {});
-  const ms = $('#model'); ms.innerHTML = '';
-  (b.models || []).forEach(m => ms.appendChild(Object.assign(el('option','', m), {value:m})));
-  if(!(b.models || []).length){
-    // 一手、无限画布这些家的清单是接口给的、按 Key 变 —— 写死的列表对它们不准。
-    ms.appendChild(Object.assign(el('option','', '（这家的模型要点「实拉模型」才知道）'), {value:''}));
-  }
-  if(b.default_model) ms.value = b.default_model;
-
-  const isImg = k === 'image';
-  $('#wrapSize').classList.toggle('hide', !isImg);
-  $('#wrapRatio').classList.toggle('hide', isImg);
-  $('#wrapDur').classList.toggle('hide', isImg);
-  $('#wrapRes').classList.toggle('hide', isImg || !(b.resolutions || []).length);
-  if(isImg) fill('sizeList', b.sizes, 'size', b.default_size || '1024x1536');
-  else{
-    fill('ratioList', b.ratios, 'ratio', b.default_ratio || (b.ratios || ['9:16'])[0]);
-    fill('durList', b.durations, 'duration', b.default_duration || (b.durations || [5])[0]);
-    fill('resList', b.resolutions, 'resolution', b.default_resolution || '');
-  }
-  const notes = [b.notes, c.notes].filter(Boolean).join('\n\n');
-  $('#provNote').textContent = notes;
-  $('#provNote').classList.toggle('hide', !notes);
-  concNote();
+  const c=cap(), k=$('#kind').value, b=c[k]||{}, ms=$('#model');
+  ms.innerHTML='';
+  (b.models||[]).forEach(m=>ms.appendChild(Object.assign(el('option','',m),{value:m})));
+  if(!(b.models||[]).length)
+    // 一手、无限画布这些家的清单是接口给的、按 Key 变，写死的列表对它们不准
+    ms.appendChild(Object.assign(el('option','','（这家要点「实拉模型」才知道）'),{value:''}));
+  if(b.default_model) ms.value=b.default_model;
+  onModel();
 }
+
+function onModel(){
+  drawParams();
+  const c=cap(), b=block();
+  const notes=[b.notes, c.notes].filter(Boolean).join('\n\n');
+  $('#provNote').textContent=notes;
+  $('#provNote').classList.toggle('hide', !notes);
+  const mx=b.max_refs||0;
+  $('#sharedLabel').textContent = '参考图（这一批都用它们）' +
+        (mx?`　最多 ${mx} 张`:'') + '　不用就留空';
+  refWarn(); concNote(); updateGo(); render();
+}
+
+/* ══════════════════════ 2 参数（只画这个模型真的要的） ══════════════════════ */
+function drawParams(){
+  const b=block(), row=$('#paramRow'), k=$('#kind').value;
+  row.innerHTML='';
+  const shown=[];
+  const add=(label, id, list, dflt)=>{
+    if(!list || !list.length) return;          // 这个模型没有这一项就不画
+    shown.push(label);
+    const f=el('div','f'); f.appendChild(el('label','',label));
+    const s=el('select'); s.id=id; s.style.minWidth='108px';
+    list.forEach(v=>s.appendChild(Object.assign(el('option','',String(v)),{value:String(v)})));
+    if(dflt!==undefined && dflt!==null && list.map(String).includes(String(dflt)))
+      s.value=String(dflt);
+    s.onchange=updateGo;
+    f.appendChild(s); row.appendChild(f);
+  };
+  if(k==='image'){
+    add('尺寸','p_size', b.sizes, b.default_size);
+    add('比例','p_ratio', b.ratios, b.default_ratio);
+  }else{
+    add('比例','p_ratio', b.ratios, b.default_ratio);
+    add('时长（秒）','p_duration', b.durations, b.default_duration);
+    add('分辨率','p_resolution', b.resolutions, b.default_resolution);
+  }
+  $('#paramHint').textContent = shown.length
+    ? `这个模型只有这 ${shown.length} 项可调：${shown.join('、')}`
+    : '这个模型没有可调参数 —— 直接写提示词就行';
+  if(!shown.length) row.appendChild(el('span','hint','（不用填）'));
+}
+const pv = id => { const n=$('#'+id); return n ? n.value : ''; };
 
 function concNote(){
-  const c = cap(), lim = ((CFG.limits || {}).per_provider || {})[c.id];
-  const g = (CFG.limits || {}).global || 8;
-  let t = `实际同时在跑的条数 = 三个数里最小的那个：这里填的 ${$('#conc').value}`
-        + `、${c.name || ''} 的配额 ${lim || '未设'}、全局总闸 ${g}。`;
-  if(c.per_account_serial)
-    t += `\n⚠ ${c.name} 按账号计费、一个账号同时只能跑一条 —— 它的上限就是你配了几个账号，`
-       + `并发填再大也没用，想更快只能在设置里多粘几个账号。`;
-  $('#concNote').textContent = t;
+  const c=cap(), per=((CFG.limits||{}).per_provider||{})[c.id], g=(CFG.limits||{}).global||8;
+  let t=`实际同时在跑的 = 三个数里最小的：这里的 ${$('#conc').value}、`
+      + `${c.name||''}的配额 ${per||'未设'}、全局总闸 ${g}。`;
+  const n=$('#concNote'); n.className='note';
+  if(c.per_account_serial){
+    t=`⚠ ${c.name} 按账号计费、一个账号同时只能跑一条 —— 它的上限就是你配了几个账号，`
+     +`这里填再大也没用。想更快就去设置里那一家的密钥框多粘几个账号。`;
+    n.className='note warn';
+  }
+  n.textContent=t;
 }
 
-/* ------------------------------------------------------------ 设置页 */
+/* ══════════════════════ 参考图（拖 / 点，永不打路径） ══════════════════════ */
+async function uploadFiles(files, into){
+  const imgs=[...files].filter(f=>/^image\//.test(f.type)||/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name));
+  if(!imgs.length){ toast('只收图片'); return; }
+  const mx=block().max_refs||0;
+  let okN=0, bad=[];
+  for(const f of imgs){
+    if(mx && into.length>=mx){ toast(`这个模型最多 ${mx} 张参考图，多的没加`); break; }
+    try{
+      const r = await fetch('/api/upload?name='+encodeURIComponent(f.name),
+                            {method:'POST', body:f});
+      const d = await r.json();
+      if(!d.ok){ bad.push(`${f.name}：${d.msg}`); continue; }
+      if(!into.some(x=>x.path===d.path)){ into.push({path:d.path,name:d.name}); okN++; }
+    }catch(e){ bad.push(`${f.name}：${e}`); }
+  }
+  if(bad.length) toast(bad[0]);
+  else if(okN) toast(`加了 ${okN} 张`);
+  render(); refWarn(); updateGo();
+}
+
+function thumbs(list, box, onDel){
+  box.innerHTML='';
+  list.forEach((r,i)=>{
+    const t=el('div','th');
+    const im=el('img'); im.src='/api/file?path='+encodeURIComponent(r.path);
+    im.alt=r.name; im.title=r.name; t.appendChild(im);
+    t.appendChild(el('b','',String(i+1)));       // 序号 = 各家的「图1、图2」
+    const x=el('x','','×'); x.title='去掉'; x.onclick=e=>{e.stopPropagation(); onDel(i);};
+    t.appendChild(x);
+    box.appendChild(t);
+  });
+}
+
+function bindDrop(node, into){
+  node.addEventListener('dragover', e=>{e.preventDefault(); node.classList.add('over');});
+  node.addEventListener('dragleave', ()=>node.classList.remove('over'));
+  node.addEventListener('drop', e=>{
+    e.preventDefault(); e.stopPropagation(); node.classList.remove('over');
+    if(e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files, into);
+  });
+}
+function pickInto(into){ PICK_TARGET=into; $('#filePick').value=''; $('#filePick').click(); }
+
+function refWarn(){
+  const b=block(), box=$('#refWarn'); box.innerHTML='';
+  const anyRef = SHARED.length || TASKS.some(t=>t.refs.length);
+  if(!anyRef) return;
+  // 只收公网链接的家 + 没配对象存储 = 这一批一定跑不了。**现在就说**，
+  // 别等跑到第一条才报 —— 那时人已经填完一整屏了。
+  if(b.ref_mode==='url' && !CFG.__uploadReady){
+    const w=el('div','msg bad');
+    w.append(`${cap().name} 这个模型的参考图只收公网链接，但还没配对象存储 —— 带图会跑不了。`);
+    const t=el('button','mini','去配'); t.style.marginLeft='10px';
+    t.onclick=()=>document.querySelector('.tab[data-tab=set]').click();
+    w.appendChild(t); box.appendChild(w);
+  }
+}
+
+/* ══════════════════════ 3 任务卡片 ══════════════════════ */
+function render(){
+  const box=$('#cards'); box.innerHTML='';
+  TASKS.forEach((t,i)=>{
+    const cd=el('div','cd');
+    cd.appendChild(el('div','n',String(i+1)));
+    const ta=el('textarea');
+    ta.value=t.prompt; ta.rows=1; ta.placeholder='写这一条要生成什么…';
+    ta.oninput=e=>{ t.prompt=e.target.value; autoGrow(e.target); updateGo(); };
+    ta.onpaste=e=>onPaste(e,i);
+    cd.appendChild(ta);
+
+    const side=el('div','side');
+    const bi=el('button','mini', t.refs.length ? `图 ${t.refs.length}` : '＋图');
+    bi.title='只给这一条加参考图（会接在共用的后面）';
+    bi.onclick=()=>pickInto(t.refs);
+    side.appendChild(bi);
+    const bx=el('button','mini','×'); bx.title='删掉这一条';
+    bx.onclick=()=>{ TASKS.splice(i,1); if(!TASKS.length) TASKS.push({prompt:'',refs:[]});
+                     render(); updateGo(); };
+    side.appendChild(bx);
+    cd.appendChild(side);
+
+    if(t.refs.length){
+      const tb=el('div','thumbs');
+      thumbs(t.refs, tb, j=>{ t.refs.splice(j,1); render(); updateGo(); });
+      cd.appendChild(tb);
+    }
+    bindDrop(cd, t.refs);
+    box.appendChild(cd);
+    autoGrow(ta);
+  });
+  thumbs(SHARED, $('#sharedThumbs'), i=>{ SHARED.splice(i,1); render(); refWarn(); updateGo(); });
+  updateGo();
+}
+function autoGrow(ta){ ta.style.height='auto'; ta.style.height=Math.min(150, ta.scrollHeight)+'px'; }
+
+/** 粘贴多行 → 自动拆成多条。用户不需要知道任何符号。 */
+function onPaste(e, i){
+  const text=(e.clipboardData||window.clipboardData).getData('text')||'';
+  const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(lines.length<2) return;              // 单行就按普通粘贴走
+  e.preventDefault();
+  const cur=TASKS[i];
+  const made=lines.map(p=>({prompt:p, refs:[]}));
+  // 粘进一个空框 → 顶掉它；粘进有内容的框 → 插在它后面，不动已有的
+  if(!cur.prompt.trim()){ made[0].refs=cur.refs; TASKS.splice(i,1,...made); }
+  else TASKS.splice(i+1,0,...made);
+  render();
+  toast(`拆成了 ${lines.length} 条`);
+}
+
+function liveTasks(){ return TASKS.filter(t=>t.prompt.trim()); }
+function updateGo(){
+  const n=liveTasks().length, rep=parseInt($('#repeat').value,10)||1;
+  const total=n*rep;
+  $('#goCount').textContent = total ? `${total} 条` : '还没有任务';
+  $('#btnRun').disabled = !total;
+  const c=cap(), b=block(), k=$('#kind').value;
+  const bits=[c.name, $('#model').value];
+  if(k==='image'&&pv('p_size')) bits.push(pv('p_size'));
+  if(pv('p_ratio')) bits.push(pv('p_ratio'));
+  if(pv('p_duration')) bits.push(pv('p_duration')+'秒');
+  if(pv('p_resolution')) bits.push(pv('p_resolution'));
+  const refs=SHARED.length;
+  if(refs) bits.push(`${refs} 张共用参考图`);
+  $('#goWhat').textContent = bits.filter(Boolean).join(' · ');
+  $('#goOut').textContent = '成品 → ' + ($('#outDir').value||'');
+  $('#taskHint').textContent = n ? `${n} 条` : '';
+}
+
+/* ══════════════════════ 模板 ══════════════════════ */
+function drawTemplates(){
+  const s=$('#tpl'); s.innerHTML='';
+  s.appendChild(Object.assign(el('option','','（不用模板）'),{value:''}));
+  TPLS.forEach(t=>s.appendChild(Object.assign(el('option','',t.name),{value:t.name})));
+}
+function applyTemplate(name){
+  const t=TPLS.find(x=>x.name===name); if(!t) return;
+  const s=t.spec||{};
+  if(s.provider){ $('#prov').value=s.provider; onProv(); }
+  if(s.kind){ $('#kind').value=s.kind; onKind(); }
+  if(s.model){ $('#model').value=s.model; onModel(); }
+  // 参数要在 drawParams 之后再套 —— 那些 select 是刚画出来的
+  for(const [k,id] of [['size','p_size'],['ratio','p_ratio'],
+                       ['duration','p_duration'],['resolution','p_resolution']]){
+    const n=$('#'+id);
+    if(n && s[k]!==undefined && [...n.options].some(o=>o.value===String(s[k])))
+      n.value=String(s[k]);
+  }
+  if(s.concurrency) $('#conc').value=s.concurrency;
+  if(s.repeat) $('#repeat').value=s.repeat;
+  if(s.max_retry!==undefined) $('#retry').value=s.max_retry;
+  if(s.out_dir) $('#outDir').value=s.out_dir;
+  if(s.skip_existing!==undefined) $('#skip').checked=!!s.skip_existing;
+  concNote(); updateGo();
+  toast(`套上了「${name}」`);
+}
+
+/* ══════════════════════ 设置页 ══════════════════════ */
 function drawProviders(){
-  const box = $('#provList'); box.innerHTML = '';
-  CAPS.forEach(c => {
-    const pc = (CFG.providers || {})[c.id] || {};
-    const r = el('div', 'pv');
-    const n = el('div'); n.appendChild(el('b', '', c.name));
-    n.appendChild(el('small', '', c.id + (c.broken ? ' ⚠ 加载失败' : '')));
+  const box=$('#provList'); box.innerHTML='';
+  CAPS.forEach(c=>{
+    const pc=(CFG.providers||{})[c.id]||{};
+    const r=el('div','pv');
+    const n=el('div'); n.appendChild(el('b','',c.name));
+    n.appendChild(el('small','', c.id + (c.broken?' ⚠ 加载失败':'')));
     r.appendChild(n);
-    const key = Object.assign(el('input'), {type:'password', value:pc.api_key || '',
-      placeholder: c.per_account_serial ? '多个账号用换行/分号隔开，一个账号一路并发'
-                                        : '密钥（留空则读环境变量）'});
-    key.dataset.pid = c.id; key.dataset.field = 'api_key'; r.appendChild(key);
-    const bu = Object.assign(el('input'), {value:pc.base_url || '',
-      placeholder: c.default_base_url || '接口地址（留空用默认）'});
-    bu.dataset.pid = c.id; bu.dataset.field = 'base_url'; r.appendChild(bu);
-    const t = el('button', '', '自检');
-    t.onclick = async () => { t.disabled = true; t.textContent = '测…';
-      const d = await api('/api/selftest', {provider:c.id});
-      t.disabled = false; t.textContent = '自检';
-      msg('#setMsg', d.ok, `${c.name}：${d.msg || (d.ok ? '正常' : '不通')}`); };
+    const key=Object.assign(el('input'),{type:'password', value:pc.api_key||'',
+      placeholder: c.per_account_serial
+        ? '多个账号用换行或分号隔开 —— 有几个账号就有几路并发'
+        : '密钥（留空则读环境变量）'});
+    key.dataset.pid=c.id; key.dataset.field='api_key'; r.appendChild(key);
+    const bu=Object.assign(el('input'),{value:pc.base_url||'',
+      placeholder:c.default_base_url||'接口地址（留空用默认）'});
+    bu.dataset.pid=c.id; bu.dataset.field='base_url'; r.appendChild(bu);
+    const t=el('button','mini','自检');
+    t.onclick=async()=>{ t.disabled=true; t.textContent='测…';
+      const d=await api('/api/selftest',{provider:c.id});
+      t.disabled=false; t.textContent='自检';
+      msg('#setMsg', d.ok, `${c.name}：${d.msg||(d.ok?'正常':'不通')}`); };
     r.appendChild(t);
     box.appendChild(r);
   });
 }
-
 function drawLimits(){
-  const box = $('#limList'); box.innerHTML = '';
-  const per = (CFG.limits || {}).per_provider || {};
-  CAPS.filter(c => !c.broken).forEach(c => {
-    const r = el('div', 'pv'); r.style.gridTemplateColumns = '150px 110px 1fr';
-    r.appendChild(el('b', '', c.name));
-    const i = Object.assign(el('input'), {type:'number', min:1, max:64,
-                                          value:per[c.id] || '', placeholder:'不限'});
-    i.dataset.lim = c.id; r.appendChild(i);
-    r.appendChild(el('small', '', c.per_account_serial
-      ? '这家按账号串行 —— 上限由账号数自动决定，这里填了也会被覆盖' : ''));
+  const box=$('#limList'); box.innerHTML='';
+  const per=(CFG.limits||{}).per_provider||{};
+  CAPS.filter(c=>!c.broken).forEach(c=>{
+    const r=el('div','pv'); r.style.gridTemplateColumns='150px 106px 1fr';
+    r.appendChild(el('b','',c.name));
+    const i=Object.assign(el('input'),{type:'number',min:1,max:64,
+      value:per[c.id]||'', placeholder:'不限'});
+    i.dataset.lim=c.id; r.appendChild(i);
+    r.appendChild(el('small','', c.per_account_serial
+      ? '这家按账号串行 —— 上限由账号数自动决定，填了会被覆盖':''));
     box.appendChild(r);
   });
 }
-
 function collect(){
-  const providers = {};
-  document.querySelectorAll('[data-pid]').forEach(i => {
-    providers[i.dataset.pid] = providers[i.dataset.pid] || {};
-    providers[i.dataset.pid][i.dataset.field] = i.value.trim();
+  const providers={};
+  document.querySelectorAll('[data-pid]').forEach(i=>{
+    providers[i.dataset.pid]=providers[i.dataset.pid]||{};
+    providers[i.dataset.pid][i.dataset.field]=i.value.trim();
   });
-  const per = {};
-  document.querySelectorAll('[data-lim]').forEach(i => {
-    if(i.value.trim()) per[i.dataset.lim] = parseInt(i.value, 10);
+  const per={};
+  document.querySelectorAll('[data-lim]').forEach(i=>{
+    if(i.value.trim()) per[i.dataset.lim]=parseInt(i.value,10);
   });
-  const upload = {};
+  const upload={};
   for(const k of ['endpoint','region','bucket','access_key','secret_key',
-                  'public_base_url','prefix']) upload[k] = $('#up_' + k).value.trim();
+                  'public_base_url','prefix']) upload[k]=$('#up_'+k).value.trim();
   return {providers, upload,
-          limits:{global: parseInt($('#lim_global').value, 10) || 8, per_provider: per},
-          defaults:{out_dir: $('#outDir').value.trim(),
-                    concurrency: parseInt($('#conc').value, 10) || 4,
-                    max_retry: parseInt($('#retry').value, 10) || 0,
-                    skip_existing: $('#skip').checked}};
+          limits:{global:parseInt($('#lim_global').value,10)||8, per_provider:per},
+          defaults:{out_dir:$('#outDir').value.trim(),
+                    concurrency:parseInt($('#conc').value,10)||4,
+                    max_retry:parseInt($('#retry').value,10)||0,
+                    skip_existing:$('#skip').checked}};
 }
 
-/* ------------------------------------------------------------ 跑批 */
+/* ══════════════════════ 跑 ══════════════════════ */
+function buildSpec(){
+  return {kind:$('#kind').value, provider:$('#prov').value, model:$('#model').value,
+          tasks: liveTasks().map(t=>({prompt:t.prompt.trim(),
+                                      refs:t.refs.map(r=>r.path)})),
+          refs: SHARED.map(r=>r.path),
+          size:pv('p_size'), ratio:pv('p_ratio'),
+          duration:parseInt(pv('p_duration'),10)||0, resolution:pv('p_resolution'),
+          concurrency:parseInt($('#conc').value,10)||4,
+          repeat:parseInt($('#repeat').value,10)||1,
+          max_retry:parseInt($('#retry').value,10)||0,
+          out_dir:$('#outDir').value.trim(), skip_existing:$('#skip').checked};
+}
 async function startRun(){
-  const spec = {
-    kind: $('#kind').value, provider: $('#prov').value, model: $('#model').value,
-    lines: $('#lines').value, size: $('#size').value.trim(),
-    ratio: $('#ratio').value.trim(),
-    duration: parseInt($('#duration').value, 10) || 0,
-    resolution: $('#resolution').value.trim(),
-    concurrency: parseInt($('#conc').value, 10) || 4,
-    repeat: parseInt($('#repeat').value, 10) || 1,
-    max_retry: parseInt($('#retry').value, 10) || 0,
-    out_dir: $('#outDir').value.trim(), skip_existing: $('#skip').checked,
-  };
-  const d = await api('/api/start', {spec});
-  if(!d.ok){ msg('#startMsg', false, d.msg); return; }
-  msg('#startMsg', true, '');
-  LOGN = 0; $('#logBox').textContent = '';
+  const d=await api('/api/start',{spec:buildSpec()});
+  if(!d.ok){ toast(d.msg); msg('#keyWarn', false, d.msg); return; }
+  if(d.status==='已停止'){ toast(d.message); msg('#keyWarn', false, d.message); return; }
+  msg('#keyWarn', true, '');
+  LOGN=0; $('#logBox').textContent='';
   $('#progCard').classList.remove('hide');
+  $('#progCard').scrollIntoView({behavior:'smooth', block:'start'});
   setRunning(true); poll();
 }
-
 function setRunning(on){
-  RUNNING = on;
-  $('#btnRun').disabled = on;
-  $('#btnStop').classList.toggle('hide', !on);
+  $('#btnRun').disabled=on; $('#btnStop').classList.toggle('hide',!on);
   if(TIMER) clearInterval(TIMER);
-  TIMER = on ? setInterval(poll, 1200) : null;
+  TIMER = on ? setInterval(poll,1200) : null;
+  if(!on) updateGo();
 }
-
 async function poll(){
-  const d = await api('/api/run?log_from=' + LOGN);
-  if(!d.ok || d.idle) return;
-  const c = d.counts, done = c['完成'] + c['失败'] + c['跳过'];
-  $('#pills').innerHTML = '';
+  const d=await api('/api/run?log_from='+LOGN);
+  if(!d.ok||d.idle) return;
+  const c=d.counts, done=c['完成']+c['失败']+c['未发']+c['跳过'];
+  $('#pills').innerHTML='';
   // 「未发」单独一格，别并进失败：整批停下来时它们一条都没发出去、没扣钱，
   // 报成失败会让人以为被扣了那么多次，然后去查账单。
-  [['总数', c['总数'], ''], ['完成', c['完成'], 's-完成'], ['进行中', c['进行中'], 's-进行中'],
-   ['失败', c['失败'], 's-失败'], ['未发', c['未发'], 's-未发'],
-   ['跳过', c['跳过'], 's-跳过'], ['待跑', c['待跑'], 's-待跑']].forEach(([k, v, cl]) => {
-    if(!v && (k === '未发' || k === '跳过')) return;   // 是 0 就别占地方
-    const p = el('span', 'pill ' + cl, k + ' ' + v); $('#pills').appendChild(p);
+  [['总数',c['总数'],''],['完成',c['完成'],'s-完成'],['进行中',c['进行中'],'s-进行中'],
+   ['失败',c['失败'],'s-失败'],['未发',c['未发'],'s-未发'],
+   ['跳过',c['跳过'],'s-跳过'],['待跑',c['待跑'],'s-待跑']].forEach(([k,v,cl])=>{
+    if(!v && (k==='未发'||k==='跳过')) return;
+    $('#pills').appendChild(el('span','pill '+cl, k+' '+v));
   });
-  $('#pills').appendChild(el('span', 'pill', d.status + ' · ' + d.seconds + 's'));
-  $('#barFill').style.width = (c['总数'] ? done / c['总数'] * 100 : 0) + '%';
-  $('#runMsg').textContent = d.message || '';
+  $('#pills').appendChild(el('span','pill', d.status+' · '+d.seconds+'s'));
+  $('#barFill').style.width=(c['总数']?done/c['总数']*100:0)+'%';
+  $('#runMsg').textContent=d.message||'';
 
-  const tb = $('#taskBody'); tb.innerHTML = '';
-  d.tasks.forEach(t => {
-    const tr = el('tr');
-    tr.appendChild(el('td', '', String(t.idx)));
-    tr.appendChild(el('td', '', t.prompt));
-    tr.appendChild(el('td', 's-' + t.status, t.status));
-    tr.appendChild(el('td', '', t.seconds ? t.seconds + 's' : ''));
-    tr.appendChild(el('td', '', t.attempts ? String(t.attempts) : ''));
-    const last = el('td', '', t.error || (t.status === '完成' || t.status === '跳过'
-      ? t.dest.split(/[\\/]/).pop() : ''));
-    if(t.error) last.className = 's-失败';
-    tr.appendChild(last);
-    tb.appendChild(tr);
+  const tb=$('#taskBody'); tb.innerHTML='';
+  d.tasks.forEach(t=>{
+    const tr=el('tr');
+    tr.appendChild(el('td','',String(t.idx)));
+    tr.appendChild(el('td','',t.prompt));
+    tr.appendChild(el('td','s-'+t.status,t.status));
+    tr.appendChild(el('td','',t.seconds?t.seconds+'s':''));
+    tr.appendChild(el('td','',t.attempts?String(t.attempts):''));
+    const last=el('td','', t.error || ((t.status==='完成'||t.status==='跳过')
+                 ? t.dest.split(/[\\/]/).pop() : ''));
+    if(t.error) last.className='s-失败';
+    tr.appendChild(last); tb.appendChild(tr);
   });
-
-  if(d.logs && d.logs.length){
-    const box = $('#logBox');
-    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-    box.textContent += d.logs.map(l => `${l.t}  ${l.text}`).join('\n') + '\n';
-    LOGN = d.log_total;
-    if(stick) box.scrollTop = box.scrollHeight;
+  if(d.logs&&d.logs.length){
+    const box=$('#logBox');
+    const stick=box.scrollTop+box.clientHeight>=box.scrollHeight-40;
+    box.textContent += d.logs.map(l=>`${l.t}  ${l.text}`).join('\n')+'\n';
+    LOGN=d.log_total;
+    if(stick) box.scrollTop=box.scrollHeight;
   }
-  const g = d.gate || {};
-  $('#gateInfo').textContent = `在途 ${g.global_inflight || 0}/${g.global_limit || 0}`;
-
-  $('#btnOpenOut').onclick = () => api('/api/open', {path: d.out_dir});
-  $('#btnOpenManifest').onclick = () => api('/api/open', {path: d.manifest});
-  if(d.status === '已完成' || d.status === '已停止') setRunning(false);
+  const g=d.gate||{};
+  $('#gateInfo').textContent=`在途 ${g.global_inflight||0}/${g.global_limit||0}`;
+  $('#btnOpenOut').onclick=()=>api('/api/open',{path:d.out_dir});
+  $('#btnOpenManifest').onclick=()=>api('/api/open',{path:d.manifest});
+  if(d.status==='已完成'||d.status==='已停止'){ setRunning(false); toast(d.message); }
 }
 
-/* ------------------------------------------------------------ 事件 */
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
-  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
-  $('#tab-run').classList.toggle('hide', t.dataset.tab !== 'run');
-  $('#tab-set').classList.toggle('hide', t.dataset.tab !== 'set');
+/* ══════════════════════ 事件 ══════════════════════ */
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
+  const run = t.dataset.tab==='run';
+  $('#tab-run').classList.toggle('hide',!run);
+  $('#tab-set').classList.toggle('hide',run);
+  $('#gobar').classList.toggle('hide',!run);
 });
-$('#prov').onchange = onProv;
-$('#kind').onchange = onKind;
-$('#conc').oninput = concNote;
-$('#btnRun').onclick = startRun;
-$('#btnStop').onclick = async () => { await api('/api/cancel', {}); };
-$('#btnModels').onclick = async () => {
-  const b = $('#btnModels'); b.disabled = true; b.textContent = '拉取中…';
-  const d = await api('/api/models', {provider: $('#prov').value});
-  b.disabled = false; b.textContent = '实拉模型';
-  if(!d.ok){ msg('#startMsg', false, d.msg); return; }
-  const ms = $('#model'); const keep = ms.value; ms.innerHTML = '';
-  d.models.forEach(m => ms.appendChild(Object.assign(el('option','', m), {value:m})));
-  if(d.models.includes(keep)) ms.value = keep;
-  msg('#startMsg', true, `实拉到 ${d.models.length} 个模型（这把 Key 真正能用的那些）`);
+$('#prov').onchange=onProv;
+$('#kind').onchange=onKind;
+$('#model').onchange=onModel;
+$('#conc').oninput=concNote;
+$('#repeat').oninput=updateGo;
+$('#btnAdd').onclick=()=>{ TASKS.push({prompt:'',refs:[]}); render();
+  const ts=document.querySelectorAll('.cd textarea'); ts[ts.length-1].focus(); };
+$('#btnClear').onclick=()=>{ TASKS=[{prompt:'',refs:[]}]; render(); };
+$('#btnRun').onclick=startRun;
+$('#btnStop').onclick=()=>api('/api/cancel',{});
+$('#sharedDrop').onclick=()=>pickInto(SHARED);
+bindDrop($('#sharedDrop'), SHARED);
+$('#filePick').onchange=e=>{ if(PICK_TARGET && e.target.files.length)
+                               uploadFiles(e.target.files, PICK_TARGET); };
+$('#btnPickDir').onclick=async()=>{
+  const d=await api('/api/pick_dir',{start:$('#outDir').value});
+  if(d.ok){ $('#outDir').value=d.path; updateGo(); }
+  else if(d.msg && d.msg!=='取消了') toast(d.msg);
 };
-$('#btnSave').onclick = async () => {
-  const d = await api('/api/config', {config: collect()});
-  CFG = d.config; drawLimits(); concNote();
-  msg('#setMsg', d.ok, d.msg);
+$('#tpl').onchange=e=>{ if(e.target.value) applyTemplate(e.target.value); };
+$('#btnTplSave').onclick=async()=>{
+  const name=prompt('给这套设置起个名字（下次一选就套上）：',
+                    `${cap().name} ${$('#model').value}`.slice(0,40));
+  if(!name) return;
+  const d=await api('/api/template_save',{name, spec:buildSpec()});
+  if(!d.ok){ toast(d.msg); return; }
+  TPLS=d.templates; drawTemplates(); $('#tpl').value=name; toast(d.msg);
 };
-$('#btnImport').onclick = async () => {
-  const d = await api('/api/import_studio', {});
+$('#btnTplDel').onclick=async()=>{
+  const n=$('#tpl').value; if(!n){ toast('先选一个模板'); return; }
+  const d=await api('/api/template_delete',{name:n});
+  TPLS=d.templates; drawTemplates(); toast(`删了「${n}」`);
+};
+$('#btnModels').onclick=async()=>{
+  const b=$('#btnModels'); b.disabled=true; b.textContent='拉取中…';
+  const d=await api('/api/models',{provider:$('#prov').value});
+  b.disabled=false; b.textContent='实拉模型';
+  if(!d.ok){ toast(d.msg); return; }
+  const ms=$('#model'), keep=ms.value; ms.innerHTML='';
+  d.models.forEach(m=>ms.appendChild(Object.assign(el('option','',m),{value:m})));
+  if(d.models.includes(keep)) ms.value=keep;
+  onModel();
+  toast(`实拉到 ${d.models.length} 个模型（这把 Key 真正能用的）`);
+};
+$('#btnSave').onclick=async()=>{
+  const d=await api('/api/config',{config:collect()});
+  CFG=d.config; drawLimits(); drawProviders(); onProv();
+  msg('#setMsg', d.ok, d.msg); toast('设置已保存');
+};
+$('#btnImport').onclick=async()=>{
+  const d=await api('/api/import_studio',{});
   msg('#setMsg', d.ok, d.msg);
   if(d.ok) await boot();
 };
-$('#btnRescan').onclick = async () => {
-  const d = await api('/api/rescan', {});
-  CAPS = d.providers; drawProviders(); drawLimits(); onProv();
-  const e = (d.status.errors || []);
-  msg('#setMsg', !e.length, e.length ? '有加载失败的：' + e.join('\n') : '扫描完成');
+$('#btnRescan').onclick=async()=>{
+  const d=await api('/api/rescan',{});
+  CAPS=d.providers; drawProviders(); drawLimits(); onProv();
+  const e=(d.status.errors||[]);
+  msg('#setMsg', !e.length, e.length?'有加载失败的：'+e.join('\n'):'扫描完成');
 };
-$('#btnUpTest').onclick = async () => {
-  const b = $('#btnUpTest'); b.disabled = true; b.textContent = '测试中…';
-  await api('/api/config', {config: collect()});
-  const d = await api('/api/upload_selftest', {});
-  b.disabled = false; b.textContent = '测一下（传+读回）';
+$('#btnUpTest').onclick=async()=>{
+  const b=$('#btnUpTest'); b.disabled=true; b.textContent='测试中…';
+  await api('/api/config',{config:collect()});
+  const d=await api('/api/upload_selftest',{});
+  b.disabled=false; b.textContent='测一下（传 + 读回）';
+  CFG.__uploadReady=!!d.ok; refWarn();
   msg('#upMsg', d.ok, `[${d.step}] ${d.msg}`);
 };
+// 整个页面都能接住拖进来的图（拖偏了也不会打开成新标签页）
+window.addEventListener('dragover', e=>e.preventDefault());
+window.addEventListener('drop', e=>e.preventDefault());
 
 boot();
 </script>
