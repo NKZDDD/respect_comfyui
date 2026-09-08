@@ -215,6 +215,11 @@ class AicopyProvider(Provider):
                 "resolutions": [""],
                 "max_refs": 30,
                 "ref_mode": "url",
+                "model_options": {
+                    "sd2.0-720满血-不卡脸（按秒）": {
+                        "durations": list(range(4, 16)), "max_refs": 9,
+                        "resolutions": [""]},
+                },
                 "notes": "统一视频接口（2026-08-19）：所有模型同一套 /v1/videos，"
                          "参考素材、画幅由网关按模型自动转换 —— 选模型不再选协议。"
                          "时长上限按模型族自动夹（sd-2.5 系到 29 秒，ad 渠道固定 15，"

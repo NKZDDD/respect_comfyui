@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ..apiutil import ApiError, extract_task_id, extract_video_url
-from .base import Provider, VideoTask
+from ..apiutil import ApiError, extract_task_id, extract_video_url, extract_image_items
+from .base import Provider, VideoTask, ImageTask
 
 VIDEO_MODELS = [
+    "sd2.0", "sd-2.5", "minimax_h3-1080p", "minimax_h3-2K",
+    "minimax_h3-768p", "grok-imagine-video-1.5（按次）",
     "wan3.0-video", "wan3.0-video-prime", "wan3.0-image", "wan3.0-image-prime",
     "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview", "wan-3.0",
 ]
@@ -31,6 +33,10 @@ def _remote(ref: str) -> bool:
 
 
 def _duration(model: str, want: int) -> int:
+    if model == 'sd-2.5':
+        return 30
+    if model == 'sd2.0':
+        return min(15, max(5, int(want or 8)))
     sec = int(want or 5)
     if model.startswith("wan3.0-"):
         return min(30, max(2, sec))
@@ -45,6 +51,10 @@ def _duration(model: str, want: int) -> int:
 
 def _limits(model: str) -> tuple[int, int, int]:
     """返回图片/视频/音频上限。0 表示该类素材不支持。"""
+    if model == 'sd2.0':
+        return 9, 3, 3
+    if model == 'sd-2.5':
+        return 10, 0, 0
     if model.startswith("wan3.0-video"):
         return 10, 5, 5
     if model.startswith("wan3.0-image"):
@@ -60,10 +70,10 @@ def _limits(model: str) -> tuple[int, int, int]:
 
 class AkeProvider(Provider):
     id = "ake"
-    name = "阿珂 snumom.com（统一视频 API）"
+    name = "阿珂 snumom.com"
     aliases = ("snumom", "阿珂", "ako")
     default_base_url = "https://snumom.com"
-    supports = ("video",)
+    supports = ("image", "video")
     # 文档的三类 reference_* 都要求服务端可访问的 URL。
     ref_mode = "url"
 
@@ -73,6 +83,10 @@ class AkeProvider(Provider):
             "name": self.name,
             "default_base_url": self.default_base_url,
             "supports": list(self.supports),
+            # 2026-09-08 官方 /api/pricing：该模型仅文生图 1K，openai 端点。
+            "image": {"models": ["grok-imagine-image-quality-lite"],
+                "default_model": "grok-imagine-image-quality-lite", "max_refs": 0,
+                "sizes": [], "ref_mode": "url", "notes": "Grok 图片模型仅支持文生图 1K，不支持参考图。"},
             "video": {
                 "models": VIDEO_MODELS,
                 "default_model": "wan3.0-video",
@@ -83,6 +97,18 @@ class AkeProvider(Provider):
                 "max_refs": 10,
                 "ref_mode": "url",
                 "model_options": {
+                    "sd2.0": {"durations": list(range(5, 16)), "default_duration": 8,
+                        "max_refs": 9, "resolutions": [""], "default_ratio": "16:9"},
+                    "sd-2.5": {"durations": [30], "default_duration": 30,
+                        "max_refs": 10, "resolutions": ["720p"], "default_ratio": "16:9"},
+                    "minimax_h3-1080p": {"durations": list(range(4, 16)), "default_duration": 5,
+                        "max_refs": 9, "resolutions": ["1920x1080"]},
+                    "minimax_h3-2K": {"durations": list(range(4, 16)), "default_duration": 5,
+                        "max_refs": 9, "resolutions": ["2K"]},
+                    "minimax_h3-768p": {"durations": list(range(4, 16)), "default_duration": 5,
+                        "max_refs": 9, "resolutions": ["768P"]},
+                    "grok-imagine-video-1.5（按次）": {"durations": list(range(4, 16)),
+                        "max_refs": 7, "resolutions": ["480P", "720P", "1080P"]},
                     "wan3.0-video": {"durations": list(range(2, 31)), "max_refs": 10},
                     "wan3.0-video-prime": {"durations": list(range(2, 31)), "max_refs": 10},
                     "wan3.0-image": {"durations": list(range(2, 31)), "max_refs": 10},
@@ -100,6 +126,20 @@ class AkeProvider(Provider):
             "notes": "模型清单最终以控制台和 GET /v1/models 为准。万相创建时预扣，"
                      "必须显式传 seconds，不能用 -1 智能时长。",
         }
+
+    def generate_image(self, task: ImageTask, dest: str, *, log: Callable = print,
+                       cancel=None, **kwargs) -> dict:
+        if task.refs:
+            raise ApiError('此模型只支持文生图，不支持参考图', status=0, kind='task_fatal')
+        model = task.model or 'grok-imagine-image-quality-lite'
+        data = self.session.request('POST', '/v1/chat/completions', json_body={
+            'model': model, 'messages': [{'role': 'user', 'content': task.prompt}],
+            'stream': False}, retries=1, timeout=600)
+        items = extract_image_items(data)
+        if not items:
+            raise ApiError('图片接口没有返回可下载图片')
+        self.session.save_item(items[0], dest)
+        return {'provider': self.id, 'model': model}
 
     def generate_video(self, task: VideoTask, dest: str, *, log: Callable = print,
                        cancel: Optional[Callable] = None,
@@ -136,7 +176,7 @@ class AkeProvider(Provider):
 
         body: dict = {"model": model, "prompt": task.prompt or "", "seconds": str(sec)}
         if task.resolution:
-            body["size"] = task.resolution.upper()
+            body["size"] = task.resolution.upper().replace("X", "x")
         if task.ratio:
             body["aspect_ratio"] = task.ratio
         if refs:
@@ -156,6 +196,19 @@ class AkeProvider(Provider):
             body["reference_audios"] = [{"url": ref} for ref in audios]
         if model.startswith("wan3.0-") and "prompt_extend" in task.extra:
             body["prompt_extend"] = bool(task.extra["prompt_extend"])
+
+        # 官方 2026-09-08 文档：这两条新线路使用独立的扁平参考字段。
+        if model == 'sd2.0':
+            body = {'model': model, 'prompt': task.prompt or '', 'duration': sec,
+                    'aspect_ratio': task.ratio or '16:9'}
+            for field, values in [('image_refs', refs), ('video_refs', videos), ('audio_refs', audios)]:
+                if values:
+                    body[field] = values
+            if audios and not (refs or videos):
+                raise ApiError('sd2.0 音频必须搭配图片或视频', status=0, kind='task_fatal')
+        elif model == 'sd-2.5':
+            body = {'model': model, 'prompt': task.prompt or '', 'images': refs,
+                    'resolution': '720p', 'aspect_ratio': task.ratio or '16:9'}
 
         log(f"阿珂 {model}: seconds='{sec}' size={body.get('size', '默认')} "
             f"aspect_ratio={body.get('aspect_ratio', '默认')} "

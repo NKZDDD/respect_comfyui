@@ -30,6 +30,7 @@ VIDEO_MODELS = [
     "seedance-2.5-official", "seedance-2.0-standard-official",
     "seedance-2.0-fast-official", "seedance-2.0-mini", "seedance-2.0-standard",
     "seedance-2.5", "seedance-2.0-fast",
+    "grok-imagine", "grok-imagine-1.5", "minimax-h3", "minimax-h3-max",
 ]
 IMAGE_SIZES = ["1024x1536", "1536x1024", "1024x1024"]
 RATIOS = ["9:16", "16:9", "1:1", "4:3", "3:4", "21:9", "adaptive"]
@@ -56,8 +57,32 @@ _KLING = {"kling-image-o3", "kling-image-v3"}
 #    instead of silent dropping."
 # —— 它宁可显式拒绝也不静默丢弃。我们照做：传了就报，不替它兜。
 GATE_VIDEO_SPEC = {
+    # 2026-09-08 实拉公开 Schema；Grok/H3 不接受 Seedance 的音轨、水印字段。
+    "grok-imagine": dict(
+        duration=(1, 15), default_duration=6, resolutions=["720p", "480p"],
+        ratios=["16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "auto"],
+        max_images=9, max_videos=5, max_audios=0, banned=[], audio_requires=None,
+        metadata_keys=["ratio", "duration", "resolution", "operation"]),
+    "grok-imagine-1.5": dict(
+        duration=(1, 15), default_duration=6, resolutions=["720p", "480p", "1080p"],
+        ratios=["16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"],
+        max_images=1, min_images=1, image_format="first_frame",
+        max_videos=0, max_audios=0, banned=[], audio_requires=None,
+        metadata_keys=["ratio", "duration", "resolution"]),
+    "minimax-h3": dict(
+        duration=(4, 15), default_duration=5, resolutions=["768P", "2K"],
+        ratios=["16:9", "21:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        max_images=9, max_videos=3, max_audios=3, banned=[],
+        audio_requires=["image_url", "video_url"],
+        metadata_keys=["ratio", "duration", "resolution", "aigc_watermark"]),
+    "minimax-h3-max": dict(
+        duration=(5, 15), default_duration=5, resolutions=["768P", "480P"],
+        ratios=["16:9", "21:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        max_images=12, max_videos=12, max_audios=12, max_total=12, banned=[],
+        audio_requires=["image_url", "video_url"],
+        metadata_keys=["ratio", "duration", "resolution", "operation", "prompt_expansion_mode"]),
     "seedance-2.0-fast": dict(
-        duration=(4, 15), resolutions=["480p", "720p", "1080p", "4k"],
+        duration=(4, 15), resolutions=["480p", "720p"],
         max_images=9, max_videos=3, max_audios=3,
         banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
         audio_requires=["image_url", "video_url"]),
@@ -82,7 +107,7 @@ GATE_VIDEO_SPEC = {
         banned=["camera_fixed", "draft", "frames", "seed", "service_tier"],
         audio_requires=["image_url", "video_url"]),
     "seedance-2.5": dict(
-        duration=(4, 30), resolutions=["480p", "720p"],
+        duration=(4, 30), resolutions=["480p", "720p", "1080p"],
         max_images=30, max_videos=10, max_audios=10,
         banned=["draft"], audio_requires=None),
     "seedance-2.5-official": dict(
@@ -156,9 +181,13 @@ class GateProvider(Provider):
             m: {"durations": list(range(gate_spec(m)["duration"][0],
                                         gate_spec(m)["duration"][1] + 1)),
                 "max_refs": gate_spec(m)["max_images"],
+                "min_refs": gate_spec(m).get("min_images", 0),
                 "max_video_refs": gate_spec(m)["max_videos"],
                 "max_audio_refs": gate_spec(m)["max_audios"],
                 "resolutions": gate_spec(m)["resolutions"],
+                "ratios": gate_spec(m).get("ratios", RATIOS),
+                "default_ratio": gate_spec(m).get("ratios", RATIOS)[0],
+                "default_duration": gate_spec(m).get("default_duration", 15),
                 "unsupported": gate_spec(m)["banned"]}
             for m in VIDEO_MODELS
         }
@@ -271,15 +300,17 @@ class GateProvider(Provider):
         videos = list(task.extra.get("video_refs") or task.extra.get("videos") or [])
         audios = list(task.extra.get("audio_refs") or task.extra.get("audios") or [])
         lo, hi = spec["duration"]
-        sec = int(task.duration or 15)
-        ratio = task.ratio or "adaptive"
-        res = (task.resolution or "720p").lower()
+        sec = int(task.duration or spec.get("default_duration", 15))
+        ratios = spec.get("ratios", RATIOS)
+        ratio = task.ratio or (ratios[0] if "ratios" in spec else "adaptive")
+        wanted_res = task.resolution or (spec["resolutions"][0] if spec.get("metadata_keys") else "720p")
+        res = next((r for r in spec["resolutions"] if r.lower() == wanted_res.lower()), wanted_res)
 
         problems = []
         if not lo <= sec <= hi:
             problems.append(f"时长只支持 {lo}–{hi} 秒，收到 {sec} 秒")
-        if ratio not in RATIOS:
-            problems.append(f"比例只支持 {'、'.join(RATIOS)}，收到 {ratio}")
+        if ratio not in ratios:
+            problems.append(f"比例只支持 {'、'.join(ratios)}，收到 {ratio}")
         if res not in spec["resolutions"]:
             problems.append(f"分辨率只支持 {'、'.join(spec['resolutions'])}，收到 {res}")
         for got, cap, what in ((images, spec["max_images"], "图片"),
@@ -290,6 +321,23 @@ class GateProvider(Provider):
         # Schema 的 x-requires-any-of：2.0 系只给音频、不给图/视频会被拒
         if audios and spec["audio_requires"] and not (images or videos):
             problems.append(f"{model} 的音频素材必须搭配参考图或参考视频一起给")
+        if len(images) < spec.get("min_images", 0):
+            problems.append("此模型需要一张首帧参考图")
+        if spec.get("max_total") and len(images + videos + audios) > spec["max_total"]:
+            problems.append(f"全部参考素材合计最多 {spec['max_total']} 个")
+        first_last = bool(task.extra.get("first_last")) and len(images) >= 2
+        if model.startswith("minimax-h3"):
+            if first_last and len(images) > 2:
+                problems.append("首尾帧不能混用普通参考图")
+            if ratio == "adaptive" and not first_last:
+                problems.append("当前文生视频或参考素材模式请选择固定比例")
+        declared_meta = spec.get("metadata_keys")
+        if declared_meta:
+            unsupported = set(task.extra) - set(declared_meta) - {
+                "video_refs", "videos", "audio_refs", "audios", "first_last",
+                "priority", "callback_url", "callback_headers", "callback_secret"}
+            if unsupported:
+                problems.append("此模型不支持额外参数：" + "、".join(sorted(unsupported)))
         bad = [r for r in images + videos + audios
                if not str(r).startswith(("http://", "https://"))]
         if bad:
@@ -305,9 +353,8 @@ class GateProvider(Provider):
 
         # 每条素材是 inputs[] 里**独立一项**，各带自己的 format —— 不是数组字段
         inputs = [{"name": "prompt", "value": prompt, "format": "text"}]
-        first_last = bool(task.extra.get("first_last")) and len(images) >= 2
         for n, url in enumerate(images):
-            fmt = "reference_image"
+            fmt = spec.get("image_format", "reference_image")
             if first_last:
                 fmt = "first_frame" if n == 0 else "last_frame" if n == 1 else "reference_image"
             inputs.append({"name": "image_url", "value": url, "format": fmt})
@@ -316,11 +363,12 @@ class GateProvider(Provider):
         for url in audios:
             inputs.append({"name": "audio_url", "value": url, "format": "reference_audio"})
 
-        meta = {"ratio": ratio, "duration": sec, "resolution": res,
-                "watermark": bool(task.extra.get("watermark", False)),
-                "generate_audio": bool(task.extra.get("generate_audio", True))}
+        meta = {"ratio": ratio, "duration": sec, "resolution": res}
+        if declared_meta is None:
+            meta.update(watermark=bool(task.extra.get("watermark", False)),
+                        generate_audio=bool(task.extra.get("generate_audio", True)))
         # 只放文档列过、且这个模型没禁的键
-        for k in GATE_META_KEYS:
+        for k in declared_meta or GATE_META_KEYS:
             if k in task.extra and k not in meta and k not in spec["banned"]:
                 meta[k] = task.extra[k]
 

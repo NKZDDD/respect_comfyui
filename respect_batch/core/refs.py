@@ -24,6 +24,12 @@ from . import uploader
 from .apiutil import ApiError, TASK_FATAL, resolve_ref
 
 
+def upload_config(cfg: dict, provider: str) -> dict:
+    """服务商专用上传配置优先，不把一家服务商的图床用于另一家。"""
+    specific = (cfg.get("providers", {}).get(provider) or {}).get("upload")
+    return dict(specific) if isinstance(specific, dict) else dict(cfg.get("upload") or {})
+
+
 def rules_for(prov, media: str, override_side: int = 0, override_fmt: str = "") -> tuple:
     """这一家对参考图有什么要求 → `(最长边, 要什么格式)`。
 
