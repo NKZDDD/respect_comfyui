@@ -41,10 +41,15 @@
     videopreviewWidget: "videopreview", // VHS 视频节点承载成品信息的 widget
     outputWaitMs: 1200000, // 等成品出现的最长时间（默认 20 分钟）
 
-    // 运行模式（顶层那个“运行 Lite/Standard”下拉）。
-    // 默认留空＝不自动切换（你在页面手动选一次 Lite/Plus 即可，会一直生效，零风险）。
-    // 想让扩展自动切就填 "Lite/Plus"——但因运行/模式按钮结构相近，自动点可能误触，建议先测 1 条确认不会重复运行。
-    runMode: "",
+    // 运行档位。2026-09 RunningHub 改版（.app-wrap.is-new-version）后，顶层不再是
+    // “一个运行按钮 + 模式下拉”，而是 .execute-btn-wrap 里三个并排的 .run-btn：
+    //   beveled-btn-right → Lite/Standard（标签 .plus-tags 在按钮内部）
+    //   beveled-btn-left  → Lite/Plus    （标签是按钮的兄弟节点，所以按钮 innerText 恰好＝“运行”）
+    //   beveled-btn-ultra → Ultra·6000D  （同上）
+    // 旧的挑选规则 /^运行$/ 会命中 Lite/Plus，等于批量跑在最贵的档上（甚至弹开会员/充值窗卡死）。
+    // 取值："standard" / "plus" / "ultra"；""＝自动取 DOM 里第一个（新版页面即最便宜的 Standard）。
+    // 想要的档位当前不可点时，宁可等到超时报错，也绝不退而求其次点别的档位（避免花错钱）。
+    runMode: "standard",
 
     // 计时（毫秒）
     appReadyTimeoutMs: 60000, // 等 ComfyUI app 就绪
@@ -225,7 +230,65 @@
   // 点顶层运行按钮
   const MODE_RE = /Lite|Standard|Plus|Pro/i;
 
+  // 档位识别：只认标签文字，不认 class 名。
+  // （.plus-tags / .ultra-tags 这些 class 名本身就带 "plus"/"ultra"，拿 class 匹配必然误判；
+  //   beveled-btn-left/right 的左右命名也跟档位无关，随时可能被改。）
+  const RUN_TIERS = [
+    { key: "ultra", label: "Ultra", re: /ultra/i },
+    { key: "plus", label: "Lite/Plus", re: /plus/i },
+    { key: "standard", label: "Lite/Standard", re: /standard/i },
+  ];
+
+  // 把面板/历史里存的值统一成 tier key（兼容改版前存的 "Lite/Plus" 这类旧值）
+  function normTier(v) {
+    const s = (v || "").toString().trim();
+    if (!s) return "";
+    if (RUN_TIERS.some((t) => t.key === s)) return s;
+    const hit = RUN_TIERS.find((t) => t.re.test(s));
+    return hit ? hit.key : "";
+  }
+
+  // 取某个运行按钮的档位标签：可能在按钮内部（Standard），也可能是兄弟节点（Plus/Ultra）
+  function tierTextOf(btn) {
+    const inner = btn.querySelector(".plus-tags");
+    const pick = (el) => (el ? (el.innerText || el.textContent || "").trim() : "");
+    if (inner) return pick(inner);
+    const p = btn.parentElement;
+    let sib = p ? p.querySelector(":scope > .plus-tags") : null;
+    // 再往上一层找（三个按钮各自被 <div style="position:relative"> 包了一层）
+    if (!sib && p && p.parentElement) sib = p.parentElement.querySelector(":scope > .plus-tags");
+    return pick(sib);
+  }
+
+  // 新版页面的三个档位按钮；旧版页面返回空数组
+  function getRunTierButtons() {
+    const btns = [...document.querySelectorAll(".run-btn")].filter(
+      (b) => b.tagName === "BUTTON" || b.getAttribute("role") === "button"
+    );
+    const out = [];
+    for (const btn of btns) {
+      const txt = tierTextOf(btn) || (btn.innerText || "").trim();
+      const tier = RUN_TIERS.find((t) => t.re.test(txt));
+      if (tier) out.push({ key: tier.key, label: txt || tier.label, btn });
+    }
+    return out;
+  }
+
   function findRunButton() {
+    // ---- 新版页面（2026-09 起）：按档位精确挑 ----
+    const tiers = getRunTierButtons();
+    if (tiers.length) {
+      const pool = tiers.filter((t) => isVisible(t.btn) && !isDisabled(t.btn) && !opensNewTab(t.btn));
+      const want = normTier(state.runMode);
+      if (want) {
+        const hit = pool.find((t) => t.key === want);
+        // 指定档位不可点就返回 null（等它恢复/超时报错），绝不改点别的档位
+        return hit ? hit.btn : null;
+      }
+      return pool.length ? pool[0].btn : null; // 自动＝DOM 第一个（新版即最便宜的 Standard）
+    }
+
+    // ---- 旧版页面兜底：一个运行按钮 + 模式下拉 ----
     const btns = [...document.querySelectorAll('button, [role="button"], .ant-btn')];
     const usable = btns.filter((b) => isVisible(b) && !isDisabled(b) && !opensNewTab(b));
     // 1) 纯“运行”按钮（不含模式词，避免点到模式下拉）
@@ -353,6 +416,18 @@
 
   // 找不到可点运行按钮时，列出页面上相关按钮的状态，帮助定位原因
   function diagnoseRunButtons() {
+    // 新版页面：先按档位报，一眼看出是「指定档位不可点」还是「压根没有运行按钮」
+    const tiers = getRunTierButtons();
+    if (tiers.length) {
+      const want = normTier(state.runMode);
+      const items = tiers.map(
+        (t) =>
+          `${t.key === want ? "▶" : " "}「${t.label}」${isVisible(t.btn) ? "" : "[隐藏]"}${
+            isDisabled(t.btn) ? "[禁用]" : "[可点]"
+          }`
+      );
+      return `档位=${want || "自动"} → ${items.join(" ; ")}`;
+    }
     const all = [...document.querySelectorAll('button, [role="button"], .ant-btn, a')];
     const cand = all.filter((b) => {
       const t = (b.innerText || "").trim();
@@ -475,7 +550,7 @@
     imageMode: "loop", // 配对/取图方式：loop 顺序循环 / random 随机
     videoStart: 1, // 从第几个开始（1-based）：视频模式=第几个视频；图片模式=第几张图
     randomSeed: 1, // 随机种子（持久化，刷新后可复现）
-    runMode: "", // 运行模式（来自 CONFIG.runMode，可在面板改）
+    runMode: CONFIG.runMode, // 运行档位 tier key（"standard"/"plus"/"ultra"/""＝自动），可在面板改
     infinite: false, // 图片模式：无限循环
     modeOverride: "auto", // 工作流模式：auto 自动 / pair 视频换装 / image 纯图片
     watchdogMin: 20, // 看门狗分钟数（卡住多久刷新）
@@ -594,7 +669,7 @@
     if (typeof data.infinite === "boolean") state.infinite = data.infinite;
     if (data.modeOverride) state.modeOverride = data.modeOverride;
     if (data.watchdogMin) state.watchdogMin = data.watchdogMin;
-    if (data.runMode != null) state.runMode = data.runMode;
+    if (data.runMode != null) state.runMode = normTier(data.runMode);
     if (data.randomSeed) state.randomSeed = data.randomSeed;
     return true;
   }
@@ -1029,11 +1104,23 @@
       log("提醒：没选保存目录，成品会走浏览器默认下载；若浏览器设了“每次询问保存位置”会频繁弹窗，建议先点“📥 选择保存目录”。", "err");
     }
 
-    // 先设置运行模式（只设一次）
+    // 运行档位：新版页面是三个并排按钮（点哪个就是哪档，不需要预先切换）；
+    // 旧版页面才需要去下拉里选一次。
     try {
-      await selectRunMode(state.runMode);
+      const tiers = getRunTierButtons();
+      if (tiers.length) {
+        const want = normTier(state.runMode);
+        const hit = tiers.find((t) => t.key === want);
+        log(
+          `运行档位：${hit ? hit.label : want ? want + "（页面上没有这一档！）" : "自动＝" + tiers[0].label}` +
+            `（页面共 ${tiers.length} 档：${tiers.map((t) => t.label).join(" / ")}）`,
+          hit || !want ? "ok" : "err"
+        );
+      } else {
+        await selectRunMode(state.runMode);
+      }
     } catch (e) {
-      log("设置运行模式异常：" + e.message, "err");
+      log("设置运行档位异常：" + e.message, "err");
     }
 
     if (mode === "image") {
@@ -1252,7 +1339,7 @@
     state.videoStart = data.videoStart || 1;
     state.imageMode = data.imageMode || "loop";
     state.randomSeed = data.randomSeed || 1;
-    state.runMode = data.runMode != null ? data.runMode : CONFIG.runMode;
+    state.runMode = data.runMode != null ? normTier(data.runMode) : CONFIG.runMode;
     state.infinite = !!data.infinite;
     state.modeOverride = data.modeOverride || "auto";
     state.watchdogMin = data.watchdogMin || 20;
@@ -1351,7 +1438,14 @@
           </label>
           <label><input type="checkbox" class="rhb-infinite"> 无限循环（纯图片工作流）</label>
           <label>卡住刷新 <input type="number" class="rhb-watchdog" min="1" step="1" value="20"> 分钟</label>
-          <label>运行模式 <input type="text" class="rhb-runmode" placeholder="留空=手动"></label>
+          <label>运行档位
+            <select class="rhb-runmode">
+              <option value="standard">Lite/Standard（便宜）</option>
+              <option value="plus">Lite/Plus</option>
+              <option value="ultra">Ultra·6000D</option>
+              <option value="">自动（第一个）</option>
+            </select>
+          </label>
         </div>
         <div class="rhb-resume" style="display:none"></div>
         <div class="rhb-sub">回收成品视频（成功/失败都下载）</div>
@@ -1391,7 +1485,7 @@
       #rh-batch-panel .rhb-opts label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
       #rh-batch-panel .rhb-opts input,#rh-batch-panel .rhb-opts select{background:#16161a;color:#e8e8ea;border:1px solid #3a3a42;border-radius:4px;padding:2px 6px;font-size:12px}
       #rh-batch-panel .rhb-opts input.rhb-startidx{width:64px}
-      #rh-batch-panel .rhb-opts input.rhb-runmode{width:100px}
+      #rh-batch-panel .rhb-opts .rhb-runmode{width:150px}
       #rh-batch-panel .rhb-resume{display:flex}
       #rh-batch-panel .rhb-resume .rhb-btn{flex:1;background:#16a34a}
       #rh-batch-panel .rhb-sub{font-size:12px;font-weight:600;color:#93c5fd;border-top:1px solid #3a3a42;padding-top:8px}
@@ -1436,7 +1530,7 @@
     const wfmodeEl = panel.querySelector(".rhb-wfmode");
     startEl.value = String(state.videoStart);
     modeEl.value = state.imageMode;
-    runmodeEl.value = state.runMode;
+    runmodeEl.value = normTier(state.runMode);
     infEl.checked = state.infinite;
     wdEl.value = String(state.watchdogMin);
     wfmodeEl.value = state.modeOverride;
@@ -1457,7 +1551,7 @@
       saveSettings();
     });
     runmodeEl.addEventListener("change", () => {
-      state.runMode = runmodeEl.value.trim();
+      state.runMode = normTier(runmodeEl.value);
       saveSettings();
     });
     infEl.addEventListener("change", () => {
@@ -1500,7 +1594,7 @@
     const q = (s) => panel.querySelector(s);
     if (q(".rhb-startidx")) q(".rhb-startidx").value = String(state.videoStart);
     if (q(".rhb-imgmode")) q(".rhb-imgmode").value = state.imageMode;
-    if (q(".rhb-runmode")) q(".rhb-runmode").value = state.runMode;
+    if (q(".rhb-runmode")) q(".rhb-runmode").value = normTier(state.runMode);
     if (q(".rhb-infinite")) q(".rhb-infinite").checked = state.infinite;
     if (q(".rhb-watchdog")) q(".rhb-watchdog").value = String(state.watchdogMin);
     if (q(".rhb-wfmode")) q(".rhb-wfmode").value = state.modeOverride;
@@ -1829,7 +1923,8 @@
       state.randomSeed = (Date.now() & 0x7fffffff) || 1;
     }
     const restored = restoreSettings();
-    if (!state.runMode) state.runMode = CONFIG.runMode || "";
+    // 注意：档位 ""＝“自动（第一个）”，是合法选择，不能再当空值顶回 CONFIG 默认，
+    // 否则用户选了自动、刷新一次就被悄悄改回 standard。默认值已由 state 初始化承担。
     buildPanel();
     // 页面卸载前再存一次，避免输入没失焦导致 change 未触发
     window.addEventListener("pagehide", saveSettings);
@@ -1841,7 +1936,7 @@
       );
     }
     restoreDirs(); // 恢复上次选的目录（保存目录显示名字；图片/视频目录给恢复授权按钮）
-    log("已加载 build-2026061201。等「ComfyUI：已连接 ✓」后开始。", "ok");
+    log("已加载 build-2026090801（适配新版三档运行按钮）。等「ComfyUI：已连接 ✓」后开始。", "ok");
   }
 
   if (document.readyState === "loading") {
