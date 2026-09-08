@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -20,14 +22,16 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import (accounts, assets, batch, config, paths, providers,
-               templates, uploader)
+from . import (accounts, assets, batch, config, distribution, paths, providers,
+               release, templates, uploader, model_catalog)
 
 # 当前这一次跑批。**故意只留一个**：并发在批内部，不在批之间。
 # 允许同时开几批的话，三层闸还是全局的，两批会互相抢槽，
 # 而页面上各自显示自己的进度，看起来像"变慢了"却查不出原因。
 _RUN: dict = {"cur": None}
 _LOCK = threading.RLock()
+_SESSION = secrets.token_urlsafe(32)
+PERSONAL = False
 
 
 def _json_bytes(obj) -> bytes:
@@ -53,11 +57,44 @@ class Handler(BaseHTTPRequestHandler):
             pass                              # 页面刷新时正常发生，不是错
 
     def _ok(self, obj) -> None:
-        self._send(200, _json_bytes(obj), "application/json; charset=utf-8")
+        self._send(200, _json_bytes(release.redact(obj)), "application/json; charset=utf-8")
 
     def _err(self, msg: str, code: int = 400) -> None:
-        self._send(code, _json_bytes({"ok": False, "msg": str(msg)}),
+        self._send(code, _json_bytes({"ok": False, "msg": release.redact(str(msg))}),
                    "application/json; charset=utf-8")
+
+    def _release_access(self, route: str, post: bool = False) -> bool:
+        if not distribution.ENABLED and not PERSONAL:
+            return True
+        port = self.server.server_port
+        hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        def deny(message):
+            # Windows 在关闭仍有未读请求体的连接时会发 RST，吞掉 403 响应。
+            # 只排空有界的小请求，不解析或执行被拒绝的内容。
+            if post:
+                previous_timeout = self.connection.gettimeout()
+                try:
+                    size = int(self.headers.get("Content-Length") or 0)
+                    if 0 < size <= 1024 * 1024:
+                        self.connection.settimeout(2)
+                        self.rfile.read(size)
+                except (ValueError, OSError):
+                    pass
+                finally:
+                    self.connection.settimeout(previous_timeout)
+            self._err(message, 403)
+            return False
+        if (self.headers.get("Host") not in hosts or
+                self.headers.get("Origin") not in (None, *[f"http://{h}" for h in hosts])):
+            return deny("请从本程序打开的页面操作")
+        allowed = ({"/api/upload", "/api/start", "/api/cancel", "/api/pick_dir", "/api/open"}
+                   if post else {"/", "/index.html", "/api/boot", "/api/run", "/api/file"})
+        if distribution.ENABLED and route not in allowed:
+            return deny("发行版未开放此功能")
+        if (post or route in ("/api/boot", "/api/run")) and not secrets.compare_digest(
+                self.headers.get("X-Respect-Session", ""), _SESSION):
+            return deny("页面已失效，请重新打开程序页面")
+        return True
 
     def _body(self) -> dict:
         """请求体解析失败要**响亮地失败**。
@@ -83,17 +120,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:                               # noqa: N802
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if not self._release_access(u.path):
+            return
         try:
             if u.path in ("/", "/index.html"):
-                p = paths.res("web", "index.html")
-                with open(p, "rb") as f:
-                    return self._send(200, f.read(), "text/html; charset=utf-8")
+                if distribution.ENABLED:
+                    page = distribution.page().replace(b"__RELEASE_SESSION__", _SESSION.encode())
+                else:
+                    with open(paths.res("web", "index.html"), "rb") as f:
+                        page = f.read()
+                    if PERSONAL:
+                        page = page.replace(b"__RELEASE_SESSION__", _SESSION.encode())
+                return self._send(200, page, "text/html; charset=utf-8")
 
             if u.path == "/api/boot":
+                if distribution.ENABLED:
+                    return self._ok(release.public_boot())
                 cfg = config.load()
                 return self._ok({
                     "ok": True,
-                    "providers": providers.list_capabilities(),
+                    "providers": model_catalog.capabilities(cfg),
                     "status": providers.status(),
                     "config": config.masked(cfg),
                     "data_dir": paths.data_dir(),
@@ -124,12 +170,15 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError as exc:
             return self._err(f"找不到界面文件：{exc}", 500)
         except Exception as exc:                            # noqa: BLE001
-            traceback.print_exc()
+            if not distribution.ENABLED:
+                traceback.print_exc()
             return self._err(f"{type(exc).__name__}: {exc}", 500)
 
     # ---------------------------------------------------------------- POST
     def do_POST(self) -> None:                              # noqa: N802
         u = urlparse(self.path)
+        if not self._release_access(u.path, post=True):
+            return
 
         # 上传走**裸字节**，必须在 _body() 之前拦掉 —— 它会把同一个流当 JSON 读，
         # 读完之后字节就没了。文件名放 query 里（不进 body），省一个 multipart 解析器。
@@ -142,7 +191,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._err(str(exc), 400)
             except Exception as exc:                        # noqa: BLE001
-                traceback.print_exc()
+                if not distribution.ENABLED:
+                    traceback.print_exc()
                 return self._err(f"存不下这张图：{exc}", 500)
 
         try:
@@ -161,20 +211,14 @@ class Handler(BaseHTTPRequestHandler):
 
             if u.path == "/api/rescan":
                 return self._ok({"ok": True, "status": providers.reload_all(),
-                                 "providers": providers.list_capabilities()})
+                                 "providers": model_catalog.capabilities(config.load())})
 
             if u.path == "/api/models":
                 # 实拉这把 Key 能用的模型。一手、无限画布这些家的清单是
                 # 接口给的、按 Key 变，写死的列表对它们不准。
                 pid = body.get("provider") or ""
                 cfg = config.load()
-                pc = config.provider_cfg(cfg, pid)
-                key = (pc.get("api_key") or "").strip()
-                if not key:
-                    return self._ok({"ok": False, "msg": "这一家还没填密钥"})
-                prov = providers.build(pid, key, pc.get("base_url") or "",
-                                       pc.get("proxy") or "", 60)
-                return self._ok({"ok": True, "models": prov.list_models()})
+                return self._ok(model_catalog.refresh(pid, cfg))
 
             if u.path == "/api/selftest":
                 pid = body.get("provider") or ""
@@ -227,15 +271,16 @@ class Handler(BaseHTTPRequestHandler):
                     cfg = config.load()
                     spec = dict(body.get("spec") or {})
                     d = cfg.get("defaults") or {}
-                    spec.setdefault("out_dir", d.get("out_dir"))
-                    spec.setdefault("concurrency", d.get("concurrency", 4))
-                    spec.setdefault("max_retry", d.get("max_retry", 2))
-                    spec.setdefault("timeout", d.get("timeout", 900))
-                    spec.setdefault("skip_existing", d.get("skip_existing", True))
-                    spec.setdefault("poll_timeout",
-                                    d.get("poll_timeout_image", 900)
-                                    if spec.get("kind") == "image"
-                                    else d.get("poll_timeout_video", 2400))
+                    if not distribution.ENABLED:
+                        spec.setdefault("out_dir", d.get("out_dir"))
+                        spec.setdefault("concurrency", d.get("concurrency", 4))
+                        spec.setdefault("max_retry", d.get("max_retry", 2))
+                        spec.setdefault("timeout", d.get("timeout", 900))
+                        spec.setdefault("skip_existing", d.get("skip_existing", True))
+                        spec.setdefault("poll_timeout",
+                                        d.get("poll_timeout_image", 900)
+                                        if spec.get("kind") == "image"
+                                        else d.get("poll_timeout_video", 2400))
                     run = batch.start(spec, cfg)
                     _RUN["cur"] = run
                 return self._ok({"ok": True, "id": run.id, **run.snapshot()})
@@ -250,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if u.path == "/api/open":
                 path = (body.get("path") or "").strip()
+                if distribution.ENABLED:
+                    cur = _RUN["cur"]
+                    allowed = [cur.manifest_path, os.path.dirname(cur.tasks[0].dest)] if cur and cur.tasks else []
+                    if os.path.abspath(path) not in [os.path.abspath(p) for p in allowed]:
+                        return self._err("只能打开本次任务的成品目录或记录", 403)
                 if not path or not os.path.exists(path):
                     return self._ok({"ok": False, "msg": f"路径不存在：{path}"})
                 if os.name == "nt":
@@ -261,12 +311,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ok({"ok": True})
 
             return self._err("没有这个地址", 404)
+        except ValueError as exc:
+            return self._err(str(exc), 400)
         except Exception as exc:                            # noqa: BLE001
-            traceback.print_exc()
+            if not distribution.ENABLED:
+                traceback.print_exc()
             return self._err(f"{type(exc).__name__}: {exc}", 500)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8790) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = ThreadingHTTPServer((host, port), Handler, bind_and_activate=False)
+    try:
+        if os.name == "nt":
+            # Windows 的 SO_REUSEADDR 允许两个进程同时绑定，浏览器会打开旧程序。
+            httpd.allow_reuse_address = False
+            httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        httpd.server_bind()
+        httpd.server_activate()
+    except BaseException:
+        httpd.server_close()
+        raise
     httpd.daemon_threads = True
     return httpd

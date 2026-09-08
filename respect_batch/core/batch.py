@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import threading
 import time
@@ -26,7 +27,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
-from . import accounts, config, paths, providers, refs
+from . import accounts, config, distribution, paths, providers, refs, release
 from .apiutil import BATCH_FATAL, RETRYABLE, TASK_FATAL, ApiError
 from .limits import GATE
 from .providers.base import ImageTask, VideoTask
@@ -146,6 +147,12 @@ def build_tasks(spec: dict) -> list:
     ext = ".png" if kind == "image" else ".mp4"
     repeat = max(1, int(spec.get("repeat") or 1))
     shared = [str(r).strip() for r in (spec.get("refs") or []) if str(r).strip()]
+    # 每库每条只取一张，顺序循环或每条独立随机。
+    slots = [[str(r).strip() for r in pool if str(r).strip()]
+             for pool in (spec.get("ref_slots") or [])]
+    pick_mode = spec.get("ref_pick_mode") or "sequence"
+    if pick_mode not in ("sequence", "random"):
+        raise ValueError("素材库配图方式只能是顺序循环或随机抽取")
 
     rows = _rows_of(spec)
     tasks, idx = [], 0
@@ -155,6 +162,8 @@ def build_tasks(spec: dict) -> list:
         row_refs = shared + [r for r in row["refs"] if r not in shared]
         for k in range(repeat):
             idx += 1
+            picked = [(random.choice(pool) if pick_mode == "random"
+                       else pool[(idx - 1) % len(pool)]) for pool in slots if pool]
             stem = row["name"] or _safe_name(row["prompt"], f"{idx:04d}")
             if repeat > 1:
                 stem = f"{stem}_{k + 1}"
@@ -162,7 +171,7 @@ def build_tasks(spec: dict) -> list:
             # 硬盘上只有 12 个文件，状态还全是「完成」。
             dest = os.path.join(out_dir, f"{i:03d}_{stem}{ext}")
             tasks.append(Task(
-                idx, kind, provider, model, row["prompt"], row_refs, dest,
+                idx, kind, provider, model, row["prompt"], row_refs + picked, dest,
                 size=spec.get("size") or "", ratio=spec.get("ratio") or "",
                 duration=int(spec.get("duration") or 0),
                 resolution=spec.get("resolution") or "",
@@ -197,6 +206,7 @@ class Run:
 
     # -- 日志 ---------------------------------------------------------
     def log(self, text: str, idx: int = 0) -> None:
+        text = release.redact(text)
         row = {"t": time.strftime("%H:%M:%S"), "idx": idx, "text": str(text)}
         with self._lock:
             self.logs.append(row)
@@ -359,15 +369,20 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
             time.sleep(wait)
 
         except Exception as exc:                            # noqa: BLE001
-            task.status, task.error = "失败", f"{type(exc).__name__}: {exc}"
+            task.status = "失败"
+            task.error = ("程序处理失败，请联系 Respect 支持" if distribution.ENABLED
+                          else f"{type(exc).__name__}: {exc}")
             task.error_kind = "程序内部错误"
             task.ended = time.time()
-            log(f"[{task.idx}] 程序内部错误：{exc}\n{traceback.format_exc()}")
+            log(f"[{task.idx}] {task.error}" if distribution.ENABLED
+                else f"[{task.idx}] 程序内部错误：{exc}\n{traceback.format_exc()}")
             return
 
 
 def start(spec: dict, cfg: dict) -> Run:
     """展开任务、配好三层闸、开跑。立刻返回，实际执行在后台线程。"""
+    if distribution.ENABLED:
+        spec, cfg = release.prepare(spec)
     tasks = build_tasks(spec)
     run = Run(tasks, spec, cfg)
 
@@ -414,6 +429,14 @@ def start(spec: dict, cfg: dict) -> Run:
     except Exception as exc:                                # noqa: BLE001
         return stop_now(f"服务商建不起来：{exc}")
 
+    if spec.get("ref_slots"):
+        caps = prov.capabilities().get(kind) or {}
+        options = (caps.get("model_options") or {}).get(spec.get("model")) or {}
+        max_refs = options.get("max_refs", caps.get("max_refs", 0))
+        if max_refs and any(len(t.refs) > max_refs for t in tasks):
+            return stop_now(f"这个模型每条最多 {max_refs} 张参考图，共用图、单条图和"
+                            "各素材库取出的图合计超限。请减少参考图或素材库后再跑。")
+
     # 按账号串行的家：并发上限 = 账号数，而这个数只有从密钥文本里才解得出来，
     # 配置里那张 per_provider 表不知道它。不设的话会有多条挤在同一个账号上 ——
     # 表现不是报错，是那一家直接拒或排队超时，失败记录只会说「生成失败」。
@@ -428,7 +451,7 @@ def start(spec: dict, cfg: dict) -> Run:
                                int(pcfg.get("ref_max_side") or 0),
                                str(pcfg.get("ref_format") or ""))
     resolve = refs.make_resolver(prov, spec.get("model") or "", media,
-                                 cfg.get("upload") or {}, side, fmt)
+                                 refs.upload_config(cfg, spec.get("provider") or ""), side, fmt)
 
     workers = max(1, int(spec.get("concurrency") or 4))
     max_retry = int(spec.get("max_retry") or 0)
@@ -447,8 +470,11 @@ def start(spec: dict, cfg: dict) -> Run:
 
     def go() -> None:
         run.status = "跑批中"
+        display_model = (next((m["label"] for m in release.catalog()
+                               if m["provider"] == pid and m["model"] == spec.get("model")), "所选模型")
+                         if distribution.ENABLED else f"{prov.name} / {spec.get('model')}")
         run.log(f"开跑：{len(tasks)} 条，{workers} 路并发，"
-                f"{prov.name} / {spec.get('model')}，输出到 "
+                f"{display_model}，输出到 "
                 f"{os.path.dirname(tasks[0].dest)}")
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:

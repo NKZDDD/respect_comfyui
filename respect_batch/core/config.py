@@ -13,7 +13,7 @@ import copy
 import os
 from typing import Any
 
-from . import paths
+from . import distribution, paths
 from .store import read_json, write_json
 
 MASK = "********"
@@ -60,13 +60,17 @@ def _merge(base: Any, over: Any) -> Any:
 
 
 def load() -> dict:
-    cfg = _merge(DEFAULTS, read_json(paths.config_path(), {}) or {})
+    source = (distribution.profile()["config"] if distribution.ENABLED
+              else read_json(paths.config_path(), {}) or {})
+    cfg = _merge(DEFAULTS, source)
     if not (cfg["defaults"].get("out_dir") or "").strip():
         cfg["defaults"]["out_dir"] = paths.default_out_dir()
     return cfg
 
 
 def save(cfg: dict) -> None:
+    if distribution.ENABLED:
+        raise ValueError("发行版配置由管理员提供，不能在用户端修改")
     write_json(paths.config_path(), cfg)
 
 
@@ -98,6 +102,8 @@ def apply_from_page(cfg: dict, incoming: dict) -> dict:
 def provider_cfg(cfg: dict, pid: str) -> dict:
     """某一家的凭据。api_key 留空时回落环境变量 —— CI/命令行跑批用得上。"""
     blk = dict(((cfg.get("providers") or {}).get(pid) or {}))
+    if distribution.ENABLED:
+        return blk
     if not (blk.get("api_key") or "").strip():
         for env in (f"RESPECT_{pid.upper()}_API_KEY", f"{pid.upper()}_API_KEY"):
             v = os.environ.get(env, "").strip()

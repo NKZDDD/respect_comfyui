@@ -520,3 +520,48 @@ def test_逐模型的可选项能盖过这一家的通用值():
     durs = {m: tuple(v.get("durations") or ()) for m, v in mo.items() if v.get("durations")}
     assert len(set(durs.values())) > 1, \
         f"逐模型时长应该不一样，实际全一样：{durs}"
+
+
+def test_素材库各自循环且重复产出也逐条取图(tmp_path):
+    from core import batch
+    tasks = batch.build_tasks(_spec(tmp_path, n=2, repeat=3,
+                                   ref_slots=[["a1", "a2"], ["b1", "b2", "b3"]]))
+    assert [t.refs for t in tasks] == [
+        ["a1", "b1"], ["a2", "b2"], ["a1", "b3"],
+        ["a2", "b1"], ["a1", "b2"], ["a2", "b3"]]
+    assert len({t.dest for t in tasks}) == 6
+
+
+def test_素材库保持图序且不把整库塞给一条任务(tmp_path):
+    from core import batch
+    tasks = batch.build_tasks(_spec(
+        tmp_path, tasks=[{"prompt": "角色走进房间", "refs": ["shared", "own"]}],
+        refs=["shared"], ref_slots=[["a", "b", "c"], [], ["end"]]))
+    assert tasks[0].refs == ["shared", "own", "a", "end"]
+
+
+def test_素材库随机从首条抽取且重试不重新配图(tmp_path, monkeypatch):
+    from core import batch
+    monkeypatch.setattr(batch.random, "choice", lambda pool: pool[-1])
+    tasks = batch.build_tasks(_spec(tmp_path, n=2, ref_slots=[["a", "b"], ["c", "d"]],
+                                   ref_pick_mode="random"))
+    assert [t.refs for t in tasks] == [["b", "d"], ["b", "d"]]
+    monkeypatch.setattr(batch.random, "choice", lambda pool: pool[0])
+    assert tasks[0].refs == ["b", "d"]
+
+
+def test_素材库超出逐模型参考图上限时整批未发(tmp_path, monkeypatch):
+    from core import batch, providers
+    cls = providers.REGISTRY["faker"]
+    original = cls.capabilities
+    def caps(self):
+        data = original(self)
+        data["image"]["max_refs"] = 5
+        data["image"]["model_options"] = {"fast": {"max_refs": 1}}
+        return data
+    monkeypatch.setattr(cls, "capabilities", caps)
+    run = batch.start(_spec(tmp_path, n=2, ref_slots=[["a"], ["b"]]), _cfg())
+    assert run.status == "已停止"
+    assert "最多 1 张" in run.message
+    assert all(t.attempts == 0 for t in run.tasks)
+    assert not (tmp_path / "out").exists()

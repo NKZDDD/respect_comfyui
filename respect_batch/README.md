@@ -43,6 +43,23 @@ py run.py
 
 底下那条一直显示「开跑 N 条」和这一批到底会用什么跑，点下去就开始。
 
+### 从文件夹分配参考图（与庄园的 Flow 任务页一致）
+
+在「3 要做什么」展开 **从文件夹分配参考图**，点「添加素材库 → 选文件夹」。
+程序读取文件夹及子目录中的 PNG/JPG/WEBP/BMP/GIF 图片，按相对路径自然排序
+（1、2、10），显示缩略图和配图预览；也可以选择多张图追加到库中。
+
+每条任务从每个非空素材库各取一张。**顺序循环**时，各库独立循环：
+库 1 有 30 张、库 2 有 50 张，第 35 条取库 1 的第 5 张和库 2 的第 35 张。
+**随机抽取**时，从第一条开始在各库独立抽取（与庄园实际代码一致）。
+「每条出几张」展开后的每一条都会重新取图；技术失败重试沿用该条已选图片。
+
+参考图顺序为：共用图 → 单条图 → 素材库 1、2…。
+上限按每条实际取出的图计算，不限制素材库总图片数；超过模型上限时提示调整。
+导入期间不能开跑，任一图片导入失败则本次整组选图不加入库，避免缺图后顺序错位。
+选择文件夹只导入参考图，提示词仍在任务框填写；点「开跑」才调用服务商。
+素材库不存进模板。
+
 ### 模板
 
 一套「怎么跑」（哪家、什么模型、多大、多长、几路并发、放哪）可以存成模板，
@@ -140,10 +157,86 @@ py run.py run --provider paisio --kind video --model sd2-pro-720p \
 py -m pytest
 ```
 
-38 项，不联网不花钱：用一个假服务商验调度层 —— 并发真的并发了、配额真的卡住了、
+测试不联网不花钱：用一个假服务商验调度层 —— 并发真的并发了、配额真的卡住了、
 失败真的分了类、跳过真的跳过了、拖进来的图只有 uploads 目录里的能被页面读到。
 
+发行版测试还验证固定模型路由、配置覆盖拦截、外挂关闭、凭据脱敏、加密完整性及
+Grok/H3 各自的参数约束；运行它们需安装 `requirements-release.txt`。
+
+## 固定密钥的本地加固发行版
+
+使用 `release_main.py` 和 `tools/build_release.py`，与下面的开发版 PyInstaller 包分开。
+发行版只显示模型及任务操作，保留文件夹顺序/随机配图；服务商设置、密钥输入、模型
+刷新、外挂加载和接口地址覆盖均关闭。固定使用阿珂（ake）和小裴（aicopy）。
+
+管理员在 Python 3.12 虚拟环境安装 `requirements-release.txt` 后，先生成无密钥预览包：
+
+首次构建会下载编译工具，缓存保留在 `release-build\tool-cache`。默认 4 路 C 编译，
+使用 O1 优化降低编译内存；原生编译和凭据加密均保留。可用 `--jobs` 调整并行数。
+
+```powershell
+.\.release-venv\Scripts\python.exe tools\build_release.py --preview
+```
+
+预览模式会强制剔除传入的凭据并禁止实际生成。正式包只由管理员构建：
+
+1. 将 `release-profile.example.json` 复制到已忽略的 `release-private\profile.json`。
+2. 本地填写阿珂和小裴的发行专用 Key，以及阿珂使用的 R2 对象存储配置。小裴自动使用自己的图床。
+3. 执行 `.\.release-venv\Scripts\python.exe tools\build_release.py --profile release-private\profile.json`。
+4. 只发 `release-dist\<构建号>\release_main.dist` 整个目录，运行其中的 `RespectBatch-User.exe`。
+
+需要只分发一个 EXE 时，构建命令加 `--onefile`。成品位于
+`release-dist\<构建号>\RespectBatch-User.exe`，无需附带 `.dist` 目录。
+单文件使用临时目录释放运行依赖，正常退出后由启动器清理；密钥及界面仍使用 AES-GCM 封装。
+用 `python tools/verify_release.py <EXE路径> --isolated-copy` 确认单独复制到空目录后也能运行。
+
+发行目录只包含三个视频选项：阿珂 `minimax_h3-768p`、阿珂
+`grok-imagine-video-1.5（按次）`、小裴 `sd2.0-720满血-不卡脸（按秒）`。
+阿珂本地参考图上传到已配置 R2，小裴参考图上传到其专用 `api.aione.help` 服务，
+两家不共用图床和上传凭据。实际模型权限以发行 Key 为准。
+变更 Key 或模型清单后需重新构建。额度在服务商后台设置，多人共享 Key 时共同消耗额度。
+
+1.1 版对外使用“Respect 创作服务 / Respect 团队”。用户说明、页面、任务日志、报错和
+任务记录不显示上游名称；用户自己的提示词和文件路径原样保留。原始响应、远程来源
+地址和内部服务商统计不进入公开记录；上传 URL 只缓存在内存中。
+
+构建采用 Nuitka 原生编译，凭据配置和用户页面一起经 AES-GCM 加密后嵌入编译模块。
+发行页面移除管理表单及相关事件代码，不再分发可替换的 `web/index.html`。
+Python 使用 isolated/no_site/no_docstrings 选项，避免从外部环境加载代码并剔除文档字符串。
+构建器会检查分发目录没有 `.py`/`.pyc`、网页源码、明文凭据或指定的上游中文名称，
+并生成 `build-report.json`。不要分发源码、
+`release-private`、`release-build` 或 `.release-venv`。运行记录使用独立的
+`%LOCALAPPDATA%\Respect-Batch-User`，不读取旧版配置或环境变量中的 Key。
+
+这能提高普通解包和静态提取门槛；客户端仍具有解密和调用能力，不能保证抵御专业逆向
+或内存提取。本次选用开源 Nuitka 配合本项目的凭据加密，不宣称使用商业防护功能。
+
+生成后可执行 `python tools/verify_release.py <EXE路径>`：它会启动真正的
+EXE，检查三个模型、加密配置和界面加载、品牌名称、环境注入隔离、管理员接口拦截和本地图片导入，并确认清单外
+模型在联网前被拒绝。测试用独立数据目录，不调用付费生成接口。
+
 ## 打包成 exe
+
+### 可填写 Key 的自用单文件版
+
+`personal_main.py` 保留 17 家服务商、设置页、模型刷新、手填模型和文件夹配图。
+使用独立数据目录 `%LOCALAPPDATA%\Respect-Batch-Personal`，不嵌入任何私人凭据。
+模型目录按 Key 与接口地址隔离缓存，失败刷新保留旧目录。打包时快照是参考清单，
+不是当前账号的权限保证；图片和视频之外的模型只展示在完整清单中。
+
+```powershell
+.\.release-venv\Scripts\python.exe tools\refresh_personal_models.py --config <本机配置路径> --output release-build\personal-model-snapshot.json
+.\.release-venv\Scripts\python.exe tools\build_personal.py --snapshot release-build\personal-model-snapshot.json
+.\.release-venv\Scripts\python.exe tools\verify_personal.py <单文件EXE路径>
+```
+
+构建只复制核心代码、网页和不含凭据的模型快照。使用 Nuitka 编译为单文件 EXE，
+双击自动释放运行依赖；无需额外安装 Python。真实程序验证使用本机模拟模型接口，
+覆盖 Key 保存与遮蔽、模型刷新、重启持久化、换 Key 缓存隔离和本地图片导入，不调用付费生成。
+阿珂新增线路按 [官方视频说明](https://snumom.com/docs/wan-3.0.html) 和
+官方 `/api/pricing` 的端点信息接入（2026-09-08）。详见 `自用版使用说明.txt`。
+
+### 原开发版目录包
 
 ```
 pip install pyinstaller

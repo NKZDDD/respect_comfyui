@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Respect 批量并发</title>
+<title>Respect 创作服务</title>
 <style>
   :root{
     --bg:#f4f6f8; --card:#fff; --line:#e2e6eb; --ink:#1b1f24; --dim:#69727e;
@@ -128,16 +128,19 @@
          box-shadow:0 6px 22px rgba(0,0,0,.22);max-width:70vw;text-align:center}
   #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .hide{display:none!important}
+  body.distribution [data-admin], body.distribution #tab-set,
+  body.distribution #provNote, body.distribution #concNote{display:none!important}
   code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size:12px}
   .badkey{color:var(--bad);font-size:12px;font-weight:600}
 </style>
 </head>
 <body>
 <header>
-  <h1>Respect 批量并发</h1>
+  <h1>Respect 创作服务</h1>
+  <span class="hint">Respect 团队</span>
   <div class="tabs">
     <div class="tab on" data-tab="run">跑批</div>
-    <div class="tab" data-tab="set">设置</div>
+    <div class="tab" data-tab="set" data-admin>设置</div>
   </div>
   <div class="grow"></div>
   <span class="hint" id="gateInfo"></span>
@@ -150,20 +153,24 @@
 
   <!-- ── 1 选服务商 ── -->
   <div class="step">
-    <h2><i>1</i>选服务商<small>选完下面只会留下它真正要填的东西</small></h2>
+    <h2 id="modelHeading"><i>1</i>选服务商<small>选完下面只会留下它真正要填的东西</small></h2>
     <div class="row">
-      <div class="f"><label>服务商</label>
+      <div class="f" data-admin><label>服务商</label>
         <select id="prov" style="min-width:200px"></select></div>
       <div class="f"><label>做什么</label><select id="kind"></select></div>
       <div class="f"><label>模型</label><select id="model" style="min-width:250px"></select></div>
-      <button class="mini" id="btnModels" title="用这把 Key 实拉一次真正能用的模型">实拉模型</button>
+      <button class="mini" id="btnModels" data-admin title="用这把 Key 实拉一次真正能用的模型">实拉模型</button>
+      <button class="mini" id="btnCustomModel" data-admin>手填模型</button>
       <div class="grow"></div>
-      <div class="f"><label>模板</label>
+      <div class="f" data-admin><label>模板</label>
         <select id="tpl" style="min-width:160px"></select></div>
-      <button class="mini" id="btnTplSave">存为模板</button>
-      <button class="mini" id="btnTplDel" title="删掉当前选中的模板">删</button>
+      <button class="mini" id="btnTplSave" data-admin>存为模板</button>
+      <button class="mini" id="btnTplDel" data-admin title="删掉当前选中的模板">删</button>
     </div>
     <div id="keyWarn"></div>
+    <div class="hint" id="catalogNote" data-admin></div>
+    <details data-admin><summary>接口返回的完整模型清单</summary><pre id="allModels" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre></details>
+    <div id="releaseNotice"></div>
     <div class="note hide" id="provNote"></div>
   </div>
 
@@ -206,6 +213,20 @@
     <div class="thumbs" id="sharedThumbs"></div>
     <div id="refWarn"></div>
 
+    <details id="folderSection">
+      <summary>从文件夹分配参考图</summary>
+      <div class="note">每条任务从每个素材库各取 1 张；文件夹含子目录，按文件名自然排序（1、2、10）。顺序模式各库独立循环，随机模式每条独立抽取。每条出多张时，也逐条取下一张图。
+配图顺序：共用图 → 单条图 → 素材库 1、2…；空库不参与。只要一张起始图就用一个库，需要两张参考图就用两个库。</div>
+      <div class="row">
+        <button class="mini" id="btnAddLibrary">＋ 添加素材库</button>
+        <div class="f"><label for="libraryMode">配图方式</label>
+          <select id="libraryMode"><option value="sequence">顺序循环</option><option value="random">随机抽取</option></select></div>
+      </div>
+      <div id="libraries"></div>
+      <div id="libraryMsg" role="status"></div>
+      <div id="libraryPreview" class="wrapbox hide" style="margin-top:10px"></div>
+    </details>
+
     <div class="f" style="margin:16px 0 6px"><label>任务（一条一行，粘贴多行会自动拆开）</label></div>
     <div class="cards" id="cards"></div>
     <div class="row" style="margin-top:9px">
@@ -240,10 +261,11 @@
 <!-- ═════════════════════════ 设置 ═════════════════════════ -->
 <section id="tab-set" class="hide">
   <div class="step">
-    <h2><i>·</i>服务商密钥<small>填过的家才会出现在跑批页的下拉里</small></h2>
+    <h2><i>·</i>服务商密钥<small>各家独立填写，保存后即可刷新模型</small></h2>
     <div class="row" style="margin-bottom:11px">
       <button id="btnImport">从 Studio 导入密钥</button>
       <button id="btnRescan">重新扫描服务商</button>
+      <button id="btnModelsAll">保存并刷新全部模型</button>
       <span class="hint" id="dataDir"></span>
     </div>
     <div id="provList"></div>
@@ -305,13 +327,17 @@ const $ = s => document.querySelector(s);
 const el = (t,c,x) => { const n=document.createElement(t); if(c) n.className=c;
                         if(x!==undefined) n.textContent=x; return n; };
 let CAPS=[], CFG=null, TPLS=[], TIMER=null, LOGN=0;
+let RELEASE=false, PREVIEW=false;
+const SESSION='__RELEASE_SESSION__';
+const sessionHeaders=()=>SESSION.startsWith('__')?{}:{'X-Respect-Session':SESSION};
 let SHARED=[];                 // 全批共用参考图 [{path,name}]
 let TASKS=[{prompt:'',refs:[]}];
 let PICK_TARGET=null;          // 文件选择框这次是给谁选的
+let LIBRARIES=[], LIB_LOADING=false, RUNNING=false;
 
 async function api(p,b){
-  const r = await fetch(p, b ? {method:'POST',headers:{'Content-Type':'application/json'},
-                               body:JSON.stringify(b)} : {});
+  const r = await fetch(p, b ? {method:'POST',headers:{...sessionHeaders(),'Content-Type':'application/json'},
+                               body:JSON.stringify(b)} : {headers:sessionHeaders()});
   return await r.json();
 }
 let TT;
@@ -323,10 +349,19 @@ function msg(box, ok, text){ const b=$(box); b.innerHTML='';
 /* ══════════════════════ 启动 ══════════════════════ */
 async function boot(){
   const d = await api('/api/boot');
+  if(!d.ok){msg('#releaseNotice',false,d.msg||'程序启动失败，请重新打开');return;}
+  RELEASE=!!d.distribution; PREVIEW=!!d.preview;
+  document.body.classList.toggle('distribution',RELEASE);
+  if(RELEASE){
+    $('#modelHeading').innerHTML='<i>1</i>选择模型<small>选好模型，添加任务即可生成</small>';
+    if(PREVIEW) msg('#releaseNotice',false,'预览版：尚未配置发行密钥，暂不能生成。');
+  }
   CAPS = d.providers||[]; CFG = d.config; TPLS = d.templates||[];
   CFG.__uploadReady = !!d.upload_ready;   // refWarn 靠它判断配没配对象存储
+  if(RELEASE) $('#prov').value='preset';
+  if(!RELEASE){
+  /* @admin-start */
   $('#dataDir').textContent = '配置在 ' + d.data_dir;
-
   const sel=$('#prov'); sel.innerHTML='';
   CAPS.filter(c=>!c.broken).forEach(c=>{
     const has = !!((CFG.providers||{})[c.id]||{}).api_key;
@@ -336,17 +371,24 @@ async function boot(){
   // 已经填了密钥的家排前面并默认选中 —— 一进来就能跑的那个才是默认
   const ready = CAPS.find(c=>!c.broken && ((CFG.providers||{})[c.id]||{}).api_key);
   if(ready) sel.value = ready.id;
+  /* @admin-end */
+  }
 
   const dd = CFG.defaults||{};
   $('#outDir').value = dd.out_dir || d.default_out_dir;
   $('#conc').value = dd.concurrency||4;
   $('#retry').value = dd.max_retry ?? 2;
   $('#skip').checked = dd.skip_existing !== false;
+  if(!RELEASE){
+  /* @admin-start */
   $('#lim_global').value = (CFG.limits||{}).global||8;
   for(const k of ['endpoint','region','bucket','access_key','secret_key',
                   'public_base_url','prefix']) $('#up_'+k).value=(CFG.upload||{})[k]||'';
 
-  drawTemplates(); drawProviders(); drawLimits(); onProv(); render();
+  drawTemplates(); drawProviders(); drawLimits();
+  /* @admin-end */
+  }
+  onProv(); render();
 }
 
 const cap = () => CAPS.find(c=>c.id===$('#prov').value) || {};
@@ -367,7 +409,7 @@ function onProv(){
   if(sup.includes('image')) ks.appendChild(Object.assign(el('option','','出图'),{value:'image'}));
   if(sup.includes('video')) ks.appendChild(Object.assign(el('option','','出视频'),{value:'video'}));
 
-  const has = !!((CFG.providers||{})[c.id]||{}).api_key;
+  const has = RELEASE || !!((CFG.providers||{})[c.id]||{}).api_key;
   $('#keyWarn').innerHTML='';
   if(!has){
     const w = el('div','msg bad');
@@ -383,11 +425,10 @@ function onProv(){
 function onKind(){
   const c=cap(), k=$('#kind').value, b=c[k]||{}, ms=$('#model');
   ms.innerHTML='';
-  (b.models||[]).forEach(m=>ms.appendChild(Object.assign(el('option','',m),{value:m})));
+  (b.models||[]).forEach(m=>ms.appendChild(Object.assign(el('option','',(b.model_labels||{})[m]||m),{value:m})));
   if(!(b.models||[]).length)
-    // 一手、无限画布这些家的清单是接口给的、按 Key 变，写死的列表对它们不准
-    ms.appendChild(Object.assign(el('option','','（这家要点「实拉模型」才知道）'),{value:''}));
-  if(b.default_model) ms.value=b.default_model;
+    ms.appendChild(Object.assign(el('option','','暂无可用模型，请联系支持'),{value:''}));
+  if(b.default_model && (b.models||[]).includes(b.default_model)) ms.value=b.default_model;
   onModel();
 }
 
@@ -401,6 +442,17 @@ function onModel(){
   $('#sharedLabel').textContent = '参考图（这一批都用它们）' +
         (mx?`　最多 ${mx} 张`:'') + '　不用就留空';
   refWarn(); concNote(); updateGo(); render();
+  /* @admin-start */
+  if(!RELEASE){
+    const cat=c.model_catalog;
+    $('#catalogNote').textContent=cat
+      ? `${cat.source} · ${cat.updated_at} · 共 ${cat.total} 个；图片/视频按已有适配和模型名称分类。清单不代表生成已实测。`
+      : '内置模型目录，可点击「实拉模型」更新。';
+    if(cat?.unknown?.includes($('#model').value))
+      $('#catalogNote').textContent+=' 当前模型类型未确认，请核对所选出图/视频模式。';
+    $('#allModels').textContent=cat?.all_models?.join('\n')||'尚未拉取，使用内置目录。';
+  }
+  /* @admin-end */
 }
 
 /* ══════════════════════ 2 参数（只画这个模型真的要的） ══════════════════════ */
@@ -409,7 +461,7 @@ function drawParams(){
   row.innerHTML='';
   const shown=[];
   const add=(label, id, list, dflt)=>{
-    if(!list || !list.length) return;          // 这个模型没有这一项就不画
+    if(!list || !list.length || list.every(v=>v==='')) return; // 没有可选值就不画
     shown.push(label);
     const f=el('div','f'); f.appendChild(el('label','',label));
     const s=el('select'); s.id=id; s.style.minWidth='108px';
@@ -435,6 +487,7 @@ function drawParams(){
 const pv = id => { const n=$('#'+id); return n ? n.value : ''; };
 
 function concNote(){
+  if(RELEASE){ updateGo(); return; }
   const c=cap(), per=((CFG.limits||{}).per_provider||{})[c.id], g=(CFG.limits||{}).global||8;
   let t=`实际同时在跑的 = 三个数里最小的：这里的 ${$('#conc').value}、`
       + `${c.name||''}的配额 ${per||'未设'}、全局总闸 ${g}。`;
@@ -457,7 +510,7 @@ async function uploadFiles(files, into){
     if(mx && into.length>=mx){ toast(`这个模型最多 ${mx} 张参考图，多的没加`); break; }
     try{
       const r = await fetch('/api/upload?name='+encodeURIComponent(f.name),
-                            {method:'POST', body:f});
+                            {method:'POST', headers:sessionHeaders(), body:f});
       const d = await r.json();
       if(!d.ok){ bad.push(`${f.name}：${d.msg}`); continue; }
       if(!into.some(x=>x.path===d.path)){ into.push({path:d.path,name:d.name}); okN++; }
@@ -491,14 +544,91 @@ function bindDrop(node, into){
 }
 function pickInto(into){ PICK_TARGET=into; $('#filePick').value=''; $('#filePick').click(); }
 
+/* 文件夹素材库：整库导入成功才加入配图，避免中途失败导致后续任务错位。 */
+function sortedLibraryImages(files){
+  return [...files].filter(f=>/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name))
+    .sort((a,b)=>(a.webkitRelativePath||a.name).localeCompare(
+      b.webkitRelativePath||b.name, undefined, {numeric:true,sensitivity:'base'}));
+}
+async function importLibrary(files, into){
+  if(LIB_LOADING) return;
+  const imgs=sortedLibraryImages(files);
+  if(!imgs.length){ msg('#libraryMsg',false,'文件夹里没有支持的图片（PNG、JPG、WEBP、BMP、GIF）'); return; }
+  LIB_LOADING=true; drawLibraries(); updateGo();
+  const staged=[];
+  try{
+    for(const [i,f] of imgs.entries()){
+      msg('#libraryMsg',true,`正在读取 ${i+1}/${imgs.length}：${f.webkitRelativePath||f.name}`);
+      const r=await fetch('/api/upload?name='+encodeURIComponent(f.name), {method:'POST',headers:sessionHeaders(),body:f});
+      const d=await r.json();
+      if(!d.ok) throw new Error(`${f.name}：${d.msg}`);
+      staged.push({path:d.path,name:f.webkitRelativePath||f.name});
+    }
+    into.push(...staged);
+    msg('#libraryMsg',true,`已加入 ${staged.length} 张；本库共 ${into.length} 张。可在下方检查配图。`);
+  }catch(e){
+    msg('#libraryMsg',false,`本次导入未加入素材库，原有配图不变。${e.message}。请处理后重新选择文件夹。`);
+  }finally{
+    LIB_LOADING=false; drawLibraries(); refWarn(); updateGo();
+  }
+}
+function drawLibraries(){
+  const box=$('#libraries'); box.innerHTML='';
+  $('#btnAddLibrary').disabled=LIB_LOADING;
+  LIBRARIES.forEach((pool,si)=>{
+    const wrap=el('div','note'), row=el('div','row');
+    row.appendChild(el('b','',`素材库 ${si+1}（${pool.length} 张）`));
+    for(const folder of [true,false]){
+      const picker=el('input'); picker.type='file'; picker.multiple=true;
+      picker.accept='image/*'; picker.className='hide';
+      if(folder) picker.setAttribute('webkitdirectory','');
+      picker.onchange=()=>{const files=[...picker.files]; picker.value=''; importLibrary(files,pool);};
+      const b=el('button','mini',folder?'选文件夹':'选多张图'); b.disabled=LIB_LOADING;
+      b.onclick=()=>picker.click(); row.append(b,picker);
+    }
+    const remove=el('button','mini','删除素材库'); remove.disabled=LIB_LOADING;
+    remove.onclick=()=>{LIBRARIES.splice(si,1); drawLibraries(); refWarn(); updateGo();};
+    row.appendChild(remove); wrap.appendChild(row);
+    const tb=el('div','thumbs'); tb.style.maxHeight='170px'; tb.style.overflowY='auto';
+    thumbs(pool,tb,i=>{if(LIB_LOADING) return; pool.splice(i,1); drawLibraries(); refWarn(); updateGo();});
+    wrap.appendChild(tb); box.appendChild(wrap);
+  });
+}
+function libraryLimitError(){
+  const pools=LIBRARIES.filter(p=>p.length).length, max=block().max_refs||0;
+  if(!pools || !max) return '';
+  const tooMany=liveTasks().some(t=>new Set([...SHARED,...t.refs].map(r=>r.path)).size+pools>max);
+  return tooMany?`这个模型每条最多 ${max} 张参考图；共用图、单条图与素材库合计超限，请减少后再跑。`:'';
+}
+function previewLibraries(total){
+  const box=$('#libraryPreview'); box.innerHTML='';
+  box.classList.toggle('hide',!total||!LIBRARIES.some(p=>p.length));
+  if(!total||!LIBRARIES.some(p=>p.length)) return;
+  const keys=new Set([1,total]);
+  LIBRARIES.forEach(p=>{if(p.length && p.length<total){keys.add(p.length);keys.add(p.length+1);}});
+  const table=el('table'), head=el('tr'); head.appendChild(el('th','','任务'));
+  LIBRARIES.forEach((p,i)=>head.appendChild(el('th','',`素材库 ${i+1}`)));
+  table.appendChild(head);
+  [...keys].sort((a,b)=>a-b).slice(0,10).forEach(n=>{
+    const tr=el('tr'); tr.appendChild(el('td','',String(n)));
+    LIBRARIES.forEach(p=>tr.appendChild(el('td','',!p.length?'空库（不参与）':
+      $('#libraryMode').value==='random'?'开跑时随机抽取':
+      `${p[(n-1)%p.length].name}${n>p.length?'（循环）':''}`)));
+    table.appendChild(tr);
+  });
+  box.appendChild(table);
+}
+
 function refWarn(){
   const b=block(), box=$('#refWarn'); box.innerHTML='';
-  const anyRef = SHARED.length || TASKS.some(t=>t.refs.length);
+  const anyRef = SHARED.length || TASKS.some(t=>t.refs.length) || LIBRARIES.some(p=>p.length);
+  if(b.min_refs) box.appendChild(el('div','msg','这个模型每条任务需要一张首帧参考图，可从图片或文件夹导入。'));
   if(!anyRef) return;
   // 只收公网链接的家 + 没配对象存储 = 这一批一定跑不了。**现在就说**，
   // 别等跑到第一条才报 —— 那时人已经填完一整屏了。
-  if(b.ref_mode==='url' && !CFG.__uploadReady){
+  if(b.ref_mode==='url' && !(b.upload_ready ?? CFG.__uploadReady)){
     const w=el('div','msg bad');
+    if(RELEASE){w.textContent='图片上传服务尚未配置，请联系管理员提供完整发行包。';box.appendChild(w);return;}
     w.append(`${cap().name} 这个模型的参考图只收公网链接，但还没配对象存储 —— 带图会跑不了。`);
     const t=el('button','mini','去配'); t.style.marginLeft='10px';
     t.onclick=()=>document.querySelector('.tab[data-tab=set]').click();
@@ -563,9 +693,12 @@ function updateGo(){
   const n=liveTasks().length, rep=parseInt($('#repeat').value,10)||1;
   const total=n*rep;
   $('#goCount').textContent = total ? `${total} 条` : '还没有任务';
-  $('#btnRun').disabled = !total;
+  const libraryError=libraryLimitError();
+  $('#btnRun').disabled = !total || LIB_LOADING || RUNNING || PREVIEW || !!libraryError;
+  $('#btnRun').title=libraryError || (LIB_LOADING?'等待文件夹读取完成':'');
+  previewLibraries(total);
   const c=cap(), b=block(), k=$('#kind').value;
-  const bits=[c.name, $('#model').value];
+  const bits=[c.name, $('#model').selectedOptions[0]?.textContent];
   if(k==='image'&&pv('p_size')) bits.push(pv('p_size'));
   if(pv('p_ratio')) bits.push(pv('p_ratio'));
   if(pv('p_duration')) bits.push(pv('p_duration')+'秒');
@@ -574,9 +707,10 @@ function updateGo(){
   if(refs) bits.push(`${refs} 张共用参考图`);
   $('#goWhat').textContent = bits.filter(Boolean).join(' · ');
   $('#goOut').textContent = '成品 → ' + ($('#outDir').value||'');
-  $('#taskHint').textContent = n ? `${n} 条` : '';
+  $('#taskHint').textContent = libraryError || (n ? `${n} 条` : '');
 }
 
+/* @admin-start */
 /* ══════════════════════ 模板 ══════════════════════ */
 function drawTemplates(){
   const s=$('#tpl'); s.innerHTML='';
@@ -607,6 +741,7 @@ function applyTemplate(name){
 
 /* ══════════════════════ 设置页 ══════════════════════ */
 function drawProviders(){
+  if(RELEASE) return;
   const box=$('#provList'); box.innerHTML='';
   CAPS.forEach(c=>{
     const pc=(CFG.providers||{})[c.id]||{};
@@ -666,12 +801,15 @@ function collect(){
                     skip_existing:$('#skip').checked}};
 }
 
+/* @admin-end */
 /* ══════════════════════ 跑 ══════════════════════ */
 function buildSpec(){
   return {kind:$('#kind').value, provider:$('#prov').value, model:$('#model').value,
           tasks: liveTasks().map(t=>({prompt:t.prompt.trim(),
                                       refs:t.refs.map(r=>r.path)})),
           refs: SHARED.map(r=>r.path),
+          ref_slots: LIBRARIES.map(pool=>pool.map(r=>r.path)),
+          ref_pick_mode: $('#libraryMode').value,
           size:pv('p_size'), ratio:pv('p_ratio'),
           duration:parseInt(pv('p_duration'),10)||0, resolution:pv('p_resolution'),
           concurrency:parseInt($('#conc').value,10)||4,
@@ -680,6 +818,10 @@ function buildSpec(){
           out_dir:$('#outDir').value.trim(), skip_existing:$('#skip').checked};
 }
 async function startRun(){
+  if(PREVIEW){toast('请联系管理员提供正式发行包');return;}
+  if(LIB_LOADING || RUNNING) return;
+  const error=libraryLimitError();
+  if(error){toast(error);return;}
   const d=await api('/api/start',{spec:buildSpec()});
   if(!d.ok){ toast(d.msg); msg('#keyWarn', false, d.msg); return; }
   if(d.status==='已停止'){ toast(d.message); msg('#keyWarn', false, d.message); return; }
@@ -690,6 +832,7 @@ async function startRun(){
   setRunning(true); poll();
 }
 function setRunning(on){
+  RUNNING=on;
   $('#btnRun').disabled=on; $('#btnStop').classList.toggle('hide',!on);
   if(TIMER) clearInterval(TIMER);
   TIMER = on ? setInterval(poll,1200) : null;
@@ -740,6 +883,7 @@ async function poll(){
 }
 
 /* ══════════════════════ 事件 ══════════════════════ */
+/* @admin-start */
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
   const run = t.dataset.tab==='run';
@@ -747,11 +891,14 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   $('#tab-set').classList.toggle('hide',run);
   $('#gobar').classList.toggle('hide',!run);
 });
+/* @admin-end */
 $('#prov').onchange=onProv;
 $('#kind').onchange=onKind;
 $('#model').onchange=onModel;
 $('#conc').oninput=concNote;
 $('#repeat').oninput=updateGo;
+$('#btnAddLibrary').onclick=()=>{LIBRARIES.push([]); drawLibraries(); updateGo();};
+$('#libraryMode').onchange=updateGo;
 $('#btnAdd').onclick=()=>{ TASKS.push({prompt:'',refs:[]}); render();
   const ts=document.querySelectorAll('.cd textarea'); ts[ts.length-1].focus(); };
 $('#btnClear').onclick=()=>{ TASKS=[{prompt:'',refs:[]}]; render(); };
@@ -766,6 +913,7 @@ $('#btnPickDir').onclick=async()=>{
   if(d.ok){ $('#outDir').value=d.path; updateGo(); }
   else if(d.msg && d.msg!=='取消了') toast(d.msg);
 };
+/* @admin-start */
 $('#tpl').onchange=e=>{ if(e.target.value) applyTemplate(e.target.value); };
 $('#btnTplSave').onclick=async()=>{
   const name=prompt('给这套设置起个名字（下次一选就套上）：',
@@ -781,19 +929,58 @@ $('#btnTplDel').onclick=async()=>{
   TPLS=d.templates; drawTemplates(); toast(`删了「${n}」`);
 };
 $('#btnModels').onclick=async()=>{
+  const pid=$('#prov').value, kind=$('#kind').value, keep=$('#model').value;
   const b=$('#btnModels'); b.disabled=true; b.textContent='拉取中…';
-  const d=await api('/api/models',{provider:$('#prov').value});
-  b.disabled=false; b.textContent='实拉模型';
-  if(!d.ok){ toast(d.msg); return; }
-  const ms=$('#model'), keep=ms.value; ms.innerHTML='';
-  d.models.forEach(m=>ms.appendChild(Object.assign(el('option','',m),{value:m})));
-  if(d.models.includes(keep)) ms.value=keep;
-  onModel();
-  toast(`实拉到 ${d.models.length} 个模型（这把 Key 真正能用的）`);
+  try{
+    const d=await api('/api/models',{provider:pid});
+    if(!d.ok){ toast(d.msg); return; }
+    CAPS=CAPS.map(c=>c.id===pid?d.capability:c);
+    if($('#prov').value===pid && $('#kind').value===kind){
+      onKind();
+      if((d.capability[kind]?.models||[]).includes(keep)) $('#model').value=keep;
+      onModel();
+    }
+    toast(`获取 ${d.models.length} 个模型，已保存目录。${d.partial?d.msg:''}`);
+  }catch(e){toast('模型拉取失败，请检查连接');}
+  finally{b.disabled=false; b.textContent='实拉模型';}
+};
+$('#btnCustomModel').onclick=()=>{
+  const model=prompt('填写服务商的完整模型 ID（按当前出图/视频模式调用）：');
+  if(!model?.trim()) return;
+  const value=model.trim(), b=cap()[$('#kind').value];
+  if(!b.models.includes(value)) b.models.push(value);
+  onKind(); $('#model').value=value; onModel();
+};
+$('#btnModelsAll').onclick=async()=>{
+  const button=$('#btnModelsAll'); button.disabled=true;
+  try{
+    const saved=await api('/api/config',{config:collect()});
+    if(!saved.ok){msg('#setMsg',false,saved.msg);return;}
+    const fresh=await api('/api/boot');
+    CFG=fresh.config; CAPS=fresh.providers; CFG.__uploadReady=!!fresh.upload_ready;
+    const rows=[];
+    // 每家独立结束并显示状态，失败不会覆盖已有目录。
+    for(const c of CAPS){
+      button.textContent=`正在刷新：${c.name}`;
+      if(!CFG.providers?.[c.id]?.api_key && c.id!=='gate'){
+        rows.push(`${c.name}：未填 Key，保留目录`);continue;
+      }
+      try{
+        const d=await api('/api/models',{provider:c.id});
+        if(d.ok) CAPS=CAPS.map(p=>p.id===c.id?d.capability:p);
+        rows.push(`${c.name}：${d.ok?d.models.length+' 个模型':d.msg}`);
+      }catch(e){rows.push(`${c.name}：连接失败，保留目录`);}
+      msg('#setMsg',true,rows.join('\n'));
+    }
+    drawProviders(); onProv(); msg('#setMsg',true,rows.join('\n'));
+  }finally{button.disabled=false;button.textContent='保存并刷新全部模型';}
 };
 $('#btnSave').onclick=async()=>{
   const d=await api('/api/config',{config:collect()});
-  CFG=d.config; drawLimits(); drawProviders(); onProv();
+  if(!d.ok){msg('#setMsg',false,d.msg);return;}
+  const fresh=await api('/api/boot');
+  CFG=fresh.config; CAPS=fresh.providers; CFG.__uploadReady=!!fresh.upload_ready;
+  drawLimits(); drawProviders(); onProv();
   msg('#setMsg', d.ok, d.msg); toast('设置已保存');
 };
 $('#btnImport').onclick=async()=>{
@@ -815,6 +1002,7 @@ $('#btnUpTest').onclick=async()=>{
   CFG.__uploadReady=!!d.ok; refWarn();
   msg('#upMsg', d.ok, `[${d.step}] ${d.msg}`);
 };
+/* @admin-end */
 // 整个页面都能接住拖进来的图（拖偏了也不会打开成新标签页）
 window.addEventListener('dragover', e=>e.preventDefault());
 window.addEventListener('drop', e=>e.preventDefault());

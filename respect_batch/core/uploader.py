@@ -20,15 +20,17 @@ import hashlib
 import mimetypes
 import os
 import threading
+import time
 from typing import Callable, Optional
 
-from . import paths
+from . import distribution, paths
 from .apiutil import ApiError, TASK_FATAL, encode_ref
 from .store import LOCK, read_json, write_json
 
 CACHE_NAME = "upload_cache.json"
 _MEM: dict = {}
 _MEM_LOCK = threading.RLock()
+_PROVIDER_UPLOADS: dict = {}
 
 # 配置写错了重试多少次都一样，别浪费时间。
 # endpoint 打错的典型表现是 SSL 握手失败 / 域名解析不了，也算配置问题。
@@ -42,6 +44,8 @@ _FATAL_WORDS = ("NoSuchBucket", "InvalidAccessKeyId", "SignatureDoesNotMatch",
 
 def configured(cfg: Optional[dict]) -> bool:
     cfg = cfg or {}
+    if cfg.get("backend") == "aicopy":
+        return bool(cfg.get("api_key"))
     return bool((cfg.get("bucket") or "").strip()
                 and (cfg.get("access_key") or "").strip()
                 and (cfg.get("secret_key") or "").strip())
@@ -77,6 +81,8 @@ def _cache_get(project_root: str, key: str) -> str:
     with _MEM_LOCK:
         if key in _MEM:
             return _MEM[key]
+    if distribution.ENABLED:
+        return ""
     url = (read_json(_cache_path(project_root), {}) or {}).get(key, "")
     if url:
         with _MEM_LOCK:
@@ -87,6 +93,8 @@ def _cache_get(project_root: str, key: str) -> str:
 def _cache_put(project_root: str, key: str, url: str) -> None:
     with _MEM_LOCK:
         _MEM[key] = url
+    if distribution.ENABLED:
+        return
     with LOCK:                      # 读-改-写整段加锁，多线程同时上传时不互相覆盖
         p = _cache_path(project_root)
         d = read_json(p, {}) or {}
@@ -148,6 +156,58 @@ def put(cfg: dict, data: bytes, key: str) -> str:
     return public_url(cfg, key)
 
 
+def _aicopy_url(path: str, cfg: dict, max_side: int, fmt: str, log: Callable) -> str:
+    """小裴专用图床；固定地址，且只使用小裴自己的凭据。"""
+    import requests
+    from .apiutil import classify
+    token = cfg.get("api_key", "")
+    if not token:
+        raise ApiError("小裴图片上传尚未配置，请联系管理员", kind=TASK_FATAL)
+    data, mime, ext, _ = encode_ref(path, max_side=max_side, fmt=fmt)
+    if len(data) > 15 * 1024 * 1024:
+        raise ApiError("小裴图床单张图片上限为 15MB，请缩小图片后导入", kind=TASK_FATAL)
+    cache_key = hashlib.sha256(token.encode() + data).hexdigest()
+    with _MEM_LOCK:
+        old = _PROVIDER_UPLOADS.get(cache_key)
+        if old and time.monotonic() - old[0] < 900:
+            return old[1]
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        for endpoint in ("/v1/uploads", "/v1/upload"):
+            response = session.post("https://api.aione.help" + endpoint,
+                headers={"Authorization": "Bearer " + token},
+                files={"image": ("reference" + ext, data, mime)}, timeout=120,
+                allow_redirects=False)
+            if response.status_code in (404, 405) and endpoint == "/v1/uploads":
+                continue
+            if not 200 <= response.status_code < 300:
+                raise ApiError(f"小裴图片上传失败（HTTP {response.status_code}）",
+                    response.status_code, classify(response.status_code, response.text[:400]))
+            payload = response.json()
+            if not isinstance(payload, dict):
+                break
+            for item in (payload, payload.get("data", {})):
+                if not isinstance(item, dict):
+                    continue
+                values = [item.get(k) for k in ("image_url", "url", "file_url", "download_url")]
+                for key in ("image_urls", "urls"):
+                    if isinstance(item.get(key), list):
+                        values.extend(item[key])
+                url = next((v for v in values if isinstance(v, str) and v.startswith("https://")), "")
+                if url:
+                    with _MEM_LOCK:
+                        _PROVIDER_UPLOADS[cache_key] = (time.monotonic(), url)
+                    log(f"参考图上传完成：{os.path.basename(path)}")
+                    return url
+            break
+    except requests.RequestException as exc:
+        raise ApiError("小裴图片上传网络失败，请稍后重试") from exc
+    finally:
+        session.close()
+    raise ApiError("小裴图片上传未返回可用的 HTTPS 链接", kind=TASK_FATAL)
+
+
 def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
            fmt: str = "", log: Callable = print) -> str:
     """本地图片 → 公网 URL。命中缓存就不重复上传。
@@ -157,6 +217,8 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
     """
     if not os.path.isfile(path):
         raise ApiError(f"参考图文件不存在: {path}")
+    if cfg.get("backend") == "aicopy":
+        return _aicopy_url(path, cfg, max_side, fmt, log)
     if not configured(cfg):
         raise ApiError(
             "这个模型的参考图**只收公网链接**，但还没配对象存储，本机的图传不上去。"
@@ -187,7 +249,8 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
     url = put(cfg, data, key)
     # **改没改要说出来。** 原来只写「已上传（57KB）」，而那时它其实被缩到了
     # 682x1024。出来的脸不像时，日志里得有这一行，否则谁都不会想到问题在这儿。
-    log(f"已上传 {os.path.basename(path)}　{how}　{len(data)//1024}KB → {url}")
+    message = f"已上传 {os.path.basename(path)}　{how}　{len(data)//1024}KB"
+    log(message if distribution.ENABLED else f"{message} → {url}")
     _cache_put(project_root, h, url)
     return url
 

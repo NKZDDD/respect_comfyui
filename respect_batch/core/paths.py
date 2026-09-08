@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import os
 import sys
+from . import distribution
 
 APP_NAME = "Respect-Batch"
 
 FROZEN = bool(getattr(sys, "frozen", False))
 # 打包成 exe 之后 __file__ 在临时解压目录里，程序目录要看 sys.executable
-PROGRAM_DIR = (os.path.dirname(os.path.abspath(sys.executable)) if FROZEN
+PROGRAM_DIR = (os.path.dirname(os.path.abspath(sys.argv[0])) if '__compiled__' in globals()
+               else os.path.dirname(os.path.abspath(sys.executable)) if FROZEN
                else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _forced = {"data": ""}
@@ -48,6 +50,9 @@ def default_data_dir() -> str:
 def data_dir() -> str:
     if _forced["data"]:
         return _forced["data"]
+    if distribution.ENABLED:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "Respect-Batch-User")
     env = os.environ.get("RESPECT_BATCH_DATA_DIR", "").strip()
     if env:
         return os.path.abspath(os.path.expanduser(env))

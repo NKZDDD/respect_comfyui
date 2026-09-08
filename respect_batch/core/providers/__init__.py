@@ -28,7 +28,7 @@ import pkgutil
 import sys
 import traceback
 
-from .. import paths
+from .. import distribution, paths
 from .base import ImageTask, Provider, VideoTask   # noqa: F401  对外导出
 
 # 内置的显示顺序：实测稳的排前面。没列到的按文件名排在后面。
@@ -123,10 +123,13 @@ def _builtin_names() -> list:
     退回意味着「新加的内置文件如果没写进 _BUILTIN_ORDER 就会被漏掉」，
     这件事必须说出来，不能悄悄少一家。
     """
+    if distribution.ENABLED:
+        return [pid for pid in _BUILTIN_ORDER if pid in distribution.profile()["config"]["providers"]]
     here = os.path.dirname(os.path.abspath(__file__))
     names = sorted(m.name for m in pkgutil.iter_modules([here])
                    if not m.name.startswith("_") and m.name != "base")
-    if not names and getattr(sys, "frozen", False):
+    # Nuitka 不设置 PyInstaller 的 sys.frozen；没有磁盘模块时统一使用内置清单。
+    if not names:
         names = list(_BUILTIN_ORDER)
         WARNINGS.append({"id": "(内置)", "source": "exe",
                          "problems": ["exe 里扫不到内置服务商目录，已按内置清单逐个加载。"
@@ -151,6 +154,8 @@ def _load_builtin() -> None:
 
 
 def _load_plugins() -> None:
+    if distribution.ENABLED:
+        return
     d = paths.plugins_dir()
     if not os.path.isdir(d):
         return

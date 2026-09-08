@@ -4,3 +4,7 @@ __pycache__/
 build/
 dist/
 config.json
+.release-venv/
+release-private/
+release-build/
+release-dist/

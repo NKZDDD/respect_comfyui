@@ -1,0 +1,11 @@
+{
+  "config": {
+    "providers": {"ake": {"api_key": ""}, "aicopy": {"api_key": ""}},
+    "upload": {
+      "endpoint": "", "region": "auto", "bucket": "",
+      "access_key": "", "secret_key": "", "public_base_url": "",
+      "prefix": "respect-batch", "public_acl": false
+    },
+    "defaults": {"concurrency": 4, "max_retry": 2}
+  }
+}

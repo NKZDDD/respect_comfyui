@@ -1,0 +1,6 @@
+-r requirements.txt
+Nuitka==4.2.1
+ordered-set==4.1.0
+zstandard==0.25.0
+cryptography==50.0.1
+
