@@ -57,6 +57,8 @@
     afterRunDelayMs: 3000, // 点运行后先等一下让 UI 反应
     waitButtonReenableMs: 600000, // 等运行按钮重新可用（串行排队，最长 10 分钟）
     runButtonWaitMs: 180000, // 点运行前，等“运行”按钮恢复可点的最长时间（任务间它会短暂禁用/变文字）
+    pageReadyWaitMs: 30000, // 每条任务开跑前，等页面（登录态数据）就绪的最长时间
+    maxWatchdogReloads: 3, // 连续几次看门狗刷新还跑不动就停手（防「刷新→没加载好→再刷新」死循环）
     balanceModalText: /RH币余额为\s*0|余额为\s*0|余额不足/, // “RH币余额为0”弹窗文字
     balanceReloadDelayMs: 30000, // 检测到余额为0后，等多久再刷新页面（避免狂刷，给余额刷新留时间）
     uploadRetries: 3, // 上传失败重试次数（网络抖动/Failed to fetch）
@@ -310,6 +312,30 @@
     return await waitFor(() => findRunButton(), timeoutMs || CONFIG.runButtonWaitMs, 500);
   }
 
+  // 页面「未就绪 / 掉号」检测。返回 null＝正常，返回字符串＝原因。
+  //
+  // 依据（对比 2026-09-08 存下的两份真实页面）：正常加载时每个 .run-btn 都带档位标签
+  // （Lite/Standard、Lite/Plus、Ultra·6000D）；掉号那份页面上 .plus-tags 一个都没有、
+  // Ultra 按钮整个不渲染、任务列表是「暂无数据」——即所有需要登录态的接口都没返回数据。
+  // 这种状态下上传和点运行全是打空气：任务提交不出去，插件却会干等到超时再静默跳过。
+  function pageNotReadyReason() {
+    if (!document.querySelector(".app-wrap.is-new-version")) return null; // 旧版页面不套用这条规则
+    if (![...document.querySelectorAll(".run-btn")].length) return "页面上一个运行按钮都没有";
+    if (!getRunTierButtons().length)
+      return "运行按钮上没有任何档位标签（Lite/Standard 等）——需要登录态的接口没返回数据，多半是掉号了";
+    return null;
+  }
+
+  // 起飞前检查：给页面一点加载时间，仍然不就绪就抛错（此时还没上传、没点按钮，重试不花钱）
+  async function ensurePageReady(waitMs) {
+    const first = pageNotReadyReason();
+    if (!first) return;
+    log(`页面看起来还没就绪：${first}。等一下…`, "err");
+    const ok = await waitFor(() => !pageNotReadyReason(), waitMs || CONFIG.pageReadyWaitMs, 1000);
+    if (!ok) throw new Error("页面未就绪：" + pageNotReadyReason() + "。请刷新页面确认还登着，再继续。");
+    log("页面已就绪", "ok");
+  }
+
   // 找页面上的“取消/停止/中断”按钮（排除本扩展面板自己的按钮）
   function findCancelButton() {
     // RunningHub 任务列表里运行中的任务，取消按钮是 <div class="rh-cancel-btn">取消</div>
@@ -557,6 +583,7 @@
     currentWfId: null, // 当前工作流 id（检测 SPA 切换）
     _reloading: false, // 正在因余额为0刷新（防重复）
     lastActivity: 0, // 最近一次 ComfyUI 活动时间（看门狗用）
+    reloadStreak: 0, // 连续几次「看门狗刷新」还没成功跑完一条（跨刷新持久化，防死循环）
     lastExecEndTs: 0, // 最近一次任务结束时间（串行节流用）
     captured: {}, // nodeId -> {items:[{filename,subfolder,type,format,cos_url}], ts}（executed 事件捕获）
     _watchdog: null,
@@ -619,6 +646,7 @@
         infinite: state.infinite,
         modeOverride: state.modeOverride,
         watchdogMin: state.watchdogMin,
+        reloadStreak: state.reloadStreak,
         selected: [...state.selectedSaveNodeIds],
       },
       extra || {}
@@ -669,6 +697,7 @@
     if (typeof data.infinite === "boolean") state.infinite = data.infinite;
     if (data.modeOverride) state.modeOverride = data.modeOverride;
     if (data.watchdogMin) state.watchdogMin = data.watchdogMin;
+    if (data.reloadStreak != null) state.reloadStreak = data.reloadStreak;
     if (data.runMode != null) state.runMode = normTier(data.runMode);
     if (data.randomSeed) state.randomSeed = data.randomSeed;
     return true;
@@ -966,6 +995,7 @@
   }
 
   async function processOne(pair, i) {
+    await ensurePageReady(); // 掉号/未加载完时立刻停，别把图传进空气里
     const ready = await waitComfyNodes(true);
     if (!ready) throw new Error("等待超时：ComfyUI 或 图片/视频节点未就绪（iframe 可能正在重载）");
     const { comfy, imgNode, vidNode } = ready;
@@ -1025,6 +1055,7 @@
 
   // 图片模式：上传一张图 → 写 LoadImage → 运行 → 回收成品
   async function processImageOne(comfy, imgNode, handle, label) {
+    await ensurePageReady(); // 掉号/未加载完时立刻停，别把图传进空气里
     const { app, win } = comfy;
     bumpActivity();
     const imgFile = typeof handle.getFile === "function" ? await handle.getFile() : handle;
@@ -1156,6 +1187,7 @@
         try {
           await processOne(state.pairs[state.index], state.index);
           ok = true;
+          state.reloadStreak = 0; // 成功跑完一条 → 看门狗刹车计数归零
           break;
         } catch (e) {
           log(`#${state.index + 1} 失败(${t}/${maxTry})：${e.message}`, "err");
@@ -1200,6 +1232,7 @@
       saveProgress({ active: true, index: k });
 
       let ok = false;
+      let lastErr = "";
       const maxTry = Math.max(1, (CONFIG.taskRetries || 2) + 1);
       for (let t = 1; t <= maxTry && !state.stop; t++) {
         try {
@@ -1207,14 +1240,26 @@
           if (!ready) throw new Error("等待超时：ComfyUI 或图片节点未就绪");
           await processImageOne(ready.comfy, ready.imgNode, handle, label);
           ok = true;
+          state.reloadStreak = 0; // 成功跑完一条 → 看门狗刹车计数归零
           break;
         } catch (e) {
-          log(`${label} 失败(${t}/${maxTry})：${e.message}`, "err");
+          lastErr = e.message || String(e);
+          log(`${label} 失败(${t}/${maxTry})：${lastErr}`, "err");
           if (t < maxTry) await sleep((CONFIG.retryDelayMs || 4000) * t);
         }
       }
       if (state.stop) break;
       if (!ok) {
+        // 页面掉号/未就绪：无限模式也必须停。继续跳下一张只会一直锤一个死页面，
+        // 白传一堆图、还可能让掉号更严重。
+        if (/页面未就绪/.test(lastErr)) {
+          log("页面未就绪（多半掉号）——已暂停。请刷新页面确认还登着，再点“继续”。", "err");
+          state.paused = true;
+          setButtons();
+          while (state.paused && !state.stop) await sleep(300);
+          if (state.stop) break;
+          continue; // 重试当前 k
+        }
         // 无限模式：自动跳过当前张，继续不停；非无限：暂停等人工
         if (state.infinite) {
           log(`${label} 多次失败，跳过，继续下一张`, "err");
@@ -1300,14 +1345,34 @@
       if (!state.lastActivity) return;
       const limitMs = Math.max(1, parseFloat(state.watchdogMin) || 20) * 60000;
       if (Date.now() - state.lastActivity > limitMs) {
-        log(`⚠ 超过 ${state.watchdogMin} 分钟无进度，自动取消并刷新页面续跑…`, "err");
+        // 刹车：连续刷新 N 次都没成功跑完一条，就别再刷了。
+        // 否则会进死循环——刷新→页面没加载好→又 20 分钟无进度→再刷新→…
+        // （这正是 2026-09-08「不看着它、时间久了页面就不动了」的样子）
+        const cap = Math.max(1, CONFIG.maxWatchdogReloads || 3);
+        if (state.reloadStreak >= cap) {
+          log(
+            `⚠ 已经连续刷新 ${state.reloadStreak} 次仍然跑不动，停止自动刷新并暂停。` +
+              `请人工看一眼页面（是否掉号/机器被回收/浏览器把标签页冻结了），再点“继续”。`,
+            "err"
+          );
+          state.paused = true;
+          state.reloadStreak = 0;
+          saveProgress({ active: true, index: state.index });
+          setButtons();
+          return;
+        }
+        state.reloadStreak++;
+        log(
+          `⚠ 超过 ${state.watchdogMin} 分钟无进度，自动取消并刷新页面续跑…（第 ${state.reloadStreak}/${cap} 次）`,
+          "err"
+        );
         state._reloading = true; // 防止重复触发
         (async () => {
           try {
             await cancelCurrentTask("看门狗超时", true);
           } catch (e) {
             log("看门狗恢复异常：" + e.message + "，强制刷新", "err");
-            saveProgress({ active: true, index: state.index });
+            saveProgress({ active: true, index: state.index, reloadStreak: state.reloadStreak });
             location.reload();
           }
         })();
@@ -1936,7 +2001,7 @@
       );
     }
     restoreDirs(); // 恢复上次选的目录（保存目录显示名字；图片/视频目录给恢复授权按钮）
-    log("已加载 build-2026090801（适配新版三档运行按钮）。等「ComfyUI：已连接 ✓」后开始。", "ok");
+    log("已加载 build-2026090901（三档运行按钮 + 掉号/未就绪保护 + 看门狗刹车）。等「ComfyUI：已连接 ✓」后开始。", "ok");
   }
 
   if (document.readyState === "loading") {
