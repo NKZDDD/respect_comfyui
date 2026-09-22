@@ -175,7 +175,9 @@ def build_tasks(spec: dict) -> list:
                 size=spec.get("size") or "", ratio=spec.get("ratio") or "",
                 duration=int(spec.get("duration") or 0),
                 resolution=spec.get("resolution") or "",
-                extra=spec.get("extra") or {}))
+                extra={**(spec.get("extra") or {}),
+                       **({"resolution": spec["resolution"]} if kind == "image" and spec.get("resolution") else {}),
+                       **({"video_refs": list(spec["video_refs"])} if kind == "video" and spec.get("video_refs") else {})}))
     return tasks
 
 
@@ -272,9 +274,14 @@ def _dispatch(prov, task: Task, run: Run, log: Callable, resolved: list) -> dict
         return prov.generate_image(
             t, task.dest, log=log, cancel=run.cancelled,
             poll_timeout=int(run.spec.get("poll_timeout") or 900)) or {}
+    extra = dict(task.extra)
+    if extra.get("video_refs"):
+        from .uploader import video_to_url
+        extra["video_refs"] = [video_to_url(v, run.cfg.get("upload") or {}, log=log)
+                               for v in extra["video_refs"]]
     t = VideoTask(prompt=task.prompt, refs=resolved,
                   duration=task.duration or 5, ratio=task.ratio or "9:16",
-                  model=task.model, resolution=task.resolution, extra=task.extra)
+                  model=task.model, resolution=task.resolution, extra=extra)
     return prov.generate_video(
         t, task.dest, log=log, cancel=run.cancelled,
         poll_timeout=int(run.spec.get("poll_timeout") or 2400)) or {}

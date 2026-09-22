@@ -9,10 +9,10 @@ from urllib.parse import quote, urlsplit
 from . import distribution
 
 OPTION_KEYS = ("sizes", "default_size", "ratios", "default_ratio", "durations",
-               "default_duration", "resolutions", "min_refs", "max_refs", "ref_mode")
+               "default_duration", "resolutions", "default_resolution", "max_video_refs", "min_refs", "max_refs", "ref_mode")
 TASK_KEYS = {"model", "kind", "provider", "tasks", "refs", "ref_slots", "ref_pick_mode",
              "size", "ratio", "duration", "resolution", "repeat", "concurrency",
-             "max_retry", "skip_existing", "out_dir"}
+             "max_retry", "skip_existing", "out_dir", "video_refs"}
 
 
 def catalog() -> list:
@@ -63,8 +63,10 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     if not isinstance(rows, list) or not rows:
         raise ValueError("至少填写一条任务")
 
-    def check_refs(refs):
-        if not isinstance(refs, list) or any(not isinstance(r, str) or not assets.readable(r) for r in refs):
+    def check_refs(refs, extensions=assets.OK_EXT):
+        from pathlib import Path
+        if not isinstance(refs, list) or any(not isinstance(r, str) or not assets.readable(r)
+                                            or Path(r).suffix.lower() not in extensions for r in refs):
             raise ValueError("参考图须通过本程序的图片或文件夹入口导入")
 
     shared = out.get("refs", [])
@@ -81,6 +83,14 @@ def prepare(raw: dict) -> tuple[dict, dict]:
             raise ValueError("提示词必须是文字")
         check_refs(row.get("refs", []))
     opts = item["options"]
+    videos = out.get("video_refs", [])
+    check_refs(videos, assets.VIDEO_EXT)
+    if videos and (item["kind"] != "video" or len(videos) > opts.get("max_video_refs", 0)):
+        raise ValueError("当前模型不支持该数量的参考视频")
+    if videos:
+        from .uploader import configured
+        if not configured(cfg.get("upload")) or cfg.get("upload", {}).get("backend") == "aicopy":
+            raise ValueError("发行包尚未配置参考视频上传服务，请联系管理员")
     for key, choices in (("size", "sizes"), ("ratio", "ratios"),
                          ("duration", "durations"), ("resolution", "resolutions")):
         value = out.get(key)

@@ -27,6 +27,9 @@ RELEASE_MODELS = [
     {"provider": "ake", "kind": "video", "model": "minimax_h3-768p", "label": "H3 768p"},
     {"provider": "ake", "kind": "video", "model": "grok-imagine-video-1.5（按次）", "label": "Grok 1.5（按次）"},
     {"provider": "aicopy", "kind": "video", "model": "sd2.0-720满血-不卡脸（按秒）", "label": "SD2.0 720 满血不卡脸（按秒）"},
+    {"provider": "aicopy", "kind": "video", "model": "sd2.5-720均衡版", "label": "SD2.5 720 均衡版"},
+    {"provider": "chaomo", "kind": "image", "model": "gpt-image-2-th", "label": "GPT Image 2 TH"},
+    {"provider": "chaomo", "kind": "image", "model": "gpt-image-2.5-th", "label": "GPT Image 2.5 TH"},
 ]
 
 
@@ -39,13 +42,16 @@ def make_profile(source: dict, preview: bool = False) -> dict:
     try:
         from core.providers.ake import AkeProvider
         from core.providers.aicopy import AicopyProvider
+        from core.providers.chaomo import ChaomoProvider
     finally:
         distribution.ENABLED, distribution.profile = old
     classes = {"ake": AkeProvider, "aicopy": AicopyProvider}
     cfg = source.get("config") or {}
     providers = cfg.get("providers") or {}
+    if "chaomo" in providers:
+        classes["chaomo"] = ChaomoProvider
     if set(providers) != set(classes):
-        raise ValueError("发行配置必须且只能包含阿珂 ake 和小裴 aicopy")
+        raise ValueError("发行配置须含 ake、aicopy，可另含 chaomo")
     clean_providers = {}
     for pid, cls in classes.items():
         key = providers[pid].get("api_key", "")
@@ -56,7 +62,7 @@ def make_profile(source: dict, preview: bool = False) -> dict:
     models = []
     selected = source.get("models")
     if selected is None:
-        selected = RELEASE_MODELS
+        selected = [r for r in RELEASE_MODELS if r["provider"] in classes]
     from core.release import OPTION_KEYS
     seen = set()
     for row in selected:
@@ -65,7 +71,7 @@ def make_profile(source: dict, preview: bool = False) -> dict:
             raise ValueError("模型清单含不支持的服务商、类型或空模型名")
         identity = (pid, kind, model)
         if identity not in {(r["provider"], r["kind"], r["model"]) for r in RELEASE_MODELS}:
-            raise ValueError("本发行版仅开放已确定的三个视频模型")
+            raise ValueError("本发行版仅开放已确定的模型")
         if identity in seen:
             raise ValueError("模型清单有重复项")
         seen.add(identity)
@@ -76,6 +82,9 @@ def make_profile(source: dict, preview: bool = False) -> dict:
         opts = {**caps, **caps.get("model_options", {}).get(model, {}), **row.get("options", {})}
         opts["ref_mode"] = "url" if provider.needs_url(model, kind) else provider.ref_mode
         opts = {k: v for k, v in opts.items() if k in OPTION_KEYS}
+        if pid == "chaomo" and kind == "image":
+            opts["resolutions"] = ["1K", "4K"]
+            opts["max_refs"] = None  # 用户要求取消超模图片本地张数拦截
         for key, choices in (("default_duration", "durations"), ("default_size", "sizes"),
                              ("default_ratio", "ratios")):
             if opts.get(choices) and opts.get(key) not in opts[choices]:
@@ -113,8 +122,8 @@ def make_profile(source: dict, preview: bool = False) -> dict:
     if not 1 <= defaults["concurrency"] <= 128 or not 0 <= defaults["max_retry"] <= 8:
         raise ValueError("并发须为 1–128，重试须为 0–8")
     return {"preview": preview, "models": models,
-            "private_names": ["阿珂", "小裴", "庄园", "AkeProvider", "AicopyProvider",
-                              "snumom.com", "api.aicopy.top", "api.aione.help"],
+            "private_names": ["阿珂", "小裴", "庄园", "超模", "AkeProvider", "AicopyProvider", "ChaomoProvider",
+                              "snumom.com", "api.aicopy.top", "api.aione.help", "zntcode.net", "chaomoapi.com"],
             "config": {"providers": clean_providers, "upload": upload, "defaults": defaults,
                        "limits": {"global": defaults["concurrency"], "per_provider": {}}}}
 
@@ -162,7 +171,7 @@ def stage_profile(profile: dict, reuse: str = "") -> Path:
     # 过滤规则本身的名称来自加密配置，不以明文常量留在运行模块中。
     for path in (stage / "core").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        for name in ("阿珂", "小裴", "庄园"):
+        for name in ("阿珂", "小裴", "庄园", "超模"):
             source = source.replace(name, "Respect")
         path.write_text(source, encoding="utf-8")
     page = render_page((ROOT / "web" / "index.html").read_text(encoding="utf-8"))

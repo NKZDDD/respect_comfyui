@@ -22,6 +22,8 @@ from . import paths
 # 只收图片。收别的没有意义 —— 参考图接口只认图，而一个 .docx 被当成参考图
 # 发出去，多半是"生成失败"或者更糟：服务商忽略它照样出图。
 OK_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+VIDEO_EXT = {".mp4", ".mov", ".webm"}
+MAX_VIDEO_BYTES = 200 * 1024 * 1024
 MAX_BYTES = 40 * 1024 * 1024
 
 _SAFE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
@@ -38,14 +40,18 @@ def save(data: bytes, filename: str) -> dict:
     """存一份拖进来的图，返回 `{path, name, size}`。同内容不重复存。"""
     name = _SAFE.sub("_", os.path.basename(filename or "")).strip(" .") or "ref"
     ext = os.path.splitext(name)[1].lower()
-    if ext not in OK_EXT:
+    if ext not in OK_EXT | VIDEO_EXT:
         raise ValueError(f"只收图片（{'、'.join(sorted(OK_EXT))}），这个是 {ext or '没有扩展名'}")
     if not data:
         raise ValueError(f"{name} 是个空文件 —— 空的参考图发出去不报错，"
                          f"服务商收到的是「有参考图」，实际什么都没有")
-    if len(data) > MAX_BYTES:
+    limit = MAX_VIDEO_BYTES if ext in VIDEO_EXT else MAX_BYTES
+    if ext in VIDEO_EXT and not ((ext in (".mp4", ".mov") and b"ftyp" in data[:32]) or
+                                (ext == ".webm" and data.startswith(b"\x1aE\xdf\xa3"))):
+        raise ValueError("参考视频内容与格式不符，请导入完整的 MP4、MOV 或 WebM")
+    if len(data) > limit:
         raise ValueError(f"{name} 有 {len(data) // 1024 // 1024}MB，超过 "
-                         f"{MAX_BYTES // 1024 // 1024}MB")
+                         f"{limit // 1024 // 1024}MB")
 
     h = hashlib.sha256(data).hexdigest()[:16]
     stem = os.path.splitext(name)[0][:40]

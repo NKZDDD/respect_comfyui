@@ -212,11 +212,11 @@ def test_preview_strips_supplied_credentials_and_never_runs(locked):
         release.prepare(request_spec(locked))
 
 
-def test_exactly_three_models_and_separate_upload_backends(locked):
+def test_video_models_and_separate_upload_backends(locked):
     from core import refs, uploader
     assert {(r["provider"], r["model"]) for r in locked["models"]} == {
         ("ake", "minimax_h3-768p"), ("ake", "grok-imagine-video-1.5（按次）"),
-        ("aicopy", "sd2.0-720满血-不卡脸（按秒）")}
+        ("aicopy", "sd2.0-720满血-不卡脸（按秒）"), ("aicopy", "sd2.5-720均衡版")}
     cfg = config.load()
     assert refs.upload_config(cfg, "ake")["secret_key"] == "TEST-STORAGE-SECRET"
     small = refs.upload_config(cfg, "aicopy")

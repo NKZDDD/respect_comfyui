@@ -255,6 +255,24 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
     return url
 
 
+def video_to_url(path: str, cfg: dict, log: Callable = print) -> str:
+    """Reference video bytes must never pass through image conversion or an image host."""
+    if path.startswith(("https://", "http://")):
+        return path
+    if not configured(cfg) or cfg.get("backend") == "aicopy":
+        raise ApiError("参考视频需要对象存储上传配置，图片图床不能用于视频。", kind=TASK_FATAL)
+    h = _sha(path, 0, "video")
+    hit = _cache_get("", h)
+    if hit:
+        return hit
+    key = (cfg.get("prefix") or "respect").strip("/") + "/video_" + h + os.path.splitext(path)[1].lower()
+    with open(path, "rb") as stream:
+        url = put(cfg, stream.read(), key)
+    _cache_put("", h, url)
+    log("参考视频已上传：" + os.path.basename(path))
+    return url
+
+
 # ---------------------------------------------------------------- 自检
 def selftest(cfg: dict, log: Callable = print) -> dict:
     """传一个小文件再用普通 HTTP 取回来，确认**服务商真的能读到**。

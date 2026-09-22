@@ -212,6 +212,7 @@
     <div class="drop" id="sharedDrop">把图拖进来，或者点这里选 —— 不用管文件路径</div>
     <div class="thumbs" id="sharedThumbs"></div>
     <div id="refWarn"></div>
+    <div id="videoRefSection" class="hide"><label>参考视频（本批共用，按顺序上传）</label><input id="videoPick" type="file" multiple accept=".mp4,.mov,.webm"><div id="videoRefList"></div><div class="hint">支持该功能的模型才会显示；视频通过对象存储上传。</div></div>
 
     <details id="folderSection">
       <summary>从文件夹分配参考图</summary>
@@ -330,6 +331,7 @@ let CAPS=[], CFG=null, TPLS=[], TIMER=null, LOGN=0;
 let RELEASE=false, PREVIEW=false;
 const SESSION='__RELEASE_SESSION__';
 const sessionHeaders=()=>SESSION.startsWith('__')?{}:{'X-Respect-Session':SESSION};
+let VIDEO_REFS=[];
 let SHARED=[];                 // 全批共用参考图 [{path,name}]
 let TASKS=[{prompt:'',refs:[]}];
 let PICK_TARGET=null;          // 文件选择框这次是给谁选的
@@ -435,6 +437,7 @@ function onKind(){
 function onModel(){
   drawParams();
   const c=cap(), b=block();
+  $('#videoRefSection').classList.toggle('hide', $('#kind').value!=='video'||!b.max_video_refs);
   const notes=[b.notes, c.notes].filter(Boolean).join('\n\n');
   $('#provNote').textContent=notes;
   $('#provNote').classList.toggle('hide', !notes);
@@ -474,6 +477,7 @@ function drawParams(){
   if(k==='image'){
     add('尺寸','p_size', b.sizes, b.default_size);
     add('比例','p_ratio', b.ratios, b.default_ratio);
+    add('清晰度','p_resolution', b.resolutions, b.default_resolution||'1K');
   }else{
     add('比例','p_ratio', b.ratios, b.default_ratio);
     add('时长（秒）','p_duration', b.durations, b.default_duration);
@@ -808,6 +812,7 @@ function buildSpec(){
           tasks: liveTasks().map(t=>({prompt:t.prompt.trim(),
                                       refs:t.refs.map(r=>r.path)})),
           refs: SHARED.map(r=>r.path),
+          video_refs: $('#kind').value==='video'&&block().max_video_refs ? VIDEO_REFS.map(r=>r.path) : [],
           ref_slots: LIBRARIES.map(pool=>pool.map(r=>r.path)),
           ref_pick_mode: $('#libraryMode').value,
           size:pv('p_size'), ratio:pv('p_ratio'),
@@ -904,6 +909,17 @@ $('#btnAdd').onclick=()=>{ TASKS.push({prompt:'',refs:[]}); render();
 $('#btnClear').onclick=()=>{ TASKS=[{prompt:'',refs:[]}]; render(); };
 $('#btnRun').onclick=startRun;
 $('#btnStop').onclick=()=>api('/api/cancel',{});
+function drawVideoRefs(){
+ const box=$('#videoRefList');box.innerHTML='';VIDEO_REFS.forEach((r,i)=>{const row=el('div','row');row.appendChild(el('span','',`${i+1}. ${r.name}`));const del=el('button','mini','移除');del.onclick=()=>{VIDEO_REFS.splice(i,1);drawVideoRefs();};row.appendChild(del);box.appendChild(row);});
+}
+$('#videoPick').onchange=async()=>{
+ for(const f of $('#videoPick').files){
+  if(VIDEO_REFS.length>=(block().max_video_refs||0)){toast('参考视频数量已到该模型上限');break;}
+  if(f.size>200*1024*1024){toast('参考视频不能超过 200MB');continue;}
+  const r=await fetch('/api/upload?name='+encodeURIComponent(f.name),{method:'POST',headers:sessionHeaders(),body:f});const d=await r.json();
+  if(d.ok){if(!VIDEO_REFS.some(v=>v.path===d.path))VIDEO_REFS.push({path:d.path,name:d.name});}else toast(d.msg);
+ }drawVideoRefs();$('#videoPick').value='';
+};
 $('#sharedDrop').onclick=()=>pickInto(SHARED);
 bindDrop($('#sharedDrop'), SHARED);
 $('#filePick').onchange=e=>{ if(PICK_TARGET && e.target.files.length)

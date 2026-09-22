@@ -77,9 +77,12 @@ def verify(exe: Path, isolated_copy: bool = False) -> dict:
         assert "api_key" not in data["config"]["providers"]["preset"]
         catalog = data["providers"][0]
         total = sum(len(catalog[k]["models"]) for k in catalog["supports"])
-        assert total == 3 and catalog["supports"] == ["video"]
+        assert total == 6 and catalog["supports"] == ["image", "video"]
         assert set(catalog["video"]["model_labels"].values()) == {
-            "H3 768p", "Grok 1.5（按次）", "SD2.0 720 满血不卡脸（按秒）"}
+            "H3 768p", "Grok 1.5（按次）", "SD2.0 720 满血不卡脸（按秒）", "SD2.5 720 均衡版"}
+        assert set(catalog["image"]["model_labels"].values()) == {"GPT Image 2 TH", "GPT Image 2.5 TH"}
+        assert all(o["resolutions"] == ["1K", "4K"] for o in catalog["image"]["model_options"].values())
+        assert 'id="videoRefSection"'.encode() in home
         if not data["preview"]:
             assert all(x["upload_ready"] for x in catalog["video"]["model_options"].values())
         checks.append("native_startup_encrypted_profile_and_web")
