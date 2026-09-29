@@ -12,13 +12,23 @@ from core.providers.chaomo import ChaomoProvider
 from tools.build_release import make_profile
 
 
-def test_sd25_balanced_keeps_video_references_and_sd25_duration():
+def test_sd25_balanced_uses_duration_and_bare_reference_arrays():
     p=AicopyProvider()
     assert branch_of('sd2.5-720均衡版')=='sd25'
-    _,body,_=p.build_video_body(VideoTask('test',model='sd2.5-720均衡版',duration=29,
-        refs=['https://fixture.invalid/a.png'],extra={'video_refs':['https://fixture.invalid/a.mp4']}))
-    assert body['seconds']==29
-    assert body['extra']['reference_videos']==[{'url':'https://fixture.invalid/a.mp4'}]
+    _,body,_=p.build_video_body(VideoTask(
+        'test', model='sd2.5-720均衡版', duration=20, ratio='9:16', resolution='720p',
+        refs=['https://fixture.invalid/a.png'] * 7,
+        extra={'video_refs': ['https://fixture.invalid/a.mp4']}))
+    assert body == {
+        'model': 'sd2.5-720均衡版', 'prompt': 'test', 'duration': 20,
+        'aspect_ratio': '9:16',
+        'images': ['https://fixture.invalid/a.png'] * 7,
+        'video_urls': ['https://fixture.invalid/a.mp4']}
+    _,one,_=p.build_video_body(VideoTask(
+        'one', model='sd2.5-720均衡版', duration=29,
+        refs=['https://fixture.invalid/a.png']))
+    assert one['duration'] == 29 and one['images'] == ['https://fixture.invalid/a.png']
+    assert 'input_reference' not in one and 'extra' not in one
 
 
 @pytest.mark.parametrize('resolution',['1K','4K'])

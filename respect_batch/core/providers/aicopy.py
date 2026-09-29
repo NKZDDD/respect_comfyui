@@ -45,6 +45,11 @@ IMAGE_MODELS = [
 #   参考视频/音频 → extra.reference_videos / reference_audios
 #   画幅 → extra.aspect_ratio
 #
+# 例外：`sd2.5-720均衡版` 不走这套包装。实测（2026-09-26，发行 Key）：
+# 顶层 `duration` + `aspect_ratio` + `images` / `audios` 可以提交；
+# 参考视频必须叫 `video_urls`。字段名写成 `videos` 会直接 HTTP 400
+# invalid_request「请求参数有误」，参考图有几张都一样。
+#
 # 仍按模型族保留的知识只剩两类（网关换协议也带不走的上游限制）：
 #   · 时长上限/固定值 —— 客户端先夹住，免得白跑一趟 400
 #   · 模式限制 —— 火山官方没有文生、900 只吃多参考、快乐马只要单图
@@ -309,6 +314,19 @@ class AicopyProvider(Provider):
                 status=0, kind="task_fatal")
 
         icap, vcap, acap = _ref_caps(model)
+        if model == "sd2.5-720均衡版":
+            # 文档 #6：分辨率锁在模型名里。页面上的 720p 只是展示，不能写进 body。
+            sec = _seconds_for(model, int(task.duration or 10))
+            body = {"model": model, "prompt": prompt, "duration": sec,
+                    "aspect_ratio": ratio}
+            if refs:
+                body["images"] = refs[:icap]
+            # 这家认 video_urls。写成 videos 会 400，和有没有参考图无关。
+            if vids:
+                body["video_urls"] = vids[:vcap]
+            if auds:
+                body["audios"] = auds[:acap]
+            return "/v1/videos", body, "/v1/videos/{id}"
         body = {"model": model, "prompt": prompt,
                 "seconds": _seconds_for(model, int(task.duration or 10))}
         extra = {}
@@ -336,7 +354,12 @@ class AicopyProvider(Provider):
                        poll_interval: int = 10, poll_timeout: int = 2400) -> dict:
         model = task.model or "sd2.0-720满血-不卡脸（按秒）"
         vpath, body, qpath = self.build_video_body(task)
-        log(f"小裴 {model}（{branch_of(model)} 族）→ POST {vpath}")
+        if model == "sd2.5-720均衡版":
+            log(f"小裴 {model}: duration={body['duration']} {body['aspect_ratio']} "
+                f"图{len(body.get('images') or [])} 视频{len(body.get('video_urls') or [])} "
+                f"音频{len(body.get('audios') or [])}")
+        else:
+            log(f"小裴 {model}（{branch_of(model)} 族）→ POST {vpath}")
         data = self.session.request("POST", vpath, json_body=body,
                                     retries=2, timeout=300)
         url = extract_video_url(data)
