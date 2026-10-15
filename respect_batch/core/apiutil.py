@@ -130,7 +130,9 @@ _CODE_RETRY = frozenset({
 def code_kind(err_code: str) -> str:
     """服务商给的机器码 → 三级分类。不认识返回空字符串。"""
     c = (err_code or "").strip().lower()
-    if c in _CODE_CONTENT:
+    # Polling failures arrive as HTTP 200; their ApiError status is 0.
+    # Parameter errors must not fall through to the status-0 retry rule.
+    if c in _CODE_CONTENT or c == "invalid_duration":
         return TASK_FATAL
     if c in _CODE_QUOTA or c in _CODE_AUTH:
         return BATCH_FATAL
