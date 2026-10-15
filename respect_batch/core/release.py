@@ -112,8 +112,10 @@ def prepare(raw: dict) -> tuple[dict, dict]:
             raise ValueError("发行包尚未配置图片上传服务，请联系管理员更新发行包")
     defaults = cfg["defaults"]
     out.update(provider=item["provider"], model=item["model"], kind=item["kind"])
-    out["concurrency"] = max(1, min(int(raw.get("concurrency") or defaults["concurrency"]),
-                                    defaults["concurrency"]))
+    out["concurrency"] = max(1, int(raw.get("concurrency") or defaults["concurrency"]))
+    # 发行默认值只负责预填。单批运行时，全局闸门跟随用户选的并发，
+    # 避免线程池已经放开、实际调用仍被封装时的 4 路挡住。
+    cfg.setdefault("limits", {})["global"] = out["concurrency"]
     out["max_retry"] = max(0, min(int(raw.get("max_retry", defaults["max_retry"])), defaults["max_retry"]))
     out["repeat"] = max(1, min(int(raw.get("repeat") or 1), 500))
     for key in ("timeout", "skip_existing", "out_dir"):

@@ -65,6 +65,9 @@ def verify(exe: Path, isolated_copy: bool = False) -> dict:
                 return exc.code, exc.read()
         status, home = request("")
         assert status == 200 and b'<body class="distribution">' in home
+        concurrency_input = re.search(rb'<input\b[^>]*\bid="conc"[^>]*>', home)
+        assert concurrency_input and not re.search(rb'\smax=', concurrency_input.group())
+        checks.append("concurrency_input_has_no_fixed_maximum")
         assert 'Respect 创作服务'.encode() in home and not marker.exists()
         assert not (exe.parent / 'web').exists()
         assert all(term.encode() not in home for term in (

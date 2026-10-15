@@ -21,6 +21,8 @@ class UserPage(HTMLParser):
             return
         if tag == "body":
             self.output.append('<body class="distribution"><input type="hidden" id="prov" value="preset">')
+        elif tag == "input" and attrs.get("id") == "conc":
+            self.output.append(re.sub(r'\smax="[^"]*"', "", self.get_starttag_text()))
         else:
             self.output.append(self.get_starttag_text())
 

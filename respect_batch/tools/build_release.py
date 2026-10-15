@@ -119,8 +119,8 @@ def make_profile(source: dict, preview: bool = False) -> dict:
     for k in ("concurrency", "max_retry", "timeout", "poll_timeout_image", "poll_timeout_video"):
         if k in cfg.get("defaults", {}):
             defaults[k] = int(cfg["defaults"][k])
-    if not 1 <= defaults["concurrency"] <= 128 or not 0 <= defaults["max_retry"] <= 8:
-        raise ValueError("并发须为 1–128，重试须为 0–8")
+    if defaults["concurrency"] < 1 or not 0 <= defaults["max_retry"] <= 8:
+        raise ValueError("并发须为正整数，重试须为 0–8")
     return {"preview": preview, "models": models,
             "private_names": ["阿珂", "小裴", "庄园", "超模", "AkeProvider", "AicopyProvider", "ChaomoProvider",
                               "snumom.com", "api.aicopy.top", "api.aione.help", "zntcode.net", "chaomoapi.com"],

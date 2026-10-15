@@ -56,8 +56,10 @@ def test_release_rejects_routing_overrides_before_build(locked, monkeypatch, fie
         batch.start(raw, {})
 
 
-def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch):
+@pytest.mark.parametrize("concurrency", [1, 8])
+def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch, concurrency):
     seen = []
+    barrier = threading.Barrier(concurrency)
     class Fake:
         name = "测试模型"
         def capabilities(self):
@@ -69,6 +71,7 @@ def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch)
         def accepts_url(self, *a):
             return False
         def generate_video(self, task, dest, **kw):
+            barrier.wait(timeout=3)
             seen.append(task.model)
             kw["log"]("小裴 api.aicopy.top 阿珂 snumom.com https://cdn.invalid/result.mp4")
             Path(dest).write_bytes(b"test" * 200)
@@ -80,13 +83,14 @@ def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch)
         return Fake()
     monkeypatch.setattr(providers, "build", build)
     raw = request_spec(locked)
-    raw.update(out_dir=str(tmp_path / "out"), repeat=3)
+    count = max(3, concurrency)
+    raw.update(out_dir=str(tmp_path / "out"), repeat=count, concurrency=concurrency, max_retry=0)
     run = batch.start(raw, {"providers": {"aicopy": {"api_key": "UNTRUSTED"}}})
     end = time.monotonic() + 5
     while run.status in ("排队中", "跑批中") and time.monotonic() < end:
         time.sleep(.02)
-    assert run.counts()["完成"] == 3
-    assert seen == ["sd2.0-720满血-不卡脸（按秒）"] * 3
+    assert run.counts()["完成"] == count
+    assert seen == ["sd2.0-720满血-不卡脸（按秒）"] * count
     run.write_manifest()
     manifest = Path(run.manifest_path).read_text(encoding="utf-8")
     logs = Path(run.log_path).read_text(encoding="utf-8")
@@ -284,8 +288,30 @@ def test_release_page_contains_only_user_functions(locked):
     page = distribution.page().decode()
     assert 'id="model"' in page and 'id="folderSection"' in page
     assert '<input type="hidden" id="prov" value="preset">' in page
+    from html.parser import HTMLParser
+    class Inputs(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "input" and attrs.get("id") == "conc":
+                self.concurrency = attrs
+    inputs = Inputs()
+    inputs.feed(page)
+    assert inputs.concurrency["min"] == "1"
+    assert "max" not in inputs.concurrency
     assert all(term not in page for term in ('data-admin>', 'id="tab-set"', 'id="up_secret_key"',
                'api/config', 'api/import_studio', 'api/models', 'applyTemplate', '庄园', '阿珂', '小裴'))
+
+
+@pytest.mark.parametrize("requested", [None, 1, 8, 150])
+def test_release_concurrency_follows_user_input(locked, requested):
+    raw = request_spec(locked)
+    if requested is not None:
+        raw["concurrency"] = requested
+    spec, cfg = release.prepare(raw)
+    expected = requested or 4
+    assert spec["concurrency"] == expected
+    assert cfg["limits"]["global"] == expected
+    assert config.load()["defaults"]["concurrency"] == 4
 
 
 def test_release_upload_cache_keeps_urls_in_memory_only(locked, monkeypatch, tmp_path):
