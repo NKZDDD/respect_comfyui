@@ -76,3 +76,9 @@ produce-cinematic-ai-short-drama*/
 releases/
 *_build_2*/
 *.zip
+
+# 本机一次性缓存维护脚本和清理记录，保留在本地。
+/cache-*-20261004.json
+/cache_*_20261004.ps1
+/cache_process_check_20261004.py
+/缓存清理记录-20261004.md
