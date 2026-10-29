@@ -214,7 +214,7 @@ def verify_output(profile: dict, bundle: Path, name: str, onefile: bool = False)
     return report
 
 
-def main() -> None:
+def legacy_main() -> None:
     ap = argparse.ArgumentParser(description="构建阿珂 + 小裴三个固定模型的本地加固发行版")
     ap.add_argument("--profile", type=Path, default=ROOT / "release-profile.example.json")
     ap.add_argument("--preview", action="store_true", help="允许缺密钥，生成不可调用的预览包")
@@ -249,6 +249,12 @@ def main() -> None:
     bundle = out / "release_main.dist"
     report = verify_output(profile, bundle, name, onefile=args.onefile)
     print(f"构建完成：{report['exe']}", flush=True)
+
+
+def main():
+    # New public builds never read a private profile; old helpers support regression tests only.
+    from tools.build_managed import main as build_managed
+    build_managed()
 
 
 if __name__ == "__main__":

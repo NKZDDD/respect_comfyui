@@ -203,7 +203,7 @@ def extract_task_id(data: Any) -> str:
     if isinstance(inner, dict):
         scopes.append(inner)
     for scope in scopes:
-        for k in ("id", "task_id", "video_id"):
+        for k in ("id", "task_id", "video_id", "taskId", "taskid"):
             v = scope.get(k)
             if isinstance(v, (str, int)) and str(v):
                 return str(v)
@@ -793,6 +793,12 @@ class HttpSession:
     def request(self, method: str, path: str, *, json_body: Any = None, params: Any = None,
                 files: Any = None, raw_body: Any = None, headers: Optional[dict] = None,
                 retries: int = 3, timeout: Optional[int] = None) -> Any:
+        from . import managed_usage
+        tracked = (managed_usage.active() and method.upper() == 'POST'
+                   and 'upload' not in path.lower() and path.rstrip('/') != '/api/multimodal/get_result')
+        if tracked:
+            retries = 1  # Outer worker owns any confirmed-failure retry; uncertain POST is never replayed.
+            managed_usage.begin()
         url = path if path.startswith("http") else self.base_url + path
         last: Optional[Exception] = None
         for attempt in range(max(1, retries)):
@@ -804,8 +810,11 @@ class HttpSession:
                     method, url, headers=request_headers,
                     json=json_body, data=raw_body, params=params, files=files,
                     timeout=timeout or self.timeout, proxies=self._proxies(),
+                    allow_redirects=not managed_usage.active(),
                 )
                 if resp.status_code >= 400:
+                    if tracked:
+                        managed_usage.failed_request(resp.status_code)
                     if not resp.encoding or resp.encoding.lower() in ("iso-8859-1", "latin-1"):
                         resp.encoding = "utf-8"
                     body = resp.text[:400]
@@ -824,17 +833,27 @@ class HttpSession:
                 err = _body_error(data)
                 if err:
                     kind = classify(200, err)
+                    if tracked:
+                        managed_usage.note('failed' if kind in (TASK_FATAL, BATCH_FATAL) else 'unknown')
                     if kind == BATCH_FATAL:
                         raise ApiError(f"接口返回错误: {err[:400]}", 200, kind)
+                if not err:
+                    managed_usage.response('POST' if tracked else 'GET', data)
                 return data
             except ApiError:
                 raise
             except requests.RequestException as exc:
+                if tracked:
+                    managed_usage.failed_request()
                 last = exc
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt)
                     continue
                 raise ApiError(f"网络错误: {exc}", 0, RETRYABLE) from exc
+            except ValueError:
+                if tracked:
+                    managed_usage.failed_request()
+                raise
         raise ApiError(f"网络错误: {last}", 0, RETRYABLE)
 
     def poll(self, path_tpl: str, task_id: str, *, picker, interval: int = 8,

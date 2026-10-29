@@ -51,7 +51,7 @@ class Task:
     __slots__ = ("idx", "kind", "provider", "model", "prompt", "refs", "dest",
                  "size", "ratio", "duration", "resolution", "extra",
                  "status", "error", "error_kind", "meta", "started", "ended",
-                 "attempts")
+                 "attempts", "usage")
 
     def __init__(self, idx: int, kind: str, provider: str, model: str, prompt: str,
                  refs_: list, dest: str, *, size: str = "", ratio: str = "",
@@ -68,6 +68,7 @@ class Task:
         self.meta: dict = {}
         self.started = self.ended = 0.0
         self.attempts = 0
+        self.usage = None
 
     def row(self) -> dict:
         return {"idx": self.idx, "kind": self.kind, "provider": self.provider,
@@ -75,6 +76,7 @@ class Task:
                 "refs": self.refs, "dest": self.dest, "status": self.status,
                 "error": self.error, "error_kind": self.error_kind,
                 "attempts": self.attempts, "meta": self.meta,
+                "usage": self.usage,
                 "seconds": round((self.ended or time.time()) - self.started, 1)
                 if self.started else 0}
 
@@ -191,6 +193,7 @@ class Run:
         self.tasks = tasks
         self.spec = spec
         self.cfg = cfg
+        self._private_profile = distribution.profile() if distribution.ENABLED else None
         self.status = "排队中"
         self.message = ""
         # 整批致命是否已触发。**它不能直接把 status 改成终态** ——
@@ -208,7 +211,7 @@ class Run:
 
     # -- 日志 ---------------------------------------------------------
     def log(self, text: str, idx: int = 0) -> None:
-        text = release.redact(text)
+        text = release.redact(text, self._private_profile)
         row = {"t": time.strftime("%H:%M:%S"), "idx": idx, "text": str(text)}
         with self._lock:
             self.logs.append(row)
@@ -242,17 +245,18 @@ class Run:
         with self._lock:
             logs = self.logs[max(0, log_from):]
             total_logs = len(self.logs)
-        return {"id": self.id, "status": self.status, "message": self.message,
+        return release.redact({"id": self.id, "status": self.status, "message": self.message,
                 "counts": self.counts(), "tasks": [t.row() for t in self.tasks],
                 "logs": logs, "log_total": total_logs,
                 "gate": GATE.snapshot(),
                 "seconds": round((self.ended or time.time()) - self.started, 1),
                 "manifest": self.manifest_path,
-                "out_dir": os.path.dirname(self.tasks[0].dest) if self.tasks else ""}
+                "out_dir": os.path.dirname(self.tasks[0].dest) if self.tasks else ""}, self._private_profile)
 
     def write_manifest(self) -> None:
-        write_json(self.manifest_path, {
+        write_json(self.manifest_path, release.redact({
             "id": self.id, "status": self.status, "message": self.message,
+            "account_id": self.cfg.get('_usage', {}).get('owner', ''),
             # spec 里不落 lines（可能几百行）和任何凭据
             # tasks/lines 不落：每条的提示词和参考图在下面 tasks 里已经有了，
             # 重复一份只会让 manifest 大一倍。凭据更是一个字都不能落。
@@ -262,7 +266,7 @@ class Run:
             "seconds": round((self.ended or time.time()) - self.started, 1),
             "counts": self.counts(),
             "tasks": [t.row() for t in self.tasks],
-        })
+        }, self._private_profile))
 
 
 def _dispatch(prov, task: Task, run: Run, log: Callable, resolved: list) -> dict:
@@ -285,6 +289,21 @@ def _dispatch(prov, task: Task, run: Run, log: Callable, resolved: list) -> dict
     return prov.generate_video(
         t, task.dest, log=log, cancel=run.cancelled,
         poll_timeout=int(run.spec.get("poll_timeout") or 2400)) or {}
+
+
+def _tracked_dispatch(prov, task, run, log, resolved):
+    from . import managed, managed_usage
+    assignment = run.cfg.get('_usage')
+    if assignment:
+        try:
+            managed.manager.authorize_task(assignment)
+        except managed.LoginRequired as exc:
+            task.status = '未发'
+            raise ApiError(str(exc), kind=BATCH_FATAL) from None
+    with managed_usage.tracking(assignment, task):
+        result = _dispatch(prov, task, run, log, resolved)
+        task.meta = result or {}
+        return result
 
 
 def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> None:
@@ -319,6 +338,13 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
             return
         try:
             # 参考图解析放在重试圈**里面**：上传失败也是可重试的技术失败
+            if run.cfg.get('_usage'):
+                from . import managed
+                try:
+                    managed.manager.authorize_task(run.cfg['_usage'])
+                except managed.LoginRequired as exc:
+                    task.status = '未发'
+                    raise ApiError(str(exc), kind=BATCH_FATAL) from None
             resolved = [resolve(r, log) for r in task.refs]
 
             with GATE.slot(task.provider):
@@ -332,10 +358,10 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
                             run.spec.get("base_url") or "",
                             run.spec.get("proxy") or "",
                             int(run.spec.get("timeout") or 900))
-                        meta = _dispatch(p, task, run, log, resolved)
+                        meta = _tracked_dispatch(p, task, run, log, resolved)
                         accounts.bump(task.provider, acct.label)
                 else:
-                    meta = _dispatch(prov, task, run, log, resolved)
+                    meta = _tracked_dispatch(prov, task, run, log, resolved)
 
             task.meta = meta or {}
             task.status = "完成"
@@ -346,9 +372,16 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
 
         except ApiError as exc:
             task.error, task.error_kind = str(exc), exc.kind
+            if task.usage and task.usage['status'] in ('pending', 'unknown'):
+                task.status = '失败'
+                task.ended = time.time()
+                task.error = '结果待确认，未自动重新生成。请按任务记录核对；' + str(exc)
+                log(f'[{task.idx}] {task.error}')
+                return
             if exc.kind == BATCH_FATAL:
                 # 整批性质的（余额没了、密钥失效）：剩下的挨个去撞没有意义
-                task.status = "失败"
+                if task.status != '未发':
+                    task.status = "失败"
                 task.ended = time.time()
                 run.stopped = True
                 run.message = f"整批停止：{exc}"

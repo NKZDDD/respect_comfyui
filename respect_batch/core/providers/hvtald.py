@@ -545,9 +545,12 @@ class HvtaldProvider(Provider):
 
         log(f"HVTALD 投递 actionId={aid} 参考图{len(body['imgs'])}张 prompt={body['prompt'][:40]}…")
         url = self.session.base_url.rstrip("/") + API_PATH
+        from .. import managed_usage
+        managed_usage.begin()
         try:
             r = requests.post(url, json=body, timeout=self._timeout)
         except Exception as exc:                            # noqa: BLE001
+            managed_usage.failed_request()
             raise ApiError(f"HVTALD 投递发不出去（{url}）：{exc}")
         # **别直接 r.json()。** 网关这一刻没起来、被前置拦了、或者返回
         # 一个 HTML 页面时，抛出来的是
@@ -559,6 +562,7 @@ class HvtaldProvider(Provider):
         try:
             data = r.json()
         except Exception:                                    # noqa: BLE001
+            managed_usage.failed_request(r.status_code)
             head = raw[:300].replace(chr(10), " ")
             raise ApiError(
                 f"HVTALD 投递回了非 JSON（{url}）：HTTP {r.status_code}，"
@@ -569,9 +573,11 @@ class HvtaldProvider(Provider):
                         "base_url 填错了，填的不是接口地址）"),
                 status=r.status_code, kind="retryable")
         if int(data.get("code", 0)) != 200:
+            managed_usage.note('failed')
             raise ApiError(f"HVTALD 投递被拒：{str(data)[:300]}"
                            f"（检查 deviceId/token，以及线路是否还有余量）")
         aid = str(data.get("actionId") or aid)
+        managed_usage.note('submitted', aid)
         log(f"HVTALD 已插入任务：{data.get('msg', '')} actionId={aid}")
 
         got = self._wait(aid, poll_interval, poll_timeout, log=log, cancel=cancel)

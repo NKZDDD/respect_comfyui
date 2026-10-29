@@ -3,6 +3,7 @@
 没有运行时环境变量、配置文件或命令行开关可以将发行版切回开发版。
 """
 ENABLED = False
+MANAGED = False
 
 
 def profile() -> dict:

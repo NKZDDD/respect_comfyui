@@ -123,7 +123,7 @@ def _builtin_names() -> list:
     退回意味着「新加的内置文件如果没写进 _BUILTIN_ORDER 就会被漏掉」，
     这件事必须说出来，不能悄悄少一家。
     """
-    if distribution.ENABLED:
+    if distribution.ENABLED and not getattr(distribution, 'MANAGED', False):
         return [pid for pid in _BUILTIN_ORDER if pid in distribution.profile()["config"]["providers"]]
     here = os.path.dirname(os.path.abspath(__file__))
     names = sorted(m.name for m in pkgutil.iter_modules([here])

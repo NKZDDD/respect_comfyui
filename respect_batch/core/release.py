@@ -55,6 +55,8 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     if item is None or raw.get("kind", item["kind"]) != item["kind"]:
         raise ValueError("这个模型不在发行版开放清单中")
     cfg = config.load()
+    if item.get('route'):
+        cfg['providers'][item['provider']] = copy.deepcopy(item['route'])
     pc = cfg["providers"][item["provider"]]
     if not pc.get("api_key"):
         raise ValueError("这是待配置的预览版，请联系管理员提供正式发行包")
@@ -89,6 +91,8 @@ def prepare(raw: dict) -> tuple[dict, dict]:
         raise ValueError("当前模型不支持该数量的参考视频")
     if videos:
         from .uploader import configured
+        if cfg.get('upload', {}).get('backend') == 'managed':
+            raise ValueError('当前后台上传只支持参考图片和音频，暂不支持参考视频')
         if not configured(cfg.get("upload")) or cfg.get("upload", {}).get("backend") == "aicopy":
             raise ValueError("发行包尚未配置参考视频上传服务，请联系管理员")
     for key, choices in (("size", "sizes"), ("ratio", "ratios"),
@@ -109,7 +113,7 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     if (shared or pool_count or any(r.get("refs") for r in rows)) and opts.get("ref_mode") == "url":
         from .uploader import configured
         if not configured(refs.upload_config(cfg, item["provider"])):
-            raise ValueError("发行包尚未配置图片上传服务，请联系管理员更新发行包")
+            raise ValueError("尚未配置图片上传服务，请联系管理员分配 R2 上传授权")
     defaults = cfg["defaults"]
     out.update(provider=item["provider"], model=item["model"], kind=item["kind"])
     out["concurrency"] = max(1, int(raw.get("concurrency") or defaults["concurrency"]))
@@ -121,20 +125,23 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     for key in ("timeout", "skip_existing", "out_dir"):
         out.setdefault(key, defaults[key])
     out["poll_timeout"] = defaults["poll_timeout_image" if item["kind"] == "image" else "poll_timeout_video"]
+    if cfg['providers'][item['provider']].get('_usage'):
+        cfg['_usage'] = copy.deepcopy(cfg['providers'][item['provider']]['_usage'])
     return out, cfg
 
 
-def redact(value):
+def redact(value, profile=None):
     """输出到页面和记录前，隐藏凭据、上游标识和原始响应。"""
     if not distribution.ENABLED:
         return value
-    profile = distribution.profile()
-    secrets = [p.get("api_key", "") for p in profile["config"]["providers"].values()]
+    profile = profile or distribution.profile()
+    routes = list(profile['config']['providers'].values()) + [m['route'] for m in profile['models'] if m.get('route')]
+    secrets = [p.get("api_key", "") for p in routes]
     upload = profile["config"].get("upload", {})
     secrets += [upload.get(k, "") for k in ("access_key", "secret_key")]
     private_names = set(profile.get("private_names", []))
     private_names.update(profile["config"]["providers"])
-    for pc in [upload, *profile["config"]["providers"].values()]:
+    for pc in [upload, *routes]:
         for key in ("endpoint", "public_base_url", "base_url"):
             host = urlsplit(pc.get(key, "")).hostname
             if host:
@@ -143,7 +150,7 @@ def redact(value):
     hidden_fields = {"api_key", "access_key", "secret_key", "proxy", "base_url",
                      "endpoint", "public_base_url", "bucket", "region", "meta",
                      "source", "raw", "response", "headers", "authorization",
-                     "per_provider_limit", "per_provider_inflight"}
+                     "per_provider_limit", "per_provider_inflight", "_usage", "route"}
 
     user_fields = {"prompt", "path", "dest", "manifest", "out_dir", "refs", "ref_slots", "name"}
 

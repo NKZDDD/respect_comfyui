@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (accounts, assets, batch, config, distribution, paths, providers,
-               release, templates, uploader, model_catalog)
+               release, templates, uploader, model_catalog, managed)
 
 # 当前这一次跑批。**故意只留一个**：并发在批内部，不在批之间。
 # 允许同时开几批的话，三层闸还是全局的，两批会互相抢槽，
@@ -45,11 +45,13 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---------------------------------------------------------------- 基础
-    def _send(self, code: int, body: bytes, ctype: str) -> None:
+    def _send(self, code: int, body: bytes, ctype: str, cookie: str = '') -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if cookie:
+            self.send_header('Set-Cookie', cookie)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -68,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         port = self.server.server_port
         hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        def deny(message):
+        def deny(message, code=403):
             # Windows 在关闭仍有未读请求体的连接时会发 RST，吞掉 403 响应。
             # 只排空有界的小请求，不解析或执行被拒绝的内容。
             if post:
@@ -82,18 +84,33 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 finally:
                     self.connection.settimeout(previous_timeout)
-            self._err(message, 403)
+            self._err(message, code)
             return False
         if (self.headers.get("Host") not in hosts or
                 self.headers.get("Origin") not in (None, *[f"http://{h}" for h in hosts])):
             return deny("请从本程序打开的页面操作")
         allowed = ({"/api/upload", "/api/start", "/api/cancel", "/api/pick_dir", "/api/open"}
                    if post else {"/", "/index.html", "/api/boot", "/api/run", "/api/file"})
+        if managed.enabled():
+            allowed |= ({'/api/auth/login', '/api/auth/logout', '/api/auth/refresh'} if post else {'/api/auth/status'})
         if distribution.ENABLED and route not in allowed:
             return deny("发行版未开放此功能")
         if (post or route in ("/api/boot", "/api/run")) and not secrets.compare_digest(
                 self.headers.get("X-Respect-Session", ""), _SESSION):
             return deny("页面已失效，请重新打开程序页面")
+        if managed.enabled() and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status'):
+            try:
+                # Logout still works when offline; refresh can recover an expired grant.
+                if route in ('/api/auth/logout', '/api/auth/refresh'):
+                    if not managed.manager.matches(self.headers.get('Cookie')):
+                        raise managed.LoginRequired()
+                else:
+                    managed.manager.require(self.headers.get('Cookie'), force=route == '/api/start')
+                current = _RUN['cur']
+                if route in ('/api/run', '/api/cancel', '/api/open') and current and current.cfg.get('_usage', {}).get('owner') != (managed.manager.user or {}).get('id'):
+                    raise managed.LoginRequired('该批次属于另一个账号，请切回原账号查看', 'run_owner_mismatch', 403)
+            except managed.LoginRequired as exc:
+                return deny(str(exc), exc.status)
         return True
 
     def _body(self) -> dict:
@@ -104,6 +121,8 @@ class Handler(BaseHTTPRequestHandler):
         提示词（明明写着），怎么都查不到是请求根本没送到。
         """
         n = int(self.headers.get("Content-Length") or 0)
+        if n < 0 or n > 8 * 1024 * 1024:
+            raise ValueError('请求内容过大')
         if not n:
             return {}
         raw = self.rfile.read(n)
@@ -123,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._release_access(u.path):
             return
         try:
+            if u.path == '/api/auth/status' and managed.enabled():
+                return self._ok(managed.manager.status(self.headers.get('Cookie')))
             if u.path in ("/", "/index.html"):
                 if distribution.ENABLED:
                     page = distribution.page().replace(b"__RELEASE_SESSION__", _SESSION.encode())
@@ -200,6 +221,26 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._err(str(exc), 400)
         try:
+            if managed.enabled() and u.path.startswith('/api/auth/'):
+                with _LOCK:
+                    if u.path != '/api/auth/login' and not managed.manager.matches(self.headers.get('Cookie')):
+                        raise managed.LoginRequired()
+                    current = _RUN['cur']
+                    if current and current.status in ('跑批中', '排队中'):
+                        raise ValueError('请先停止新任务并等待当前批次收尾，再刷新配置或切换账号')
+                    if u.path == '/api/auth/login':
+                        token = managed.manager.login(body)
+                        _RUN['cur'] = None
+                        return self._send(200, _json_bytes({'ok': True}), 'application/json; charset=utf-8',
+                            f'{managed.COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/')
+                    if u.path == '/api/auth/refresh':
+                        managed.manager.verify(refresh_models=True)
+                        return self._ok({'ok': True})
+                    if u.path == '/api/auth/logout':
+                        managed.manager.logout(self.headers.get('Cookie'))
+                        _RUN['cur'] = None
+                        return self._send(200, _json_bytes({'ok': True}), 'application/json; charset=utf-8',
+                            f'{managed.COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0')
             if u.path == "/api/config":
                 cfg = config.apply_from_page(config.load(), body.get("config") or {})
                 config.save(cfg)
@@ -263,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if u.path == "/api/start":
                 with _LOCK:
+                    if managed.enabled():
+                        managed.manager.require(self.headers.get('Cookie'))
                     cur = _RUN["cur"]
                     if cur and cur.status in ("跑批中", "排队中"):
                         return self._ok({"ok": False,
@@ -311,6 +354,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ok({"ok": True})
 
             return self._err("没有这个地址", 404)
+        except managed.LoginRequired as exc:
+            return self._err(str(exc), exc.status)
         except ValueError as exc:
             return self._err(str(exc), 400)
         except Exception as exc:                            # noqa: BLE001

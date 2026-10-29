@@ -44,6 +44,8 @@ _FATAL_WORDS = ("NoSuchBucket", "InvalidAccessKeyId", "SignatureDoesNotMatch",
 
 def configured(cfg: Optional[dict]) -> bool:
     cfg = cfg or {}
+    if cfg.get('backend') == 'managed':
+        return cfg.get('enabled') is True and bool(cfg.get('revision'))
     if cfg.get("backend") == "aicopy":
         return bool(cfg.get("api_key"))
     return bool((cfg.get("bucket") or "").strip()
@@ -217,6 +219,29 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
     """
     if not os.path.isfile(path):
         raise ApiError(f"参考图文件不存在: {path}")
+    if cfg.get('backend') == 'managed':
+        from . import managed
+        import requests
+        from urllib.parse import urlsplit
+        if not configured(cfg):
+            raise ApiError('账号尚未获参考图上传权限，请在后台分配 R2 授权', kind=TASK_FATAL)
+        data, mime, _, _ = encode_ref(path, max_side=max_side, fmt=fmt)
+        if len(data) > 25 * 1024 * 1024:
+            raise ApiError('参考图超过后台上传限制，请缩小图片', kind=TASK_FATAL)
+        ticket = managed.manager.storage_ticket(cfg, data, mime)
+        url, public = ticket.get('upload_url', ''), ticket.get('public_url', '')
+        if any(urlsplit(v).scheme != 'https' or not urlsplit(v).hostname for v in (url, public)):
+            raise ApiError('后台未返回有效上传授权', kind=TASK_FATAL)
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.put(url, data=data, headers={'Content-Type': mime}, timeout=(10, 120), allow_redirects=False)
+            if response.status_code not in (200, 201, 204):
+                raise ApiError(f'参考图上传失败（HTTP {response.status_code}）', kind=TASK_FATAL)
+        except requests.RequestException:
+            raise ApiError('参考图上传连接失败，请重试') from None
+        log('参考图上传完成')
+        return public
     if cfg.get("backend") == "aicopy":
         return _aicopy_url(path, cfg, max_side, fmt, log)
     if not configured(cfg):
