@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (accounts, assets, batch, config, distribution, paths, providers,
-               release, templates, uploader, model_catalog, managed)
+               release, templates, uploader, model_catalog, managed, updates)
 
 # 当前这一次跑批。**故意只留一个**：并发在批内部，不在批之间。
 # 允许同时开几批的话，三层闸还是全局的，两批会互相抢槽，
@@ -93,12 +93,13 @@ class Handler(BaseHTTPRequestHandler):
                    if post else {"/", "/index.html", "/api/boot", "/api/run", "/api/file"})
         if managed.enabled():
             allowed |= ({'/api/auth/login', '/api/auth/logout', '/api/auth/refresh'} if post else {'/api/auth/status'})
+            allowed |= ({'/api/updates/check', '/api/updates/download', '/api/updates/install'} if post else {'/api/updates/status'})
         if distribution.ENABLED and route not in allowed:
             return deny("发行版未开放此功能")
         if (post or route in ("/api/boot", "/api/run")) and not secrets.compare_digest(
                 self.headers.get("X-Respect-Session", ""), _SESSION):
             return deny("页面已失效，请重新打开程序页面")
-        if managed.enabled() and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status'):
+        if managed.enabled() and not route.startswith('/api/updates/') and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status'):
             try:
                 # Logout still works when offline; refresh can recover an expired grant.
                 if route in ('/api/auth/logout', '/api/auth/refresh'):
@@ -142,6 +143,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._release_access(u.path):
             return
         try:
+            if u.path == '/api/updates/status' and managed.enabled():
+                return self._ok({'ok': True, **updates.manager.status()})
             if u.path == '/api/auth/status' and managed.enabled():
                 return self._ok(managed.manager.status(self.headers.get('Cookie')))
             if u.path in ("/", "/index.html"):
@@ -221,6 +224,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._err(str(exc), 400)
         try:
+            if managed.enabled() and u.path.startswith('/api/updates/'):
+                if u.path == '/api/updates/check':
+                    return self._ok({'ok': True, **updates.manager.check()})
+                if u.path == '/api/updates/download':
+                    return self._ok({'ok': True, **updates.manager.download()})
+                if u.path == '/api/updates/install':
+                    with _LOCK:
+                        return self._ok({'ok': True, **updates.manager.install(_RUN['cur'])})
             if managed.enabled() and u.path.startswith('/api/auth/'):
                 with _LOCK:
                     if u.path != '/api/auth/login' and not managed.manager.matches(self.headers.get('Cookie')):
@@ -305,6 +316,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/start":
                 with _LOCK:
                     if managed.enabled():
+                        if updates.manager.status()['phase'] == 'installing':
+                            raise ValueError('正在安装更新，请等待程序重新启动')
                         managed.manager.require(self.headers.get('Cookie'))
                     cur = _RUN["cur"]
                     if cur and cur.status in ("跑批中", "排队中"):

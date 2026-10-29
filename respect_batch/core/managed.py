@@ -14,7 +14,7 @@ import requests
 from . import distribution, paths, managed_usage
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.10.29.1'
+VERSION = '2026.10.29.2'
 COOKIE = 'respect_batch_login'
 
 
@@ -40,7 +40,8 @@ def build_headers():
             digest = hashlib.file_digest(fp, 'sha256').hexdigest()
         if data['version'] != VERSION or data['sha256'] != digest:
             raise ValueError()
-        return {'X-Studio-Flavor': 'batch', 'X-Studio-Version': VERSION, 'X-Studio-Build': digest}
+        return {'X-Studio-Flavor': 'batch', 'X-Studio-Version': VERSION, 'X-Studio-Build': digest,
+                'X-Respect-Application': 'batch'}
     except (OSError, ValueError, KeyError, TypeError):
         raise LoginRequired('批量程序版本文件缺失或校验失败，请重新下载安装', 'client_unregistered', 426) from None
 

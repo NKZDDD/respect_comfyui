@@ -19,7 +19,8 @@ def page():
     text = render((ROOT / 'web/index.html').read_text(encoding='utf-8')).decode('utf-8')
     if text.count('\nboot();') != 1:
         raise ValueError('发行页面启动入口已变化，请更新构建器')
-    text = text.replace('\nboot();', '\n' + (ROOT / 'web/managed.js').read_text(encoding='utf-8'))
+    scripts = '\n'.join((ROOT / 'web' / name).read_text(encoding='utf-8') for name in ('managed.js', 'updates.js'))
+    text = text.replace('\nboot();', '\n' + scripts)
     return text.encode('utf-8')
 
 
@@ -38,7 +39,7 @@ def stage(target):
 def manifests(exe, destination):
     digest = hashlib.sha256(exe.read_bytes()).hexdigest()
     build = dict(version=VERSION, exe=exe.name, sha256=digest)
-    registration = dict(version=VERSION, flavor='batch', build_sha256=digest)
+    registration = dict(version=VERSION, application='batch', flavor='batch', build_sha256=digest)
     for name, data in [('batch-build.json', build), ('batch-registration.json', registration)]:
         (destination / name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     return registration
