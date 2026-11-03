@@ -58,6 +58,7 @@ def test_download_checks_real_bytes_and_refuses_redirects(sandbox,monkeypatch,bo
 
 def test_check_targets_batch_and_supports_login_blocked_update(sandbox,monkeypatch):
     import json
+    monkeypatch.setattr(managed,'VERSION','2026.10.29.2')  # Older than this test's fixed release fixture.
     row=release()
     response=dict(application='batch',policy_protocol=1,client={'allowed':False,'code':'update_required'},release=row)
     calls=network(monkeypatch,Response(json.dumps(response).encode()))

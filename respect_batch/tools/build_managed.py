@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import subprocess
 import sys
 import uuid
@@ -62,12 +63,18 @@ def main():
     env.setdefault('CFLAGS', '-O1')
     (root / 'temp').mkdir(exist_ok=True)
     env['TEMP'] = env['TMP'] = str(root / 'temp')
+    # This Python runtime loads a companion trust-policy file when creating any
+    # SSLContext. Nuitka includes certifi but does not discover this stdlib data.
+    # Preserve the runtime's policy rather than disabling certificate checks.
+    trust_policy = Path(ssl.__file__).with_name('codex-rejected-cas.pem')
+    ssl_data = ([f'--include-data-files={trust_policy}=codex-rejected-cas.pem']
+                if trust_policy.is_file() else [])
     subprocess.run([sys.executable, '-m', 'nuitka', '--mode=onefile', '--onefile-no-dll',
         '--mingw64', '--assume-yes-for-downloads', '--enable-plugin=tk-inter', '--include-package=core',
         # Managed uploads use HTTPS signatures; the S3 credential SDK is not used in this build.
         '--nofollow-import-to=pytest,numpy,matplotlib,boto3,botocore', '--python-flag=isolated', '--python-flag=no_site',
         '--windows-console-mode=force', '--lto=no', f'--jobs={max(1,args.jobs)}',
-        f'--output-dir={root / "compiled"}', '--output-filename=RespectBatch-User.exe', 'release_main.py'],
+        f'--output-dir={root / "compiled"}', '--output-filename=RespectBatch-User.exe', *ssl_data, 'release_main.py'],
         cwd=source, env=env, check=True)
     exe = root / 'compiled/RespectBatch-User.exe'
     if not exe.is_file() or exe.stat().st_size < 1024:
