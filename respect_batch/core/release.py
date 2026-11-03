@@ -57,6 +57,8 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     cfg = config.load()
     if item.get('route'):
         cfg['providers'][item['provider']] = copy.deepcopy(item['route'])
+    if item.get('adapter_sha256'):
+        cfg['_adapter_sha256'] = item['adapter_sha256']
     pc = cfg["providers"][item["provider"]]
     if not pc.get("api_key"):
         raise ValueError("这是待配置的预览版，请联系管理员提供正式发行包")
@@ -98,6 +100,9 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     for key, choices in (("size", "sizes"), ("ratio", "ratios"),
                          ("duration", "durations"), ("resolution", "resolutions")):
         value = out.get(key)
+        if value in (None, "", 0) and opts.get(choices):
+            value = opts.get('default_' + key) or opts[choices][0]
+            out[key] = value
         if value not in (None, "", 0) and (key not in ("duration",) and not isinstance(value, str)):
             raise ValueError("模型参数格式不正确")
         if value not in (None, "", 0) and str(value) not in [str(v) for v in opts.get(choices, [])]:
@@ -150,7 +155,7 @@ def redact(value, profile=None):
     hidden_fields = {"api_key", "access_key", "secret_key", "proxy", "base_url",
                      "endpoint", "public_base_url", "bucket", "region", "meta",
                      "source", "raw", "response", "headers", "authorization",
-                     "per_provider_limit", "per_provider_inflight", "_usage", "route"}
+                     "per_provider_limit", "per_provider_inflight", "_usage", "route", "adapter_sha256", "_adapter_sha256"}
 
     user_fields = {"prompt", "path", "dest", "manifest", "out_dir", "refs", "ref_slots", "name"}
 

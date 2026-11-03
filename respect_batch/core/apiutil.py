@@ -9,13 +9,38 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
 import time
+from contextlib import contextmanager
 from typing import Any, Optional
 
 import requests
 
-DONE_STATES = ("completed", "succeeded", "success", "done", "finished", "complete", "generated")
+from . import submitted
+
+# 完成词。**多收几个同义词是有价值的**，不只是靠下面那支兜底：
+# 认出「完成」之后还有一步 —— 完成了但响应里没给地址时，会去打
+# `content_path_tpl` 那个下载端点；而走兜底那支是拿不到这一步的。
+DONE_STATES = ("completed", "succeeded", "success", "done", "finished", "complete",
+               "generated", "succeed", "successful", "finish")
 FAIL_STATES = ("failed", "cancelled", "canceled", "error", "fail")
+# 「还在跑」的说法。**这张表存在的理由是第四种情况：状态词我们不认识。**
+#
+# 原来只有完成和失败两张表，认不出的词一律当成「还没好」—— 于是
+# **结果地址已经拿在手里了，却接着睡到超时**：服务商平台上显示完成，
+# studio 这边还在等。而等满之后报的是「任务超时」，人会去查线路、查服务商，
+# 查不到任何东西，因为那条任务早就好了。
+#
+# 现在分三类：认识的「在跑」→ 接着等（哪怕响应里有地址，那多半是回显的
+# 输入图或预览）；认识的完成/失败 → 照旧；**认不出的 → 当作没有状态**，
+# 手上有结果就收下，并且在日志里点名那个词，好补进这张表。
+RUNNING_STATES = (
+    "queued", "pending", "processing", "in_progress", "in-progress", "inprogress",
+    "running", "waiting", "created", "submitted", "start", "starting",
+    "generating", "uploading", "preparing", "init", "initializing",
+    "progress", "incomplete", "not_start", "notstart", "doing", "active",
+    "accepted", "scheduled", "retrying",
+)
 MEDIA_VIDEO = (".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi")
 MEDIA_IMAGE = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 URL_KEYS = ("url", "video_url", "download_url", "file_url", "result_url", "image_url")
@@ -141,6 +166,27 @@ def code_kind(err_code: str) -> str:
     return ""
 
 
+# 「这个**模型**不行」和「这个**账户**不行」是两回事，而它们共用状态码。
+#
+# 实遇（2026-09-14，超模）：一个账号按能力分四把 Key，**每把能看见的模型完全
+# 不重叠**（一把只有 gpt-image-1k-th，另一把只有 2.5 那六个＋Native 三个）。
+# 拿错 Key 槽去发某个模型，回的是：
+#     403 {"message": "model gpt-image-1k-th is not available for this API key"}
+# 而 403 原来一律判 BATCH_FATAL —— **立即熔断整批**，几百条任务当场停，
+# 报错还写着「账户问题」，人会跑去充值。而真相只是模型选错了/Key 槽用错了。
+#
+# 反向也有一条：`404 model not found` 原来落到 RETRYABLE（0/404 那一档），
+# 于是模型名打错会同参重发，每次撞同一堵墙 —— 而巨轮那家的名字带空格和
+# 全角括号，打错是常事。
+#
+# 两条都归 TASK_FATAL：这一条做不成，但别的任务和账户都是好的。
+_MODEL_LEVEL = re.compile(
+    r"model[^\n]{0,80}(is )?not (available|found|supported|exist)"
+    r"|not (available|permitted) for this api key"
+    r"|模型[^\n]{0,20}(不存在|不可用|无权|没有权限)"
+    r"|无权使用[^\n]{0,20}模型", re.I)
+
+
 def classify(status: int, text: str = "", err_code: str = "") -> str:
     """把 HTTP 状态 + 服务商错误码 + 响应体分成三级。
 
@@ -152,6 +198,10 @@ def classify(status: int, text: str = "", err_code: str = "") -> str:
     if by_code:
         return by_code
     low = (text or "").lower()
+    # **模型级的要排在账户级前面。** 两者共用 403（见 _MODEL_LEVEL 的说明）：
+    # 「这把 Key 用不了这个模型」熔断整批是错的 —— 别的模型和账户都好好的。
+    if _MODEL_LEVEL.search(text or ""):
+        return TASK_FATAL
     if status in (401, 402, 403):
         return BATCH_FATAL
     if status == 429 and _TRANSIENT.search(text or ""):
@@ -303,6 +353,28 @@ def _dig(node: Any, keys: tuple, depth: int = 4) -> str:
     return ""
 
 
+def never_sent(exc: BaseException) -> bool:
+    """这个网络错误能不能确定请求根本没到服务商（没连上、域名解析失败、握手失败）。
+
+    读超时、连接中途断开、回了 200 但正文不是 JSON，都说明服务商已经收到了 ——
+    对提交来说，这时它可能已经建好任务、开始计费。
+    """
+    if isinstance(exc, (requests.ConnectTimeout, requests.exceptions.SSLError,
+                        requests.exceptions.ProxyError)):
+        return True
+    if isinstance(exc, requests.ConnectionError) and not isinstance(exc, requests.Timeout):
+        text = repr(exc)
+        return any(s in text for s in ("NewConnectionError", "NameResolutionError",
+                                       "Failed to establish a new connection", "getaddrinfo"))
+    return False
+
+
+def submit_uncertain(why: str, status: int = 0) -> "ApiError":
+    return ApiError(f"提交后没有收到服务商的明确回复（{why}）。服务商那边可能已经建好任务、开始计费；"
+                    f"为避免重复扣费，这条不自动重发。请先到服务商后台核对：已经生成的取回放到输出位置，"
+                    f"确认没有生成再重跑这一段。", status, TASK_FATAL, err_code="submit_uncertain")
+
+
 def task_failed(data: Any) -> "ApiError":
     """轮询到「任务失败」→ 一个**保留了结构**的异常。
 
@@ -324,14 +396,44 @@ def task_failed(data: Any) -> "ApiError":
         code = ""
     head = msg or json.dumps(data, ensure_ascii=False)[:400]
     tail = f"（服务商错误码：{code}）" if code else ""
-    return ApiError(f"任务失败：{head}{tail}", 0, err_code=code)
+    exc = ApiError(f"任务失败：{head}{tail}", 0, err_code=code)
+    exc.task_finished = True
+    exc.provider_task_failed = True
+    return exc
 
 
 def extract_video_url(data: Any) -> str:
-    """媒体后缀优先，API /content 端点垫底。"""
+    """响应里哪一个是**成片**。挑不出来就返回空 —— 空的意思是「还没有」。
+
+    ⚠ 这里**不是「随便挑一个 URL」**，那正是以前的写法，而它有一种很贵的
+    错法：服务商在任务还没跑完时**把我们传进去的参数原样回显**
+    （`inputs: [{"image_url": "…/ref_first_frame.png"}]` 是最常见的形状）。
+    于是「响应里有 URL」在还没出片时就已经成立了，而后面一路没人拦得住：
+    `save_item` 把那张 png 下载成 `out.mp4`，大小正常，
+    `_incomplete_image` 的结尾标记表里只有 .png/.jpg、**.mp4 直接放行** ——
+    一张参考图就这么被当成片收下、任务标 ok，到拼接那步才出事。
+
+    所以现在**图片样的一律不算成片**：后缀是图片的、或者键名是 `image_url`
+    这种明摆着是图的，直接排除。排除干净之后没剩下的就返回空，
+    轮询那边会接着等 —— 这比挑一个错的强得多。
+    """
     found: list = []
     _collect_urls(data, found)
     if not found:
+        return ""
+    # 图片键。**video 结果里出现它一定不是成片**，是回显的参考图。
+    picture_keys = ("image_url", "image", "images", "reference_image",
+                    "first_frame", "last_frame", "cover", "thumbnail",
+                    "preview", "poster", "snapshot")
+    ok = []
+    for key, url in found:
+        base = url.split("?", 1)[0].lower()
+        if base.endswith(MEDIA_IMAGE):
+            continue                       # 图片后缀：肯定不是成片
+        if str(key).lower() in picture_keys:
+            continue                       # 键名就写着是图 / 封面 / 预览
+        ok.append((key, url))
+    if not ok:
         return ""
 
     def rank(item):
@@ -346,8 +448,8 @@ def extract_video_url(data: Any) -> str:
             score += 50
         return score
 
-    found.sort(key=rank)
-    return found[0][1]
+    ok.sort(key=rank)
+    return ok[0][1]
 
 
 def data_array_images(data: Any) -> list:
@@ -461,8 +563,8 @@ def extract_image_items(data: Any) -> list:
 # 是 682x1024，只剩 44% 的像素；2048x2048 的资产只剩 25%。参考图是喂给模型
 # 的身份和构图来源，缩掉一半而没人选过这件事。
 #
-# 现在只有**这一家自己声明要**的时候才动（`ref_max_side` / `ref_format`），
-# 而且动了必须在日志里说出来。声明缺失 = 不动，不是「猜一个安全值」。
+# 2026-10-09：用户要求所有上传参考图兼容 10 MB 限制。默认预算 9.5 MB，
+# 以下仍原样发送；超过只生成上传副本。声明的尺寸/格式限制继续生效，改动写日志。
 REF_KEEP = 0                    # max_side 传这个 = 不缩
 
 
@@ -477,11 +579,11 @@ def _alpha(path: str) -> bool:
 
 
 def encode_ref(path: str, max_side: int = REF_KEEP, quality: int = 80,
-               fmt: str = "") -> tuple:
+               fmt: str = "", max_bytes: int = 9_500_000) -> tuple:
     """本地图片 → `(字节, mime, 扩展名, 说明)`。
 
-    `max_side <= 0` 且 `fmt` 为空 = **原样读、原样发**，一个字节都不改。
-    这是默认。只有这一家声明了上限或指定了格式，才会重新编码。
+    未指定尺寸/格式且低于 max_bytes 时原样发送；超限只重编码上传副本。
+    原素材永远不覆盖。默认预算 9.5 MB，兼容常见的 10 MB 文件上限。
 
     **说明不是可选的。** 改过就要在日志里看得见 —— 出来的脸不像时，
     第一件要排除的就是「是不是我们把参考图改小了」，而那件事以前只有
@@ -495,6 +597,10 @@ def encode_ref(path: str, max_side: int = REF_KEEP, quality: int = 80,
     if max_side <= 0 and not fmt:
         with open(path, "rb") as f:
             raw = f.read()
+        from .reference_images import limit_bytes
+        bounded, bounded_mime, bounded_ext, bounded_note = limit_bytes(raw, max_bytes)
+        if bounded_note:
+            return bounded, bounded_mime, bounded_ext, bounded_note
         mime = mimetypes.guess_type(path)[0] or "image/png"
         note = "原样（未改）"
         if _alpha(path):
@@ -508,11 +614,7 @@ def encode_ref(path: str, max_side: int = REF_KEEP, quality: int = 80,
     except ImportError:
         # 这一家声明了要改，而我们改不了。**不能装作改过了** ——
         # 原样发过去撞上限时报的是别的错，方向完全跑偏。
-        with open(path, "rb") as f:
-            raw = f.read()
-        return (raw, mimetypes.guess_type(path)[0] or "image/png", ext,
-                f"这一家要求改（上限 {max_side or '—'} / 格式 {fmt or '—'}），"
-                f"但没装 Pillow，只能原样发")
+        raise ApiError('缺少 Pillow，无法按服务商要求准备参考图；请使用完整安装包', kind=TASK_FATAL)
 
     img = Image.open(path)
     w, h = img.size
@@ -533,7 +635,9 @@ def encode_ref(path: str, max_side: int = REF_KEEP, quality: int = 80,
              **({"quality": quality} if out_fmt == "JPEG" else {}))
     ext2 = ".jpg" if out_fmt == "JPEG" else ("." + out_fmt.lower())
     mime2 = "image/jpeg" if out_fmt == "JPEG" else f"image/{out_fmt.lower()}"
-    return buf.getvalue(), mime2, ext2, ("；".join(bits) or f"{w}x{h} 原尺寸")
+    from .reference_images import limit_bytes
+    bounded, bounded_mime, bounded_ext, bounded_note = limit_bytes(buf.getvalue(), max_bytes, required_format=fmt)
+    return bounded, bounded_mime or mime2, bounded_ext or ext2, (bounded_note or "；".join(bits) or f"{w}x{h} 原尺寸")
 
 
 def file_to_data_uri(path: str, max_side: int = REF_KEEP, quality: int = 80,
@@ -629,14 +733,73 @@ _END_MARK = {".png": b"IEND" + bytes([0xAE, 0x42, 0x60, 0x82]),
              ".jpeg": bytes([0xFF, 0xD9])}
 
 
-def _incomplete_image(dest: str) -> str:
+# 文件头认种类。**这是最后一道，也是唯一不依赖任何一方说法的那道** ——
+# 前面每一道判断都建立在「服务商说的」之上（状态词、Content-Length、
+# 它自己声明的宽高），只有这一道看的是**真的拿到了什么**。
+#
+# 要防的那件事很具体：一张图被当成片存成 `out.mp4`。大小正常、
+# 结尾标记那道对 .mp4 不适用（表里只有 .png/.jpg），于是一路放行到拼接才炸。
+_ISO_BOXES = (b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide")
+_PNG_HEAD = bytes((0x89, 0x50, 0x4E, 0x47))
+_JPG_HEAD = bytes((0xFF, 0xD8, 0xFF))
+_EBML_HEAD = bytes((0x1A, 0x45, 0xDF, 0xA3))
+
+
+def _looks_like(head: bytes, ext: str) -> bool:
+    """文件头像不像这个扩展名该有的样子。认不出的扩展名一律放行。"""
+    if ext in (".mp4", ".mov", ".m4v"):
+        # ISO BMFF：第一个 box 的类型在 4..8。老文件也可能直接以 moov/mdat 开头，
+        # 所以在前 16 字节里找，别只认偏移 4。
+        return any(b in head[:16] for b in _ISO_BOXES)
+    if ext in (".webm", ".mkv"):
+        return head.startswith(_EBML_HEAD)
+    if ext == ".avi":
+        return head.startswith(b"RIFF") and b"AVI " in head[:16]
+    if ext == ".png":
+        return head.startswith(_PNG_HEAD)
+    if ext in (".jpg", ".jpeg"):
+        return head.startswith(_JPG_HEAD)
+    if ext == ".webp":
+        return head.startswith(b"RIFF") and b"WEBP" in head[:16]
+    if ext == ".gif":
+        return head.startswith(b"GIF8")
+    return True
+
+
+def _wrong_kind(dest: str, *, extension: Optional[str] = None) -> str:
+    """存下来的东西和扩展名对不上 → 一句人话；对得上返回空。"""
+    ext = extension if extension is not None else os.path.splitext(dest)[1].lower()
+    try:
+        with open(dest, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return ""
+    if _looks_like(head, ext):
+        return ""
+    # 认出常见的几种「这根本不是媒体文件」，直接说是什么，别让人去猜
+    if head.startswith(_PNG_HEAD) or head.startswith(_JPG_HEAD):
+        what = "一张图片"
+    elif head[:1] in (b"{", b"["):
+        what = "一段 JSON（多半是服务商的错误响应）"
+    elif head[:1] == b"<":
+        what = "一个 HTML 页面（多半是登录页或错误页）"
+    else:
+        what = f"认不出的内容（开头是 {head[:16]!r}）"
+    return (f"存下来的东西不是 {ext} —— 实际是{what}。"
+            f"大小和下载过程都正常，所以前面每一道都放行了；"
+            f"**这一道看的是文件本身**。"
+            f"收下的话它会被当成做好了：视频那一格照样标 ok，"
+            f"到拼接成片那一步才炸，而那时已经隔了几十条任务。")
+
+
+def _incomplete_image(dest: str, *, extension: Optional[str] = None) -> str:
     """这个图片文件是不是只有一半。是的话返回一句人话，否则空字符串。
 
-    只查收尾标记，不解码整张图 —— 一批几百张，每张都用 Pillow 打开太慢，
-    而截断的表现恰恰就是「结尾没了」，查标记足够准。
-    认不出的扩展名（视频、webp 等）一律放过：宁可漏，不可误杀。
+    这里只快速查收尾标记；中段损坏由 _check_saved 随后的完整解码拦住。
+    没有固定收尾标记的格式交给后续检查。
     """
-    mark = _END_MARK.get(os.path.splitext(dest)[1].lower())
+    ext = extension if extension is not None else os.path.splitext(dest)[1].lower()
+    mark = _END_MARK.get(ext)
     if not mark:
         return ""
     try:
@@ -673,7 +836,61 @@ def _field_cap(src: str) -> int:
     return 0
 
 
-def _check_saved(dest: str, src: str) -> None:
+@contextmanager
+def _atomic_output(dest: str):
+    """每个写入独占临时文件；调用方校验通过后才原子发布到最终路径。"""
+    folder = os.path.dirname(os.path.abspath(dest))
+    os.makedirs(folder, exist_ok=True)
+    # 不能共用 dest + '.part'：同名任务重叠时会互相截断、混写和删除。
+    fd, part = tempfile.mkstemp(prefix=".result-", suffix=".part", dir=folder)
+    os.close(fd)
+    try:
+        yield part
+        os.replace(part, dest)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+
+
+def _normalize_result_image(path: str, dest: str, log) -> None:
+    """Convert a complete image to the contract's file format; never rename raw JPEG to PNG."""
+    target = {'.png': 'PNG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.webp': 'WEBP'}.get(os.path.splitext(dest)[1].lower())
+    if not target:
+        return
+    from PIL import Image, UnidentifiedImageError
+    try:
+        opened = Image.open(path)
+    except (UnidentifiedImageError, OSError, ValueError):
+        return  # 未能识别的文件交给原有类型/残图检查，保留已有错误诊断。
+    try:
+        with opened as source:
+            actual = source.format
+            if actual == target or actual not in ('PNG', 'JPEG', 'WEBP'):
+                return
+            source.verify()
+        with Image.open(path) as source:
+            source.load()
+            if getattr(source, 'n_frames', 1) > 1:
+                raise ValueError('不自动压平多帧图片')
+            pixels = source.copy()
+        if target in ('PNG', 'WEBP') and pixels.mode == 'CMYK':
+            pixels = pixels.convert('RGB')
+        if target == 'JPEG' and pixels.mode not in ('RGB', 'L'):
+            if 'A' in pixels.getbands():
+                bg = Image.new('RGB', pixels.size, 'white')
+                bg.paste(pixels, mask=pixels.getchannel('A'))
+                pixels = bg
+            else:
+                pixels = pixels.convert('RGB')
+        pixels.save(path, format=target, **({'quality': 95} if target == 'JPEG' else {}))
+        log(f'服务商返回 {actual}，已转为目标 {target}，像素尺寸保持 {pixels.width}×{pixels.height}')
+    except UnidentifiedImageError:
+        return  # 原有文件类型检查会报告 HTML/JSON/无效内容。
+    except Exception as exc:
+        raise ApiError(f'结果图片格式转换或完整性检查失败：{exc}', kind=RETRYABLE, err_code='result_invalid') from exc
+
+
+def _check_saved(dest: str, src: str, *, extension: Optional[str] = None) -> None:
     """落盘之后验一遍。**0 字节的文件是最坏的一种失败。**
 
     它不报错：文件建出来了，注册表记成 generated，比例检查量不出尺寸
@@ -688,8 +905,30 @@ def _check_saved(dest: str, src: str) -> None:
     except OSError as exc:
         raise ApiError(f"结果文件没能落盘：{dest}（{exc}）") from exc
     if n >= MIN_BYTES:
-        bad = _incomplete_image(dest)
+        ext = extension if extension is not None else os.path.splitext(dest)[1].lower()
+        wrong = _wrong_kind(dest, extension=ext)
+        if wrong:
+            os.remove(dest)     # 必须删：留着下次 isfile 为真，这一条永远被跳过
+            raise ApiError(wrong + chr(10) + f"来源：{src}", 0, RETRYABLE)
+        bad = _incomplete_image(dest, extension=ext)
         if not bad:
+            if ext in MEDIA_IMAGE:
+                from PIL import Image
+                try:
+                    # verify 检查 PNG 块校验和；load 检查压缩数据和全部像素。
+                    # 头尾和总字节数都正常的混写图片也必须拒收。
+                    with Image.open(dest) as im:
+                        im.verify()
+                    with Image.open(dest) as im:
+                        for frame in range(getattr(im, "n_frames", 1)):
+                            im.seek(frame)
+                            im.load()
+                except Exception as exc:
+                    os.remove(dest)
+                    raise ApiError(
+                        f"结果图片完整性检查失败（{n} 字节）：{exc}。"
+                        f"没有保存为完成结果。\n来源：{src}",
+                        kind=RETRYABLE, err_code="result_invalid") from exc
             return
         os.remove(dest)     # 同样必须删：留着下次会被当成「已经做过了」跳过
         # **内嵌数据被截在一个整数长度上 = 这条线路的字段上限，重试没有意义。**
@@ -765,9 +1004,30 @@ class HttpSession:
         self.base_url = (base_url or "").strip().rstrip("/")
         self.timeout = timeout
         self.proxy = (proxy or "").strip()
+        self.result_source_bytes = {}
         # 鉴权头的形状：绝大多数网关是 Bearer，但「智」（zhi168）用 X-API-Key。
         # 服务商在 __init__ 里改这个属性就行，默认不动。
         self.auth_style = "bearer"
+
+    def _download_headers(self) -> dict:
+        """**取成品用的头，和调 JSON 接口的头不是同一份。**
+
+        `_headers()` 里有 `Accept: application/json` 和 `Content-Type: application/json`。
+        拿它去 GET 一个视频/图片是自相矛盾的：一边说「我只收 JSON」，
+        一边等着对方回二进制；而 GET 带 Content-Type 本身就不合常理，
+        网关和 WAF 有拒的。
+
+        实遇 2026-09-07（云会画 ai.yunhuiart.cn）：`/v1/videos/{id}/content`
+        用 JSON 那份头去请求，回 502
+        `{"code":"artifact_request_rejected","message":"Artifact redirect was rejected"}`。
+        而它文档里的官方示例只带一个 Authorization —— 那份能用。
+
+        鉴权照旧带（很多家的 /content 是要鉴权的代理，比如小霸龙）。
+        """
+        auth = ({"X-API-Key": self.api_key} if self.auth_style == "x-api-key"
+                else {"Authorization": f"Bearer {self.api_key}"})
+        return {**auth, "Accept": "*/*",
+                "User-Agent": "ScriptToVideoRunner/2.0"}
 
     def _headers(self, multipart: bool = False) -> dict:
         auth = ({"X-API-Key": self.api_key} if self.auth_style == "x-api-key"
@@ -792,15 +1052,22 @@ class HttpSession:
 
     def request(self, method: str, path: str, *, json_body: Any = None, params: Any = None,
                 files: Any = None, raw_body: Any = None, headers: Optional[dict] = None,
-                retries: int = 3, timeout: Optional[int] = None) -> Any:
-        from . import managed_usage
-        tracked = (managed_usage.active() and method.upper() == 'POST'
-                   and 'upload' not in path.lower() and path.rstrip('/') != '/api/multimodal/get_result')
-        if tracked:
-            retries = 1  # Outer worker owns any confirmed-failure retry; uncertain POST is never replayed.
-            managed_usage.begin()
+                retries: int = 3, timeout: Optional[int] = None,
+                submit: Optional[bool] = None) -> Any:
+        """`submit` 默认按上下文判断：生产一个输出、还没拿到任务号时的 POST 就是提交。
+        提交之前的上传之类要显式传 `submit=False`，否则上传超时也会被当成提交不确定。
+        """
         url = path if path.startswith("http") else self.base_url + path
         last: Optional[Exception] = None
+        if submit is None:
+            submit = (method.upper() == "POST" and submitted.submitting()
+                      and 'upload' not in path.lower()
+                      and path.rstrip('/') != '/api/multimodal/get_result')
+        from . import managed_usage, distribution
+        tracked = managed_usage.active() and submit
+        if tracked:
+            retries = 1
+            managed_usage.begin_request()
         for attempt in range(max(1, retries)):
             try:
                 request_headers = self._headers(multipart=bool(files))
@@ -810,7 +1077,8 @@ class HttpSession:
                     method, url, headers=request_headers,
                     json=json_body, data=raw_body, params=params, files=files,
                     timeout=timeout or self.timeout, proxies=self._proxies(),
-                    allow_redirects=not managed_usage.active(),
+                    allow_redirects=not (managed_usage.active() or
+                        (distribution.ENABLED and getattr(distribution, 'MANAGED', False))),
                 )
                 if resp.status_code >= 400:
                     if tracked:
@@ -822,6 +1090,8 @@ class HttpSession:
                     # 账户级问题（余额/密钥）立刻抛，不浪费重试次数
                     if kind == BATCH_FATAL:
                         raise ApiError(f"HTTP {resp.status_code}: {body}", resp.status_code, kind)
+                    if kind == RETRYABLE and submit and resp.status_code != 429:
+                        raise submit_uncertain(f"HTTP {resp.status_code}：{body[:200]}", resp.status_code)
                     if kind == RETRYABLE and attempt < retries - 1:
                         wait = _retry_after(resp) or (2 ** attempt)
                         time.sleep(min(wait, 30))
@@ -846,6 +1116,8 @@ class HttpSession:
                 if tracked:
                     managed_usage.failed_request()
                 last = exc
+                if submit and not never_sent(exc):
+                    raise submit_uncertain(f"{type(exc).__name__}：{exc}") from exc
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt)
                     continue
@@ -859,14 +1131,34 @@ class HttpSession:
     def poll(self, path_tpl: str, task_id: str, *, picker, interval: int = 8,
              timeout: int = 1800, content_path_tpl: str = "", log=print, cancel=None) -> Any:
         """轮询直到完成。picker(data) 提取结果；cancel() 返回 True 时中止。"""
+        submitted.remember(task_id, path=path_tpl, content=content_path_tpl,
+                           picker=getattr(picker, "__name__", ""))
         start, last_status = time.time(), ""
+        # 连续同样失败的计数。**查询一直报错时别拖满超时** ——
+        # 端点或参数不对是每次都一样的错，等 30 分钟不会等出不同结果，
+        # 而这段时间里那条任务在服务商那边可能早就跑完了。
+        # （Gate 那家单独写轮询时就踩过这一课，这里补给所有走通用器的家。）
+        fails, last_fail = 0, ""
         while time.time() - start < timeout:
             if cancel and cancel():
                 raise ApiError("用户已取消")
             try:
                 data = self.request("GET", path_tpl.format(id=task_id), retries=1, timeout=60)
+                fails, last_fail = 0, ""
             except ApiError as exc:
-                log(f"轮询错误(继续): {exc}")
+                fails += 1
+                if str(exc) == last_fail and fails >= 5:
+                    stop = ApiError(
+                        f"查询任务连续 {fails} 次同样失败，不再等下去：{exc}"
+                        f"（任务 {task_id} 可能在服务商那边已经跑完了 —— "
+                        f"这类错每次都一样，多半是查询端点或参数不对，"
+                        f"等满 {timeout} 秒也不会变）",
+                        status=0, kind=TASK_FATAL)
+                    # 连续 404 = 服务商那边没有这条任务，续查不会再有结果。
+                    stop.task_finished = getattr(exc, "status", 0) == 404
+                    raise stop from exc
+                last_fail = str(exc)
+                log(f"轮询错误(继续，第 {fails} 次): {exc}")
                 time.sleep(interval)
                 continue
             status = extract_status(data)
@@ -877,7 +1169,14 @@ class HttpSession:
             if status in FAIL_STATES:
                 raise task_failed(data)
             done = status in DONE_STATES
-            if got and (not status or done):
+            # 认不出的状态词**不算「还在跑」**，见 RUNNING_STATES 的注释。
+            unknown = bool(status) and not done and status not in RUNNING_STATES
+            if got and unknown:
+                log(f"⚠️ 状态词 `{status}` 我们不认识 —— 但结果已经拿到了，"
+                    f"按完成收下。（认不出就接着等的话，会一直等到超时，"
+                    f"而任务其实早就好了。把这个词补进 apiutil 的 "
+                    f"DONE_STATES / RUNNING_STATES，下次就不用靠这一支兜底。）")
+            if got and (not status or done or unknown):
                 return got
             if done and content_path_tpl:
                 got = picker(self.request("GET", content_path_tpl.format(id=task_id),
@@ -888,10 +1187,23 @@ class HttpSession:
             if done:
                 raise ApiError(f"任务完成但未取到结果: {task_id}")
             time.sleep(interval)
-        raise ApiError(f"任务超时({timeout}s): {task_id}")
+        # **把最后看到的状态词写进报错。** 只说「超时」的话，
+        # 「服务商那边明明显示完成了」这种情况完全没有线索可查 ——
+        # 而状态词就是线索：它要么是个我们没收录的完成词，
+        # 要么说明查的根本不是同一条任务。
+        raise ApiError(
+            f"任务超时({timeout}s): {task_id}"
+            + (f"，最后一次查到的状态是 `{last_status}`" if last_status
+               else "，整个过程中一个状态字段都没读到")
+            + (f"（这个词不在已知的完成/失败/进行中里 —— "
+               f"服务商那边如果显示已完成，多半就是它没被认出来）"
+               if last_status and last_status not in DONE_STATES
+               and last_status not in FAIL_STATES
+               and last_status not in RUNNING_STATES else ""),
+            status=0, kind=RETRYABLE)
 
-    def save_item(self, item: str, dest: str, retries: int = 3) -> str:
-        """结果（http / data URI / 裸base64）落盘。落完必须验一遍大小。
+    def save_item(self, item: str, dest: str, retries: int = 3, *, log=None) -> str:
+        """结果（http / data URI / 裸base64）暂存、校验，再原子发布。
 
         **http 的取空了要重取。** 不少家的任务状态先翻成「成功」，
         文件才慢半拍写进他们的对象存储 —— 我们紧接着就去下载，
@@ -899,19 +1211,49 @@ class HttpSession:
         取不到才报错，那时候才是真的要去问服务商。
         （data URI 和 base64 是响应里带的，重取没有意义，不重试。）
         """
+        # completed 只结束生成，后面还有下载。下载断了只重取这个链接，
+        # 不能抛给外层重新提交生成（任务已完成，也已经计费）。
+        log = log or (lambda _: None)
+        remote = item.startswith("http")
+        attempts = max(1, retries) if remote else 1
         last = None
-        for attempt in range(max(1, retries) if item.startswith("http") else 1):
+        for attempt in range(attempts):
             try:
-                return self._save_once(item, dest)
+                if remote:
+                    log(f"已取得结果地址，开始下载（第 {attempt + 1}/{attempts} 次）")
+                result = self._save_once(item, dest, log=log)
+                log("结果已保存并通过文件检查")
+                return result
             except ApiError as exc:
-                if "字节" not in str(exc):
+                if exc.kind == TASK_FATAL or ("字节" not in str(exc)
+                                              and exc.err_code != "result_invalid"):
                     raise                       # 不是空文件，是别的错，别在这儿吞
                 last = exc
-                if attempt < retries - 1:
-                    time.sleep(2 * (attempt + 1))
+            except requests.RequestException as exc:
+                last = exc
+                # 鉴权回退已经试过。永久 HTTP 错误不必再请求同一个地址。
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", 0)
+                if 400 <= status < 500 and status not in (404, 408, 425, 429):
+                    break
+            if attempt < attempts - 1:
+                log(f"下载未成功，将重新下载同一结果，不重新生成：{str(last)[:180]}")
+                time.sleep(2 * (attempt + 1))
+        if (isinstance(last, requests.RequestException)
+                or isinstance(last, ApiError) and last.err_code == "result_invalid"):
+            exc = ApiError(
+                f"结果下载失败：已取得服务商结果，但取回或文件检查未能通过（尝试 {attempt + 1} 次）。"
+                f"已停止自动重试生成，避免重复计费。最后的下载错误：{last}",
+                kind=TASK_FATAL, err_code="result_download_failed")
+            exc.extra_fix = ([f"已返回的结果地址：{item}"] if remote else
+                             ["服务商返回的是内嵌图片，请从该任务取回完整原图。"]) + [f"应保存到：{dest}"]
+            raise exc from last
         raise last                              # type: ignore[misc]
 
-    def _save_once(self, item: str, dest: str) -> str:
+    def _save_once(self, item: str, dest: str, *, log=None) -> str:
+        if not hasattr(self, 'result_source_bytes'):
+            self.result_source_bytes = {}  # 兼容旧外挂创建/恢复的 session。
+        log = log or (lambda _: None)
         os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
         # 内嵌数据也要能追溯：只写「内嵌数据」的话，大小检查报出来的那条
         # 完全看不出收到的是什么，跟服务商对不上话。
@@ -922,22 +1264,53 @@ class HttpSession:
             # 0KB 的「图」。实跑撞过：超模一批资产全是 0KB，报错只有
             # 一句 `Incorrect padding`，看不出是我们自己留下的空壳。
             raw = _b64_bytes(item.split(",", 1)[1], item)
-            with open(dest, "wb") as f:
-                f.write(raw)
+            with _atomic_output(dest) as part:
+                with open(part, "wb") as f:
+                    f.write(raw)
+                self.result_source_bytes[os.path.abspath(dest)] = os.path.getsize(part)
+                _normalize_result_image(part, dest, log)
+                _check_saved(part, src, extension=os.path.splitext(dest)[1].lower())
         elif item.startswith("http"):
             src = item
-            headers = self._headers() if item.startswith(self.base_url) else None
-            r = requests.get(item, headers=headers, timeout=self.timeout,
+            # 下载用 `_download_headers()`，**不是** `_headers()` ——
+            # 后者带 JSON 的 Accept/Content-Type，对二进制下载是自相矛盾的，
+            # 有网关会直接拒（见 _download_headers 的注释）。
+            headers = self._download_headers() if item.startswith(self.base_url) else None
+            # 生成可以等很久，下载连接/停传不能沿用那 900 秒。
+            # read timeout 是「多久收不到数据」，不是整个大文件必须 30 秒下完。
+            timeout = (min(self.timeout, 15), min(self.timeout, 30))
+            r = requests.get(item, headers=headers, timeout=timeout,
                              proxies=self._proxies(), stream=True)
             if r.status_code >= 400 and headers is None:
-                r = requests.get(item, headers=self._headers(), timeout=self.timeout,
+                r.close()
+                r = requests.get(item, headers=self._download_headers(),
+                                 timeout=timeout,
                                  proxies=self._proxies(), stream=True)
-            r.raise_for_status()
+            elif r.status_code >= 400 and headers is not None:
+                # 反方向也试一次：**带了鉴权反而被拒**。
+                #
+                # 预签名地址的 query 串里就是凭证，有些存储会拿 Authorization
+                # 头去验然后拒掉；而跳转目标同主机时 requests 不替我们摘掉这个头
+                # （只有跨主机才摘）。
+                #
+                # 云会画那次 502 的主因更可能是 JSON 头（它文档的官方示例
+                # 带着 Authorization 跟随 302 是能用的），已经在上面修掉了。
+                # 这一支留着是**便宜的保险**：只在已经 4xx/5xx 之后多发一次，
+                # 而缺了它的代价是「片子已生成已计费却取不回来」。
+                r.close()
+                r = requests.get(item,
+                                 headers={"User-Agent": "ScriptToVideoRunner/2.0"},
+                                 timeout=timeout, proxies=self._proxies(),
+                                 stream=True)
+            try:
+                r.raise_for_status()
+            except requests.RequestException:
+                r.close()
+                raise
             # 先写 .part 再改名：下到一半断了（视频几十 MB，断过），
             # 直接写 dest 会留下一个**够大但不完整**的文件 ——
             # 大小检查放它过去，下次 isfile 为真于是永远跳过，
             # 成片里那一段是坏的。改名是原子的，要么完整要么没有。
-            part = dest + ".part"
             # 服务商自报的字节数。**拿来核对**，别只是收着 ——
             # `.part` + 原子改名防的是「断在中途」（那时会抛异常），
             # 防不住「干净地少给一半」：有些 CDN / 代理在长传输上会正常关闭连接，
@@ -953,26 +1326,38 @@ class HttpSession:
                 want = 0
             got = 0
             try:
-                with open(part, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1 << 20):
-                        f.write(chunk)
-                        got += len(chunk)
-                if want and got < want:
-                    raise ApiError(
-                        f"下载没下完：服务商说这个文件有 {want:,} 字节，"
-                        f"实际只收到 {got:,} 字节（缺 {want - got:,}）。"
-                        f"连接是正常关闭的，所以没有网络报错 —— "
-                        f"这种半截文件往往还能打开、只是短了一截，"
-                        f"收下的话成片会少一段而且不报错，所以这里判失败。\n"
-                        f"来源：{item[:200]}",
-                        status=0, kind=RETRYABLE)
-                os.replace(part, dest)
+                log("下载连接已建立，正在接收结果")
+                last_report = time.monotonic()
+                with _atomic_output(dest) as part:
+                    with open(part, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=64 << 10):
+                            f.write(chunk)
+                            got += len(chunk)
+                            now = time.monotonic()
+                            if now - last_report >= 5:
+                                total = f" / {want / (1 << 20):.1f} MB" if want else " MB"
+                                log(f"正在下载结果：{got / (1 << 20):.1f}{total}")
+                                last_report = now
+                    if want and got < want:
+                        raise ApiError(
+                            f"下载没下完：服务商说这个文件有 {want:,} 字节，"
+                            f"实际只收到 {got:,} 字节（缺 {want - got:,}）。"
+                            f"连接是正常关闭的，所以没有网络报错 —— "
+                            f"这种半截文件往往还能打开、只是短了一截，"
+                            f"收下的话成片会少一段而且不报错，所以这里判失败。\n"
+                            f"来源：{item[:200]}",
+                            status=0, kind=RETRYABLE)
+                    self.result_source_bytes[os.path.abspath(dest)] = os.path.getsize(part)
+                    _normalize_result_image(part, dest, log)
+                    _check_saved(part, src, extension=os.path.splitext(dest)[1].lower())
             finally:
-                if os.path.exists(part):
-                    os.remove(part)
+                r.close()
         else:
             raw = _b64_bytes(item, item)
-            with open(dest, "wb") as f:
-                f.write(raw)
-        _check_saved(dest, src)
+            with _atomic_output(dest) as part:
+                with open(part, "wb") as f:
+                    f.write(raw)
+                self.result_source_bytes[os.path.abspath(dest)] = os.path.getsize(part)
+                _normalize_result_image(part, dest, log)
+                _check_saved(part, src, extension=os.path.splitext(dest)[1].lower())
         return dest

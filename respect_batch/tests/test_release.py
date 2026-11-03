@@ -77,7 +77,7 @@ def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch,
             Path(dest).write_bytes(b"test" * 200)
             return {"task_id": "fake", "echo": "TEST-AICOPY-SECRET-ONLY", "provider": "aicopy",
                     "source": "https://api.aione.help/image.png", "raw": {"message": "阿珂"}}
-    def build(pid, key, base, proxy, timeout):
+    def build(pid, key, base, proxy, timeout, **kwargs):
         assert pid == "aicopy" and key == "TEST-AICOPY-SECRET-ONLY"
         assert base == "https://api.aicopy.top" and proxy == "direct"
         return Fake()

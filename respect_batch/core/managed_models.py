@@ -70,6 +70,8 @@ def build(owner, configs, storage):
                             continue  # The first authorized Key wins for overlapping models.
                         block = resolved_cap.get(kind, {})
                         opts = {**block, **block.get('model_options', {}).get(model, {})}
+                        if opts.get('refs_unlimited'):
+                            opts['max_refs'] = None
                         opts = {k: copy.deepcopy(v) for k, v in opts.items() if k in OPTION_KEYS}
                         inst = cls()
                         opts['ref_mode'] = 'url' if inst.needs_url(model, kind) else inst.ref_mode

@@ -8,7 +8,7 @@ import time
 import pytest
 import requests
 
-from tests.test_batch import sandbox
+from tests.test_batch import sandbox, FAKE_PROVIDER
 from core import batch, config, distribution, managed, managed_models, managed_usage as usage, paths, providers, release
 from core.apiutil import ApiError, HttpSession
 
@@ -23,6 +23,8 @@ def grants():
 
 @pytest.fixture
 def online(sandbox, monkeypatch):
+    for name in ('REGISTRY', 'ALIASES', 'SOURCES'):
+        monkeypatch.setattr(providers, name, dict(getattr(providers, name)))
     m = managed.Manager()
     m._headers = {'X-Studio-Flavor': 'batch'}
     m.start_sender = lambda: None
@@ -31,13 +33,24 @@ def online(sandbox, monkeypatch):
     monkeypatch.setattr(distribution, 'MANAGED', True)
     monkeypatch.setattr(distribution, 'profile', m.snapshot)
     state = {'grants': grants(), 'uid': 'account-a', 'calls': []}
+    state['bundle'] = dict(protocol=1, version='test-1', modules={'faker': FAKE_PROVIDER},
+                           providers=[dict(id='faker', name='测试服务', module='faker', **{'class': 'FakerProvider'})])
+    def selected_bundle():
+        from core.adapter_format import select
+        return select(state['bundle'], set(state['grants']))
     def post(action, body, token=''):
         state['calls'].append((action, copy.deepcopy(body), token))
         if action in ('login', 'refresh'):
             return dict(access_token='a'*50, refresh_token='r'*50)
         if action == 'verify':
+            from core.adapter_format import digest
+            bundle = selected_bundle()
+            meta = dict(enabled=True, protocol=1, version=bundle['version'], sha256=digest(bundle),
+                        providers=[p['id'] for p in bundle['providers']], missing=[])
             return dict(valid=True, user=dict(id=state['uid'], username=state['uid'], expires_at=None),
-                        provider_config=state['grants'], storage_config={})
+                        provider_config=state['grants'], storage_config={}, adapter_config=meta)
+        if action == 'adapters':
+            return {'bundle': selected_bundle()}
         if action == 'usage':
             return {'accepted': [e['event_id'] for e in body['events']]}
         return {'ok': True}
@@ -244,7 +257,7 @@ def test_stage_contains_no_profile_and_build_manifest_checks_executable(tmp_path
     module=(target/'core/distribution.py').read_text(encoding='utf-8')
     assert 'MANAGED = True' in module and 'manager.snapshot()' in module
     assert not (target/'config.json').exists()
-    assert len(list((target/'core/providers').glob('*.py')))>=19
+    assert {p.name for p in (target/'core/providers').glob('*.py')} == {'base.py', '__init__.py'}
     exe=tmp_path/'RespectBatch-User.exe';exe.write_bytes(b'fake binary')
     manifest=manifests(exe,tmp_path)
     monkeypatch.setattr(paths,'PROGRAM_DIR',str(tmp_path))

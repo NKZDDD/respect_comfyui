@@ -18,9 +18,9 @@ style.textContent=`#managed-login{display:none;max-width:390px;margin:12vh auto;
 document.head.append(style);
 const accountBar=document.createElement('div');
 accountBar.id='managed-account';
-accountBar.innerHTML='<span id="managed-name"></span><span id="managed-usage"></span><button id="managed-refresh" class="mini">刷新后台配置与模型</button><button id="managed-logout" class="mini">退出登录</button>';
+accountBar.innerHTML='<span id="managed-name"></span><span id="managed-usage"></span><span id="managed-adapter"></span><button id="managed-refresh" class="mini">刷新后台配置与模型</button><button id="managed-logout" class="mini">退出登录</button>';
 document.querySelector('header').append(accountBar);
-let managedBusy=false;
+let managedBusy=false, managedAdapter='';
 async function managedStatus(load=false){
   if(managedBusy)return;
   managedBusy=true;
@@ -34,10 +34,14 @@ async function managedStatus(load=false){
     const wasLocked=document.body.classList.contains('managed-locked');
     document.body.classList.remove('managed-locked');
     $('#managed-name').textContent=state.user.username;
+    $('#managed-adapter').textContent=state.adapter?.version?`适配包 ${state.adapter.version}`:'';
+    $('#managed-refresh').title='同步账号授权、服务商适配包和模型参数';
     $('#managed-usage').textContent=state.usage.error||(state.usage.pending?`用量待同步 ${state.usage.pending} 条`:'用量已同步');
     $('#managed-refresh').disabled=RUNNING;
     $('#managed-logout').disabled=RUNNING;
-    if(load||wasLocked)await boot();
+    if(load||wasLocked||(!RUNNING&&managedAdapter!==(state.adapter?.sha256||''))){
+      await boot();managedAdapter=state.adapter?.sha256||'';
+    }
     msg('#releaseNotice',false,(state.issues||[]).join('；'));
   }catch(e){
     document.body.classList.add('managed-locked');

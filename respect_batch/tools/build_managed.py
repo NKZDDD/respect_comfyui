@@ -29,6 +29,11 @@ def stage(target):
     target = Path(target)
     target.mkdir(parents=True, exist_ok=False)
     shutil.copytree(ROOT / 'core', target / 'core', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    # Managed releases carry only the generic provider interface. All actual
+    # implementations are delivered through the authenticated adapter endpoint.
+    for provider in (target / 'core/providers').glob('*.py'):
+        if provider.name not in ('base.py', '__init__.py'):
+            provider.unlink()
     shutil.copy2(ROOT / 'release_main.py', target / 'release_main.py')
     module = ('ENABLED = True\nMANAGED = True\n'
               'def profile():\n    from .managed import manager\n    return manager.snapshot()\n'
@@ -71,6 +76,7 @@ def main():
                 if trust_policy.is_file() else [])
     subprocess.run([sys.executable, '-m', 'nuitka', '--mode=onefile', '--onefile-no-dll',
         '--mingw64', '--assume-yes-for-downloads', '--enable-plugin=tk-inter', '--include-package=core',
+        '--include-package=PIL', '--include-module=xml.etree.ElementTree',
         # Managed uploads use HTTPS signatures; the S3 credential SDK is not used in this build.
         '--nofollow-import-to=pytest,numpy,matplotlib,boto3,botocore', '--python-flag=isolated', '--python-flag=no_site',
         '--windows-console-mode=force', '--lto=no', f'--jobs={max(1,args.jobs)}',

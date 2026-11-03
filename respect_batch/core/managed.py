@@ -14,7 +14,7 @@ import requests
 from . import distribution, paths, managed_usage
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.11.03.1'
+VERSION = '2026.11.03.2'
 COOKIE = 'respect_batch_login'
 
 
@@ -55,6 +55,7 @@ class Manager:
         self.profile = None
         self.configs = None
         self.storage = None
+        self.adapter_config = None
         self.until = 0
         self._headers = None
         self._recovered = set()
@@ -104,8 +105,12 @@ class Manager:
         self.tokens = {k: data[k] for k in ('access_token', 'refresh_token')}
 
     def clear(self):
+        from . import providers
         with self.lock:
             self.tokens = self.user = self.profile = self.configs = self.storage = None
+            self.adapter_config = None
+            if enabled():
+                providers.activate_remote({}, '')
             self.local_session = ''
             self.until = 0
 
@@ -130,7 +135,7 @@ class Manager:
             return self.local_session
 
     def verify(self, refresh_models=False):
-        from . import managed_models
+        from . import managed_models, managed_adapters, providers
         with self.lock:
             if not self.tokens:
                 raise LoginRequired()
@@ -154,13 +159,25 @@ class Manager:
                 raise LoginRequired('登录服务未确认授权', 'auth_response_invalid', 503)
             user = {k: result['user'].get(k) for k in ('id', 'username', 'expires_at')}
             configs, storage = result.get('provider_config', {}), result.get('storage_config', {})
-            if refresh_models or self.profile is None or configs != self.configs or storage != self.storage or user['id'] != (self.user or {}).get('id'):
+            adapter = result.get('adapter_config')
+            if (refresh_models or self.profile is None or configs != self.configs or storage != self.storage
+                    or adapter != self.adapter_config or user['id'] != (self.user or {}).get('id')):
                 try:
+                    classes = managed_adapters.install(user['id'], adapter, lambda sha: self.post(
+                        'adapters', dict(device_id=self.device_id(), sha256=sha), self.tokens['access_token']))
+                    providers.activate_remote(classes, adapter['version'])
                     self.profile = managed_models.build(user['id'], configs, storage)
+                    self.profile['adapter'] = dict(version=adapter['version'], sha256=adapter['sha256'])
+                    for model in self.profile['models']:
+                        model['adapter_sha256'] = adapter['sha256']
+                except LoginRequired:
+                    self.profile = None
+                    raise
                 except (ValueError, TypeError, KeyError):
                     self.profile = None
-                    raise LoginRequired('后台模型配置无法加载，请联系管理员检查授权或重新刷新', 'configuration_invalid', 503) from None
+                    raise LoginRequired('后台模型或适配包无法加载，请确认已发布适配包且包含账号所需服务商，再刷新重试', 'configuration_invalid', 503) from None
                 self.configs, self.storage = copy.deepcopy(configs), copy.deepcopy(storage)
+                self.adapter_config = copy.deepcopy(adapter)
             self.user = user
             self.until = time.monotonic() + 60
 
@@ -198,6 +215,7 @@ class Manager:
             self.require(cookie)
             with self.lock:
                 return dict(ok=True, authenticated=True, user=dict(self.user), issues=self.profile['issues'],
+                            adapter=self.profile.get('adapter', {}),
                             usage=managed_usage.status(self.user['id']))
         except LoginRequired as exc:
             return dict(ok=True, authenticated=False, msg=str(exc), code=exc.code)

@@ -139,6 +139,8 @@ def _builtin_names() -> list:
 
 
 def _load_builtin() -> None:
+    if distribution.ENABLED and getattr(distribution, 'MANAGED', False):
+        return
     names = _builtin_names()
     names.sort(key=lambda n: (_BUILTIN_ORDER.index(n) if n in _BUILTIN_ORDER
                               else len(_BUILTIN_ORDER), n))
@@ -248,9 +250,25 @@ def list_capabilities() -> list:
     return out
 
 
+def activate_remote(classes, version):
+    global REGISTRY, ALIASES, SOURCES
+    REGISTRY = dict(classes)
+    ALIASES = {a: pid for pid, cls in classes.items() for a in getattr(cls, 'aliases', ())}
+    SOURCES = {pid: '服务端适配包 ' + version for pid in classes}
+    ERRORS.clear()
+    WARNINGS.clear()
+
+
+def get_class(provider_id, adapter_sha256=''):
+    if adapter_sha256:
+        from ..managed_adapters import classes_for
+        return classes_for(adapter_sha256).get(provider_id)
+    return REGISTRY.get(resolve_id(provider_id))
+
+
 def build(provider_id: str, api_key: str, base_url: str = "",
-          proxy: str = "", timeout: int = 900) -> Provider:
-    cls = REGISTRY.get(resolve_id(provider_id))
+          proxy: str = "", timeout: int = 900, *, adapter_sha256='') -> Provider:
+    cls = get_class(provider_id, adapter_sha256)
     if not cls:
         raise ValueError(f"未知服务商: {provider_id}"
                          f"（可用: {'、'.join(REGISTRY)}；"

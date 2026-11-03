@@ -442,9 +442,9 @@ function onModel(){
   const notes=[b.notes, c.notes].filter(Boolean).join('\n\n');
   $('#provNote').textContent=notes;
   $('#provNote').classList.toggle('hide', !notes);
-  const mx=b.max_refs||0;
+  const mx=refLimit();
   $('#sharedLabel').textContent = '参考图（这一批都用它们）' +
-        (mx?`　最多 ${mx} 张`:'') + '　不用就留空';
+        (mx===0?'　当前模型不支持参考图':mx!==null?`　最多 ${mx} 张`:'') + '　不用就留空';
   refWarn(); concNote(); updateGo(); render();
   /* @admin-start */
   if(!RELEASE){
@@ -509,10 +509,10 @@ function concNote(){
 async function uploadFiles(files, into){
   const imgs=[...files].filter(f=>/^image\//.test(f.type)||/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name));
   if(!imgs.length){ toast('只收图片'); return; }
-  const mx=block().max_refs||0;
+  const mx=refLimit();
   let okN=0, bad=[];
   for(const f of imgs){
-    if(mx && into.length>=mx){ toast(`这个模型最多 ${mx} 张参考图，多的没加`); break; }
+    if(mx!==null && into.length>=mx){ toast(mx===0?'当前模型不支持参考图':`这个模型最多 ${mx} 张参考图，多的没加`); break; }
     try{
       const r = await fetch('/api/upload?name='+encodeURIComponent(f.name),
                             {method:'POST', headers:sessionHeaders(), body:f});
@@ -599,9 +599,13 @@ function drawLibraries(){
     wrap.appendChild(tb); box.appendChild(wrap);
   });
 }
+function refLimit(){
+  const b=block(), value=b.max_refs;
+  return b.refs_unlimited||typeof value!=='number'||!Number.isFinite(value)||value<0?null:value;
+}
 function libraryLimitError(){
-  const pools=LIBRARIES.filter(p=>p.length).length, max=block().max_refs||0;
-  if(!pools || !max) return '';
+  const pools=LIBRARIES.filter(p=>p.length).length, max=refLimit();
+  if(max===null) return '';
   const tooMany=liveTasks().some(t=>new Set([...SHARED,...t.refs].map(r=>r.path)).size+pools>max);
   return tooMany?`这个模型每条最多 ${max} 张参考图；共用图、单条图与素材库合计超限，请减少后再跑。`:'';
 }

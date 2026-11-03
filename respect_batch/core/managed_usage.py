@@ -59,6 +59,17 @@ def begin():
                  task_id='', status='attempted', resumed=False, started_at=now, updated_at=now)
     persist(ctx['owner'], event)  # Must succeed before a new billable request.
     ctx['event'] = event
+    ctx['request_started'] = False
+
+
+def begin_request():
+    """Consume the worker's reserved attempt, or start a normal HTTP attempt."""
+    ctx = _context.get()
+    if ctx is None:
+        return
+    if not (ctx.get('event', {}).get('status') == 'attempted' and not ctx.get('request_started')):
+        begin()
+    ctx['request_started'] = True
 
 
 def note(status, task_id=''):

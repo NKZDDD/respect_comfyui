@@ -301,6 +301,10 @@ def _tracked_dispatch(prov, task, run, log, resolved):
             task.status = '未发'
             raise ApiError(str(exc), kind=BATCH_FATAL) from None
     with managed_usage.tracking(assignment, task):
+        if run.cfg.get('_adapter_sha256'):
+            # Some downloaded adapters use their own HTTP client. Reserve the
+            # attempt before entering their code so those calls are counted too.
+            managed_usage.begin()
         result = _dispatch(prov, task, run, log, resolved)
         task.meta = result or {}
         return result
@@ -357,7 +361,8 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
                             task.provider, acct.api_key,
                             run.spec.get("base_url") or "",
                             run.spec.get("proxy") or "",
-                            int(run.spec.get("timeout") or 900))
+                            int(run.spec.get("timeout") or 900),
+                            adapter_sha256=run.cfg.get('_adapter_sha256', ''))
                         meta = _tracked_dispatch(p, task, run, log, resolved)
                         accounts.bump(task.provider, acct.label)
                 else:
@@ -441,7 +446,7 @@ def start(spec: dict, cfg: dict) -> Run:
     # **「这家做不做这个」要排在「有没有密钥」前面。** 支持什么是类属性，
     # 不需要密钥就知道；排在后面的话，选错家的人先被告知"去填密钥"，
     # 填完再撞一次才知道这家根本不做出图 —— 两次都答非所问。
-    cls = providers.REGISTRY.get(providers.resolve_id(pid))
+    cls = providers.get_class(pid, cfg.get('_adapter_sha256', ''))
     if not cls:
         return stop_now(f"没有「{pid}」这家。可用：{'、'.join(providers.REGISTRY)}")
     sup = tuple(getattr(cls, "supports", ()))
@@ -465,11 +470,11 @@ def start(spec: dict, cfg: dict) -> Run:
 
     try:
         prov = providers.build(pid, api_key, spec["base_url"], spec["proxy"],
-                               int(spec.get("timeout") or 900))
+                               int(spec.get("timeout") or 900), adapter_sha256=cfg.get('_adapter_sha256', ''))
     except Exception as exc:                                # noqa: BLE001
         return stop_now(f"服务商建不起来：{exc}")
 
-    if spec.get("ref_slots"):
+    if spec.get("ref_slots") and not distribution.ENABLED:
         caps = prov.capabilities().get(kind) or {}
         options = (caps.get("model_options") or {}).get(spec.get("model")) or {}
         max_refs = options.get("max_refs", caps.get("max_refs", 0))
