@@ -50,14 +50,15 @@ def build(owner, configs, storage):
                 # Model bindings take precedence over unfiltered provider catalogues.
                 result = {'ok': True, 'rows': [{'id': m} for m in bound]} if bound else model_catalog.fetch(pid, pc)
                 if not result.get('ok'):
-                    profile['issues'].append(label + '：模型读取失败，请在后台绑定模型后刷新')
+                    profile['issues'].append(label + '：' + model_catalog.failure_hint(result))
                     continue
                 resolved_cap = model_catalog.apply_catalog(cap, result, '后台 Key')
+                unknown = []
                 for info in result.get('rows', []):
                     model = info['id']
                     kinds = model_catalog.model_kind(info, cap)
                     if not kinds:
-                        profile['issues'].append(label + '：有模型类型无法识别，请更新客户端适配')
+                        unknown.append(model)
                     for kind in kinds:
                         if kind not in cls.supports or kind not in ('image', 'video'):
                             continue
@@ -90,5 +91,10 @@ def build(owner, configs, storage):
                             label=f'{label} · {model}{suffix}', provider=pid, kind=kind, model=model, options=opts, route=route))
                         cfg['providers'].setdefault(pid, copy.deepcopy(route))
                         known.add(identity)
+                if unknown:
+                    examples = '、'.join(m[:80] for m in unknown[:3])
+                    profile['issues'].append(f'{label}：{len(unknown)} 个模型未声明可识别的图片/视频类型，暂未列出'
+                        f'（{examples}{"…" if len(unknown) > 3 else ""}）；已列出的模型仍可选择。'
+                        '如需使用缺少的模型，请管理员更新服务商适配包')
     profile['issues'] = list(dict.fromkeys(profile['issues']))
     return profile

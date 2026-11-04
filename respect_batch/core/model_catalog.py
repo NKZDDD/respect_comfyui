@@ -14,6 +14,65 @@ from . import config, paths, providers
 from .store import read_json, write_json
 
 _LOCK = threading.RLock()
+_ROW_FIELDS = ('type', 'model_type', 'category', 'output_modalities',
+               'display_name', 'durations_seconds', 'ratios', 'max_images',
+               'resolution', 'capability_schema', 'resolution_mode',
+               'supported_aspect_ratios', 'supported_image_sizes',
+               'max_reference_images', 'n_max', 'supported_quality_values')
+
+
+def failure_hint(result):
+    """Only locally authored diagnostics may reach the page; never echo API errors."""
+    status = result.get('status')
+    if isinstance(status, int) and 100 <= status <= 599:
+        hint = {401: 'Key 鉴权失败，请管理员核对这把 Key',
+                403: '模型目录访问被拒绝，请管理员核对权限',
+                404: '模型目录接口不存在，请核对服务地址或适配包',
+                429: '模型目录请求过于频繁，请稍后刷新'}.get(status, '模型目录接口请求失败，请稍后刷新')
+        return f'HTTP {status}，{hint}'
+    return {
+        'timeout': '连接模型目录超时，请检查网络后刷新',
+        'tls': '模型目录 HTTPS 连接失败，请检查证书或网络',
+        'connection': '无法连接模型目录，请检查网络后刷新',
+        'invalid_json': '模型目录未返回有效 JSON，请核对服务地址或适配包',
+        'invalid_rows': '模型目录返回格式不兼容，请更新服务商适配包',
+        'empty': '接口未返回可用模型，请核对 Key 的模型权限或在后台绑定模型',
+        'filter_failed': '模型已读取，但适配包筛选目录失败，请稍后刷新或更新适配包',
+        'adapter_failed': '适配包读取模型目录失败，请更新适配包或在后台绑定模型',
+    }.get(result.get('code'), '模型目录读取失败，请刷新重试；也可在后台绑定模型')
+
+
+def _failure(code, status=None):
+    result = {'ok': False, 'code': code}
+    if isinstance(status, int) and 100 <= status <= 599:
+        result['status'] = status
+    result['msg'] = failure_hint(result)
+    return result
+
+
+def _exception_failure(exc):
+    # Adapter exceptions may contain URLs, credentials, and raw response bodies.
+    if isinstance(exc, requests.exceptions.SSLError):
+        return _failure('tls')
+    if isinstance(exc, requests.Timeout):
+        return _failure('timeout')
+    if isinstance(exc, requests.RequestException):
+        return _failure('connection')
+    from .apiutil import ApiError
+    return _failure('adapter_failed', exc.status if isinstance(exc, ApiError) else None)
+
+
+def _rows(data):
+    if not isinstance(data, list):
+        raise ValueError('invalid rows')
+    rows = {}
+    for row in data:
+        row = {'id': row} if isinstance(row, str) else row
+        if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id'].strip():
+            continue
+        mid = row['id'].strip()
+        rows[mid] = {'id': mid, **{k: row[k] for k in _ROW_FIELDS if k in row}}
+    return rows
 
 
 def identity(pid, pc):
@@ -25,24 +84,19 @@ def identity(pid, pc):
 def fetch(pid, pc):
     """仅 GET 模型端点；不跟随跨站跳转、不返回含凭据的原始错误。"""
     from . import distribution
-    if distribution.ENABLED and getattr(distribution, 'MANAGED', False):
-        # Discovery is part of the downloaded adapter too: do not assume that
-        # every new provider exposes /v1/models or the same response schema.
-        try:
-            prov = providers.build(pid, pc.get('api_key', ''), pc.get('base_url', ''), 'direct', 20)
-            reader = getattr(prov, 'catalog_rows', prov.list_models)
-            rows = reader()
-            if not isinstance(rows, list):
-                raise ValueError()
-            rows = [dict(r) if isinstance(r, dict) else {'id': r} for r in rows]
-            rows = [r for r in rows if isinstance(r.get('id'), str) and r['id']]
-            return {'ok': bool(rows), 'rows': rows, 'models': [r['id'] for r in rows]}
-        except Exception:
-            return {'ok': False, 'msg': '适配包模型清单读取失败，请在后台绑定模型后刷新'}
-    if pid == 'hvtald':
+    managed = distribution.ENABLED and getattr(distribution, 'MANAGED', False)
+    if not managed and pid == 'hvtald':
         return {'ok': False, 'msg': '该服务商使用固定账号模型，没有模型清单接口'}
     prov = providers.build(pid, pc.get('api_key', ''), pc.get('base_url', ''),
-                           pc.get('proxy') or 'direct', 20)
+                           'direct' if managed else pc.get('proxy') or 'direct', 20)
+    reader = None
+    if managed:
+        from .providers.base import Provider
+        reader = getattr(prov, 'catalog_rows', None)
+        if not callable(reader) and type(prov).list_models is not Provider.list_models:
+            reader = prov.list_models
+        # The inherited list_models() throws away metadata and swallows ApiError.
+        # Read its standard endpoint below, while retaining custom adapter readers.
     endpoint = {'gate': '/public/model_group/info',
                 'zhi': '/api/v1/available-models'}.get(pid, '/v1/models')
     if not prov.session.base_url:
@@ -53,6 +107,16 @@ def fetch(pid, pc):
     rows, failures = {}, []
     for key in keys:
         prov.session.api_key = key
+        if callable(reader):
+            try:
+                data = reader()
+            except Exception as exc:
+                return _exception_failure(exc)
+            try:
+                rows.update(_rows(data))
+            except ValueError:
+                return _failure('invalid_rows')
+            continue
         try:
             with requests.Session() as session:
                 session.trust_env = False
@@ -60,10 +124,14 @@ def fetch(pid, pc):
                     headers=prov.session._headers(), proxies=prov.session._proxies(),
                     timeout=(8, 20), allow_redirects=False)
             if response.status_code != 200:
+                if managed:
+                    return _failure('http', response.status_code)
                 failures.append(f'HTTP {response.status_code}'); continue
             data = response.json()
             data = data if isinstance(data, list) else data.get('data')
             if not isinstance(data, list):
+                if managed:
+                    return _failure('invalid_rows')
                 failures.append('接口未返回模型数组'); continue
             for row in data:
                 if not isinstance(row, dict):
@@ -74,18 +142,29 @@ def fetch(pid, pc):
                 mid = str(mid).strip()
                 # 只保留模型字段，不把响应中的账号、调试信息打包或传给页面。
                 item = {'id': mid}
-                for field in ('type', 'model_type', 'category', 'output_modalities',
-                              'display_name', 'durations_seconds', 'ratios',
-                              'max_images', 'resolution'):
+                for field in _ROW_FIELDS:
                     if field in row:
                         item[field] = row[field]
                 rows[mid] = item
-        except requests.RequestException:
-            failures.append('网络连接失败或超时')
         except (ValueError, AttributeError):
+            if managed:
+                return _failure('invalid_json')
             failures.append('接口返回的不是模型 JSON')
+        except requests.RequestException as exc:
+            if managed:
+                return _exception_failure(exc)
+            failures.append('网络连接失败或超时')
     if not rows:
+        if managed:
+            return _failure('empty')
         return {'ok': False, 'msg': '；'.join(dict.fromkeys(failures)) or '模型清单为空'}
+    if managed and callable(getattr(prov, 'filter_catalog', None)):
+        try:
+            rows = _rows(prov.filter_catalog(list(rows.values())))
+        except Exception:
+            return _failure('filter_failed')
+        if not rows:
+            return _failure('empty')
     return {'ok': True, 'models': sorted(rows), 'rows': [rows[k] for k in sorted(rows)],
             'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
             'partial': bool(failures),
@@ -102,12 +181,14 @@ def model_kind(row, cap):
     kinds = [k for k in ('image', 'video') if k in metadata]
     if kinds:
         return kinds
+    if re.search(r'text|chat|audio|speech|music|embedding|rerank|transcri|\btts\b|\basr\b|3d', metadata):
+        return ['other']
     name = mid.lower()
-    if re.search(r'image|banana|seedream|flux|dall|gpt本地|香蕉|绘图|生图|图片', name):
+    if re.search(r'image|banana|seedream|midjourney|flux|dall|gpt本地|香蕉|绘图|生图|图片', name):
         return ['image']
-    if re.search(r'video|seedance|sora|veo|kling|h3|wan|happy.?horse|omni_flash|快乐马|可灵|视频|sd[\d.-]|官方稳定版.*2\.5', name):
+    if re.search(r'video|seedance|sora|veo|kling|h3|wan|happy.?horse|^omni-(?:fast|v2v)|^niulai-pro$|omni_flash|快乐马|可灵|视频|sd[\d.-]|官方稳定版.*2\.5', name):
         return ['video']
-    if re.search(r'^gpt-|^o[134]-|claude|deepseek|qwen|embedding|rerank|whisper|tts|gemini|^glm-|^kimi-|doubao-seed|推理', name):
+    if re.search(r'^gpt-|^o[134]-|claude|deepseek|qwen|embedding|rerank|whisper|tts|gemini|lyria|suno|^glm-|^kimi-|doubao-seed|推理', name):
         return ['other']
     return []
 
