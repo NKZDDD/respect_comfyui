@@ -82,8 +82,8 @@ class Manager:
         if token:
             headers['Authorization'] = 'Bearer ' + token
         try:
+            # Match Studio login: inherit system/environment proxy settings.
             with requests.Session() as session:
-                session.trust_env = False
                 response = session.post(AUTH_URL + '/api/v1/auth/' + action, json=body,
                     headers=headers, timeout=(8, 30), allow_redirects=False)
             payload = response.json()

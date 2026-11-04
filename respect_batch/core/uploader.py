@@ -233,8 +233,8 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
         if any(urlsplit(v).scheme != 'https' or not urlsplit(v).hostname for v in (url, public)):
             raise ApiError('后台未返回有效上传授权', kind=TASK_FATAL)
         try:
+            # Match Studio managed R2 uploads: inherit system/environment proxies.
             with requests.Session() as session:
-                session.trust_env = False
                 response = session.put(url, data=data, headers={'Content-Type': mime}, timeout=(10, 120), allow_redirects=False)
             if response.status_code not in (200, 201, 204):
                 raise ApiError(f'参考图上传失败（HTTP {response.status_code}）', kind=TASK_FATAL)

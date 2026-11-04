@@ -72,8 +72,8 @@ class UpdateManager:
             except managed.LoginRequired:
                 headers = {'X-Studio-Flavor': 'batch', 'X-Studio-Version': managed.VERSION,
                            'X-Studio-Build': 'damaged', 'X-Respect-Application': 'batch'}
+            # Match Studio updates: inherit system/environment proxy settings.
             with requests.Session() as session:
-                session.trust_env = False
                 with session.get(managed.AUTH_URL + '/api/v1/updates/latest',
                         params={'application':'batch', 'flavor':'batch'}, headers=headers,
                         timeout=(10, 20), stream=True, allow_redirects=False) as response:
@@ -128,8 +128,8 @@ class UpdateManager:
             target = folder / f"Respect-Batch-Setup-{release['version']}.exe"
             partial = target.with_suffix('.part')
             digest, count = hashlib.sha256(), 0
+            # The installer download uses the same network policy as update checks.
             with requests.Session() as session:
-                session.trust_env = False
                 with session.get(release['url'], timeout=(15, 60), stream=True, allow_redirects=False,
                                  headers={'Accept-Encoding':'identity'}) as response:
                     if response.status_code != 200:
