@@ -14,7 +14,7 @@ import requests
 from . import distribution, paths, managed_usage
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.11.04.1'
+VERSION = '2026.11.04.2'
 COOKIE = 'respect_batch_login'
 
 
