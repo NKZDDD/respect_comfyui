@@ -392,6 +392,7 @@ async function boot(){
   /* @admin-end */
   }
   onProv(); render();
+  window.BatchModelStats?.mount();
 }
 
 const cap = () => CAPS.find(c=>c.id===$('#prov').value) || {};
@@ -437,6 +438,7 @@ function onKind(){
 
 function onModel(){
   drawParams();
+  window.BatchModelStats?.sync();
   const c=cap(), b=block();
   $('#videoRefSection').classList.toggle('hide', $('#kind').value!=='video'||!b.max_video_refs);
   const notes=[b.notes, c.notes].filter(Boolean).join('\n\n');

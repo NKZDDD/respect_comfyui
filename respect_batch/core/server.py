@@ -94,9 +94,11 @@ class Handler(BaseHTTPRequestHandler):
         if managed.enabled():
             allowed |= ({'/api/auth/login', '/api/auth/logout', '/api/auth/refresh'} if post else {'/api/auth/status'})
             allowed |= ({'/api/updates/check', '/api/updates/download', '/api/updates/install'} if post else {'/api/updates/status'})
+            if not post:
+                allowed.add('/api/model-statistics')
         if distribution.ENABLED and route not in allowed:
             return deny("发行版未开放此功能")
-        if (post or route in ("/api/boot", "/api/run")) and not secrets.compare_digest(
+        if (post or route in ("/api/boot", "/api/run", "/api/model-statistics")) and not secrets.compare_digest(
                 self.headers.get("X-Respect-Session", ""), _SESSION):
             return deny("页面已失效，请重新打开程序页面")
         if managed.enabled() and not route.startswith('/api/updates/') and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status'):
@@ -147,6 +149,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._ok({'ok': True, **updates.manager.status()})
             if u.path == '/api/auth/status' and managed.enabled():
                 return self._ok(managed.manager.status(self.headers.get('Cookie')))
+            if u.path == '/api/model-statistics' and managed.enabled():
+                from . import model_statistics
+                return self._ok(model_statistics.snapshot())
             if u.path in ("/", "/index.html"):
                 if distribution.ENABLED:
                     page = distribution.page().replace(b"__RELEASE_SESSION__", _SESSION.encode())

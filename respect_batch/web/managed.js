@@ -27,6 +27,7 @@ async function managedStatus(load=false){
   try{
     const state=await api('/api/auth/status');
     if(!state.authenticated){
+      window.BatchModelStats?.reset();
       document.body.classList.add('managed-locked');
       $('#managed-error').textContent=state.msg||'请先登录';
       return;
@@ -44,6 +45,7 @@ async function managedStatus(load=false){
     }
     msg('#releaseNotice',false,(state.issues||[]).join('；'));
   }catch(e){
+    window.BatchModelStats?.reset();
     document.body.classList.add('managed-locked');
     $('#managed-error').textContent='连接失败，请重试。已发任务不会重新提交。';
   }finally{managedBusy=false;}
