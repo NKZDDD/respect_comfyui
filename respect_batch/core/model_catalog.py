@@ -171,6 +171,23 @@ def fetch(pid, pc):
             'msg': '部分分组拉取失败，已合并成功分组' if failures else '模型清单已更新'}
 
 
+def fetch_bound(pid, pc, models):
+    """Bindings authorize model IDs; opt-in adapters still refresh their parameters."""
+    names = list(dict.fromkeys(models))
+    result = dict(ok=True, strict=True, models=names, rows=[{'id': m} for m in names])
+    if not getattr(providers.REGISTRY.get(pid), 'refresh_bound_capabilities', False):
+        return result
+    try:
+        live = fetch(pid, pc)
+    except Exception:
+        live = {'ok': False}
+    rows = {row['id']: row for row in live.get('rows', [])} if live.get('ok') else {}
+    result['rows'] = [copy.deepcopy(rows.get(m, {'id': m})) for m in names]
+    if not live.get('ok') or live.get('partial') or any(m not in rows for m in names):
+        result.update(partial=True, msg='已保留后台模型绑定，但部分最新参数未读取到；暂用适配包参数，请稍后刷新')
+    return result
+
+
 def model_kind(row, cap):
     mid = row['id']
     known = [k for k in cap.get('supports', []) if mid in cap.get(k, {}).get('models', [])]
@@ -233,6 +250,15 @@ def _from_schema(schema):
         if isinstance(schema.get(key), int):
             out[target] = schema[key]
     # 无限画布当前目录使用短字段名；0 是明确不支持，不能当成缺省丢掉。
+    # Explicit null means the refreshed catalog does not declare a local cap.
+    # In particular it must clear an old "text only / 0 images" snapshot.
+    for key, target in (('max_reference_images', 'max_refs'),
+                        ('max_reference_videos', 'max_video_refs'),
+                        ('max_reference_audios', 'max_audio_refs')):
+        if key in schema and schema[key] is None:
+            out[target] = None
+            if target == 'max_refs':
+                out['refs_unlimited'] = True
     for key, target in (('max_images', 'max_refs'), ('max_videos', 'max_video_refs'),
                         ('max_audios', 'max_audio_refs')):
         if target not in out and isinstance(schema.get(key), int):

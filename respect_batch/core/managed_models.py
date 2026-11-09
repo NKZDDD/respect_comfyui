@@ -47,11 +47,13 @@ def build(owner, configs, storage):
                 if not row.get(field):
                     continue
                 pc = dict(api_key=row[field], base_url=url, proxy='direct')
-                # Model bindings take precedence over unfiltered provider catalogues.
-                result = {'ok': True, 'rows': [{'id': m} for m in bound]} if bound else model_catalog.fetch(pid, pc)
+                # Bindings remain the allowlist; supported adapters refresh only metadata.
+                result = model_catalog.fetch_bound(pid, pc, bound) if bound else model_catalog.fetch(pid, pc)
                 if not result.get('ok'):
                     profile['issues'].append(label + '：' + model_catalog.failure_hint(result))
                     continue
+                if bound and result.get('partial'):
+                    profile['issues'].append(label + '：' + result['msg'])
                 resolved_cap = model_catalog.apply_catalog(cap, result, '后台 Key')
                 unknown = []
                 for info in result.get('rows', []):
