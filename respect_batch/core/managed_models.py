@@ -3,7 +3,7 @@ import copy
 import hashlib
 from urllib.parse import urlsplit
 
-from . import config, model_catalog, providers
+from . import config, model_catalog, providers, network
 
 KEY_FIELDS = ('api_key', 'image_1k_api_key', 'image_4k_api_key', 'video_api_key')
 
@@ -46,7 +46,7 @@ def build(owner, configs, storage):
             for field in KEY_FIELDS:
                 if not row.get(field):
                     continue
-                pc = dict(api_key=row[field], base_url=url, proxy='direct')
+                pc = dict(api_key=row[field], base_url=url, proxy=network.proxy_value())
                 # Bindings remain the allowlist; supported adapters refresh only metadata.
                 result = model_catalog.fetch_bound(pid, pc, bound) if bound else model_catalog.fetch(pid, pc)
                 if not result.get('ok'):

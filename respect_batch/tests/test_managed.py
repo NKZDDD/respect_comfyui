@@ -229,7 +229,7 @@ def test_http_login_gate_cookie_refresh_and_no_local_config(online,monkeypatch):
     from tools.build_managed import page
     m,state=online
     monkeypatch.setattr(distribution,'page',page)
-    monkeypatch.setitem(server._RUN,'cur',None)
+    monkeypatch.setattr(server, '_RUNS', {})
     httpd=server.serve(port=0)
     thread=threading.Thread(target=httpd.serve_forever,daemon=True);thread.start()
     def request(route,body=None,cookie=''):

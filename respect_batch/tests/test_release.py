@@ -84,6 +84,7 @@ def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch,
     monkeypatch.setattr(providers, "build", build)
     raw = request_spec(locked)
     count = max(3, concurrency)
+    raw["tasks"][0]["output_folder"] = "春装"
     raw.update(out_dir=str(tmp_path / "out"), repeat=count, concurrency=concurrency, max_retry=0)
     run = batch.start(raw, {"providers": {"aicopy": {"api_key": "UNTRUSTED"}}})
     end = time.monotonic() + 5
@@ -91,6 +92,7 @@ def test_release_uses_selected_key_and_runs_batch(locked, tmp_path, monkeypatch,
         time.sleep(.02)
     assert run.counts()["完成"] == count
     assert seen == ["sd2.0-720满血-不卡脸（按秒）"] * count
+    assert all(Path(t.dest).parent == tmp_path / "out" / "春装" for t in run.tasks)
     run.write_manifest()
     manifest = Path(run.manifest_path).read_text(encoding="utf-8")
     logs = Path(run.log_path).read_text(encoding="utf-8")
@@ -149,7 +151,7 @@ def test_sealed_profile_hides_plaintext_and_authenticates(locked):
 
 def test_release_http_only_exposes_user_operations(locked, monkeypatch):
     from core import server
-    monkeypatch.setitem(server._RUN, "cur", None)
+    monkeypatch.setattr(server, '_RUNS', {})
     httpd = server.serve(port=0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

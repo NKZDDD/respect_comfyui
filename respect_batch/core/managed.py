@@ -11,10 +11,10 @@ from pathlib import Path
 
 import requests
 
-from . import distribution, paths, managed_usage
+from . import distribution, paths, managed_usage, production_diagnostics, login_diagnostics, task_history
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.11.05.1'
+VERSION = '2026.11.20.2'
 COOKIE = 'respect_batch_login'
 
 
@@ -51,6 +51,7 @@ class Manager:
         self.lock = threading.RLock()
         self.tokens = None
         self.user = None
+        self._diagnostic_owner = None
         self.local_session = ''
         self.profile = None
         self.configs = None
@@ -76,16 +77,45 @@ class Manager:
             return self._device
 
     def post(self, action, body, token=''):
+        if action not in ('login', 'verify', 'refresh', 'logout', 'adapters'):
+            return self._post(action, body, token)
+        request_id = str(uuid.uuid4())
+        started = time.monotonic()
+        owner = self._diagnostic_owner
+        try:
+            result = self._post(action, body, token, request_id)
+        except LoginRequired as exc:
+            exc.request_id = request_id
+            category = getattr(exc, 'diagnostic_category', 'validation')
+            login_diagnostics.record(owner, action + '.' + login_diagnostics.reason(exc),
+                error=True, category=category, status=getattr(exc, 'http_status', 0),
+                request_id=request_id, duration_ms=round((time.monotonic()-started)*1000))
+            raise
+        if action in ('login', 'verify') and isinstance(result.get('user'), dict):
+            owner = result['user'].get('id')
+        login_diagnostics.record(owner, action, status=200, request_id=request_id,
+                                 duration_ms=round((time.monotonic()-started)*1000))
+        return result
+
+    def _post(self, action, body, token, request_id=''):
         if self._headers is None:
             self._headers = build_headers()
         headers = dict(self._headers)
+        if request_id:
+            headers['X-Studio-Request-ID'] = request_id
         if token:
             headers['Authorization'] = 'Bearer ' + token
+        status = 0
         try:
             # Match Studio login: inherit system/environment proxy settings.
             with requests.Session() as session:
-                response = session.post(AUTH_URL + '/api/v1/auth/' + action, json=body,
+                payload = {'json': body}
+                if action == 'batch-tasks':
+                    headers['Content-Type'] = 'application/json'
+                    payload = {'data': json.dumps(body,ensure_ascii=False).encode('utf-8')}
+                response = session.post(AUTH_URL + '/api/v1/auth/' + action, **payload,
                     headers=headers, timeout=(8, 30), allow_redirects=False)
+            status = response.status_code
             payload = response.json()
             if response.status_code != 200:
                 error = payload.get('error', {})
@@ -94,40 +124,57 @@ class Manager:
             if not isinstance(payload, dict):
                 raise ValueError()
             return payload
-        except LoginRequired:
+        except LoginRequired as exc:
+            exc.http_status = status
+            exc.diagnostic_category = 'authentication' if status in (401, 403) else 'http'
             raise
-        except (requests.RequestException, ValueError, AttributeError):
-            raise LoginRequired('登录服务连接失败，请重试；已发任务不会重新提交', 'auth_unavailable', 503) from None
+        except (requests.RequestException, ValueError, AttributeError) as failure:
+            exc = LoginRequired('登录服务连接失败，请重试；已发任务不会重新提交', 'auth_unavailable', 503)
+            exc.http_status = status
+            exc.diagnostic_category = (('http' if status >= 400 else 'validation') if status
+                                       else production_diagnostics.error_info(failure)['category'])
+            raise exc from None
 
     def _tokens(self, data):
         if any(not isinstance(data.get(k), str) or not 40 <= len(data[k]) <= 128 for k in ('access_token', 'refresh_token')):
             raise LoginRequired('登录服务未返回有效凭证', 'auth_response_invalid', 503)
         self.tokens = {k: data[k] for k in ('access_token', 'refresh_token')}
 
-    def clear(self):
+    def clear(self, cause='', error=None):
         from . import providers
         with self.lock:
+            if cause and self._diagnostic_owner:
+                login_diagnostics.ended(login_diagnostics.fingerprint(self.local_session) if self.user else '',
+                                        self._diagnostic_owner, cause, error)
+            self._diagnostic_owner = None
             self.tokens = self.user = self.profile = self.configs = self.storage = None
             self.adapter_config = None
             if enabled():
                 providers.activate_remote({}, '')
             self.local_session = ''
             self.until = 0
+            self._diagnostics_retry_at = 0
+            self._diagnostics_retry_delay = 0
+            self._diagnostics_error = ''
 
     def login(self, body):
         username, password = body.get('username'), body.get('password')
         if not isinstance(username, str) or not isinstance(password, str) or not username.strip() or not password:
             raise LoginRequired('请填写账号和密码', status=400)
         with self.lock:
-            self.clear()
-            self._tokens(self.post('login', dict(username=username, password=password,
-                device_id=self.device_id(), device_name='Respect 批量客户端')))
-            self.local_session = secrets.token_urlsafe(32)
+            self.clear('new_login')
+            result = self.post('login', dict(username=username, password=password,
+                device_id=self.device_id(), device_name='Respect 批量客户端'))
             try:
+                if isinstance(result.get('user'), dict):
+                    self._diagnostic_owner = result['user'].get('id')
+                self._tokens(result)
+                self.local_session = secrets.token_urlsafe(32)
                 self.verify(refresh_models=True)
-            except Exception:
-                self.clear()
+            except Exception as exc:
+                self.clear('login_setup_failed', exc)
                 raise
+            login_diagnostics.bind(self.local_session, self.user['id'])
             if self.user['id'] not in self._recovered:
                 managed_usage.recover_interrupted(self.user['id'])
                 self._recovered.add(self.user['id'])
@@ -148,16 +195,17 @@ class Manager:
                     if exc.code == 'access_expired' and attempt == 0:
                         try:
                             self._tokens(self.post('refresh', dict(device_id=self.device_id(), refresh_token=self.tokens['refresh_token'])))
-                        except Exception:
-                            self.clear()  # Refresh may have rotated remotely; never reuse old tokens.
+                        except Exception as failure:
+                            self.clear('refresh_failed', failure)  # The server may already have rotated the token.
                             raise
                         continue
                     if exc.status in (401, 403):
-                        self.clear()
+                        self.clear('verify_rejected', exc)
                     raise
             if result.get('valid') is not True or not isinstance(result.get('user'), dict) or not result['user'].get('id'):
                 raise LoginRequired('登录服务未确认授权', 'auth_response_invalid', 503)
             user = {k: result['user'].get(k) for k in ('id', 'username', 'expires_at')}
+            self._diagnostic_owner = user['id']
             configs, storage = result.get('provider_config', {}), result.get('storage_config', {})
             adapter = result.get('adapter_config')
             if (refresh_models or self.profile is None or configs != self.configs or storage != self.storage
@@ -182,11 +230,17 @@ class Manager:
             self.until = time.monotonic() + 60
 
     def matches(self, cookie):
+        value = self.cookie_value(cookie)
+        return bool(value and self.local_session) and secrets.compare_digest(value, self.local_session)
+
+    @staticmethod
+    def cookie_value(cookie):
         try:
             values = SimpleCookie(cookie or '')
-            return bool(self.local_session) and COOKIE in values and secrets.compare_digest(values[COOKIE].value, self.local_session)
+            value = values[COOKIE].value
+            return value if value.isascii() and len(value) <= 128 else ''
         except Exception:
-            return False
+            return ''
 
     def require(self, cookie=None, force=False):
         with self.lock:
@@ -211,23 +265,42 @@ class Manager:
                 models=[], config=copy.deepcopy(config.DEFAULTS), issues=[])
 
     def status(self, cookie):
-        try:
-            self.require(cookie)
-            with self.lock:
+        with self.lock:
+            marker = login_diagnostics.fingerprint(self.cookie_value(cookie))
+            try:
+                self.require(cookie or '')
                 return dict(ok=True, authenticated=True, user=dict(self.user), issues=self.profile['issues'],
+                            diagnostic_session=marker,
                             adapter=self.profile.get('adapter', {}),
-                            usage=managed_usage.status(self.user['id']))
-        except LoginRequired as exc:
-            return dict(ok=True, authenticated=False, msg=str(exc), code=exc.code)
+                            usage=managed_usage.status(self.user['id']),
+                            task_history_error=getattr(self, 'history_error', ''),
+                            diagnostics=dict(production_diagnostics.status(self.user['id']),
+                                             error=getattr(self, '_diagnostics_error', '')))
+            except LoginRequired as exc:
+                login_diagnostics.page(marker, login_diagnostics.reason(exc),
+                    request_id=getattr(exc, 'request_id', ''), category=getattr(exc, 'diagnostic_category', 'none'))
+                return dict(ok=True, authenticated=False, msg=str(exc), code=exc.code)
+
+    def report_page(self, cookie, body):
+        marker = login_diagnostics.fingerprint(self.cookie_value(cookie))
+        state, at = body.get('state'), body.get('at')
+        if state not in ('ready', 'local_status_unreachable', 'workspace_load_failed') or type(at) is not int:
+            raise ValueError('登录页诊断格式无效')
+        if marker and body.get('session') == marker:
+            now = int(time.time())
+            login_diagnostics.page(marker, state, at=min(now, max(0, at)),
+                                   category='connection' if state == 'local_status_unreachable' else 'none')
 
     def logout(self, cookie):
         with self.lock:
             if not self.matches(cookie):
                 raise LoginRequired()
             tokens = self.tokens
-            self.clear()
-            if tokens:
-                self.post('logout', dict(device_id=self.device_id(), refresh_token=tokens['refresh_token']))
+            try:
+                if tokens:
+                    self.post('logout', dict(device_id=self.device_id(), refresh_token=tokens['refresh_token']))
+            finally:
+                self.clear('manual_logout')
 
     def send_usage(self):
         with self.lock:
@@ -265,7 +338,12 @@ class Manager:
                     self.send_usage()
                 except Exception:
                     pass  # Durable records remain pending; never restart generation.
+                try:
+                    production_diagnostics.send(self)
+                except Exception:
+                    pass  # Independent of usage delivery and production execution.
         threading.Thread(target=worker, daemon=True, name='batch-usage-upload').start()
+        threading.Thread(target=task_history.sender,args=(self,),daemon=True,name='batch-task-history').start()
 
 
 manager = Manager()

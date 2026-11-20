@@ -125,6 +125,6 @@ def test_release_upload_rejects_studio_before_upload(tmp_path,monkeypatch):
     manifest=tmp_path/'release.json';manifest.write_text(json.dumps(row),encoding='utf-8')
     calls=[]
     monkeypatch.setattr(upload_update.uploader,'_client',lambda cfg:calls.append(cfg))
-    with pytest.raises(ValueError,match='不属于'):
+    with pytest.raises(ValueError,match='批量创作'):
         upload_update.upload_release(manifest,dict(bucket='fake',access_key='fake',secret_key='fake',public_base_url='https://cdn.example.com'))
     assert not calls

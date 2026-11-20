@@ -23,6 +23,13 @@ def use_adapter(state, pid='valeclouds', cls='ValeCloudsProvider'):
         base_url='https://upstream.invalid/v1', models=[])]}}
 
 
+def use_metadata_adapter(state):
+    # Exercise the generic catalog reader independently of NY's newly added
+    # allowlist. The actual downloaded NY filter is covered separately below.
+    use_adapter(state)
+    state['bundle']['modules']['valeclouds'] += '\nValeCloudsProvider.filter_catalog = None\n'
+
+
 def endpoint(monkeypatch, body=None, status=200, error=None):
     calls = []
 
@@ -52,7 +59,7 @@ def endpoint(monkeypatch, body=None, status=200, error=None):
 
 def test_live_rows_preserve_types_parameters_and_exclude_non_media(online, monkeypatch):
     manager, state = online
-    use_adapter(state)
+    use_metadata_adapter(state)
     calls = endpoint(monkeypatch, {'data': [
         {'id': 'gpt-image-2.5-flare'},
         {'id': 'opaque-photo-id', 'output_modalities': ['image'],
@@ -81,13 +88,23 @@ def test_live_rows_preserve_types_parameters_and_exclude_non_media(online, monke
 
 def test_unknown_notice_names_affected_models_without_disabling_known_models(online, monkeypatch):
     manager, state = online
-    use_adapter(state)
+    use_metadata_adapter(state)
     endpoint(monkeypatch, {'data': [{'id': 'gpt-image-2.5-flare'}, {'id': 'mystery-007'}]})
     manager.verify(refresh_models=True)
     assert [r['model'] for r in release.catalog()] == ['gpt-image-2.5-flare']
     notice = manager.profile['issues'][0]
     assert 'mystery-007' in notice and '1 个模型' in notice and '已列出的模型仍可选择' in notice
     assert '更新客户端' not in notice
+
+
+def test_latest_downloaded_ny_filter_is_authoritative(online, monkeypatch):
+    manager, state = online
+    use_adapter(state)
+    endpoint(monkeypatch, {'data': [{'id': 'gpt-image-2.5-flare'},
+                                  {'id': 'gpt-6-chat'}, {'id': 'mystery-007'}]})
+    manager.verify(refresh_models=True)
+    assert [r['model'] for r in release.catalog()] == ['gpt-image-2.5-flare']
+    assert not manager.profile['issues']  # Filtered models must not be re-added by the client.
 
 
 @pytest.mark.parametrize('status,body,error,expected', [
@@ -112,6 +129,35 @@ def test_cangyuan_failure_reason_safe_and_no_fallback(online, monkeypatch, statu
     assert not release.catalog()  # Do not silently authorize the adapter's static catalogue.
     assert expected in manager.profile['issues'][0]
     assert 'PRIVATE-' not in json.dumps(manager.profile['issues'])
+    caps = release.public_boot()['providers'][0]
+    assert caps['supports'] == ['image', 'video']
+    assert not caps['image']['models'] and not caps['video']['models']
+
+
+def test_partial_discovery_keeps_empty_mode_visible_without_old_routes(online, monkeypatch):
+    manager, state = online
+    old_image = next(r for r in release.catalog() if r['kind'] == 'image')
+    state['grants']['faker']['keys'][0]['models'] = []
+    state['grants']['faker']['keys'][1]['models'] = ['omni-fast']
+    monkeypatch.setattr(model_catalog, 'fetch', lambda *a: {'ok': False, 'code': 'connection'})
+    manager.verify(refresh_models=True)
+    caps = release.public_boot()['providers'][0]
+    assert caps['supports'] == ['image', 'video']
+    assert caps['image']['models'] == [] and caps['image']['default_model'] == ''
+    assert '刷新后台配置与模型' in caps['image']['empty_message']
+    assert len(caps['video']['models']) == 1
+    assert all(r['kind'] == 'video' for r in release.catalog())
+    with pytest.raises(ValueError, match='开放清单'):
+        release.prepare(dict(model=old_image['id'], kind='image'))
+
+    monkeypatch.setattr(model_catalog, 'fetch', lambda *a: {'ok': True, 'rows': [{'id': 'fast'}]})
+    manager.verify(refresh_models=True)
+    caps = release.public_boot()['providers'][0]
+    assert caps['image']['models'] and 'empty_message' not in caps['image']
+    assert not manager.profile['issues']
+    state['grants'] = {}
+    manager.verify(refresh_models=True)
+    assert release.public_boot()['providers'][0]['supports'] == []
 
 
 def test_cangyuan_refresh_recovers_and_bound_models_do_not_require_discovery(online, monkeypatch):

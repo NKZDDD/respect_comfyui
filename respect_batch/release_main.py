@@ -21,7 +21,7 @@ def main() -> None:
         kernel.CreateMutexW.restype = ctypes.c_void_p
         mutex = kernel.CreateMutexW(None, False, 'Local\\Respect.Batch.User')
         if not mutex or ctypes.get_last_error() == 183:
-            raise RuntimeError('对外批量版已经运行，请使用已打开的窗口')
+            raise RuntimeError('批量创作已经运行，请使用已打开的窗口')
     os.makedirs(paths.data_dir(), exist_ok=True)
     httpd = None
     for port in range(8790, 8810):

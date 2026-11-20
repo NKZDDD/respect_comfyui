@@ -53,6 +53,20 @@ def configured(cfg: Optional[dict]) -> bool:
                 and (cfg.get("secret_key") or "").strip())
 
 
+def unavailable_reason(cfg: Optional[dict]) -> str:
+    """Explain readiness without exposing storage addresses or credentials."""
+    cfg = cfg or {}
+    if configured(cfg):
+        return ''
+    if cfg.get('backend') == 'managed':
+        if not cfg.get('assigned'):
+            return '当前账号未获 R2 上传授权，请管理员在后台为账号开启“R2 授权”，然后刷新后台配置与模型。'
+        if not cfg.get('available'):
+            return '后台 R2 上传当前不可用，请管理员检查“R2 对象存储”的启用状态与配置，然后刷新后台配置与模型。'
+        return 'R2 上传授权信息不完整，请刷新后台配置与模型；仍不可用时请联系管理员。'
+    return '图片上传服务尚未配置，请联系管理员检查上传配置。'
+
+
 # ---------------------------------------------------------------- 缓存
 def _sha(path: str, max_side: int, fmt: str = "") -> str:
     """按文件内容 + 处理参数算 key。参数变了就要重新上传。
@@ -224,7 +238,7 @@ def to_url(path: str, cfg: dict, *, project_root: str = "", max_side: int = 0,
         import requests
         from urllib.parse import urlsplit
         if not configured(cfg):
-            raise ApiError('账号尚未获参考图上传权限，请在后台分配 R2 授权', kind=TASK_FATAL)
+            raise ApiError(unavailable_reason(cfg), kind=TASK_FATAL)
         data, mime, _, _ = encode_ref(path, max_side=max_side, fmt=fmt)
         if len(data) > 25 * 1024 * 1024:
             raise ApiError('参考图超过后台上传限制，请缩小图片', kind=TASK_FATAL)

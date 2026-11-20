@@ -1,7 +1,7 @@
 // Updates remain accessible before login, including when the old version is blocked.
 (() => {
  const dialog=document.createElement('dialog');dialog.id='batch-update-dialog';
- dialog.innerHTML=`<div class="update-heading"><h2>对外批量版 · 软件更新</h2><button data-close>关闭</button></div>
+ dialog.innerHTML=`<div class="update-heading"><h2>批量创作 · 软件更新</h2><button data-close>关闭</button></div>
  <p data-version></p><p data-message role="status"></p><progress max="100" value="0" hidden></progress>
  <p data-notes></p><div class="update-actions"><button data-check>检查更新</button><button data-download hidden>下载更新</button><button data-install hidden>重启完成更新</button></div>`;
  document.body.append(dialog);

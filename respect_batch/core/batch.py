@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import random
 import re
 import threading
@@ -25,11 +26,13 @@ import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Callable, Optional
 
-from . import accounts, config, distribution, paths, providers, refs, release
+from . import accounts, config, distribution, paths, providers, refs, release, task_history
 from .apiutil import BATCH_FATAL, RETRYABLE, TASK_FATAL, ApiError
-from .limits import GATE
+from .limits import GATE, CancelledWhileWaiting
 from .providers.base import ImageTask, VideoTask
 from .store import append_jsonl, write_json
 
@@ -51,7 +54,7 @@ class Task:
     __slots__ = ("idx", "kind", "provider", "model", "prompt", "refs", "dest",
                  "size", "ratio", "duration", "resolution", "extra",
                  "status", "error", "error_kind", "meta", "started", "ended",
-                 "attempts", "usage")
+                 "attempts", "usage", "download_retry", "history_sequence")
 
     def __init__(self, idx: int, kind: str, provider: str, model: str, prompt: str,
                  refs_: list, dest: str, *, size: str = "", ratio: str = "",
@@ -69,6 +72,8 @@ class Task:
         self.started = self.ended = 0.0
         self.attempts = 0
         self.usage = None
+        self.download_retry = None
+        self.history_sequence = 0
 
     def row(self) -> dict:
         return {"idx": self.idx, "kind": self.kind, "provider": self.provider,
@@ -76,6 +81,7 @@ class Task:
                 "refs": self.refs, "dest": self.dest, "status": self.status,
                 "error": self.error, "error_kind": self.error_kind,
                 "attempts": self.attempts, "meta": self.meta,
+                "can_retry_download": bool(self.download_retry) and self.status == '失败',
                 "usage": self.usage,
                 "seconds": round((self.ended or time.time()) - self.started, 1)
                 if self.started else 0}
@@ -123,9 +129,51 @@ def _rows_of(spec: dict) -> list:
                 "refs": [str(x).strip() for x in ((r or {}).get("refs") or [])
                          if str(x).strip()],
                 "name": str((r or {}).get("name") or "").strip(),
+                "output_folder": r.get("output_folder", ""),
             })
         return rows
     return parse_lines(spec.get("lines") or "")
+
+
+def _output_root(spec: dict) -> str:
+    return os.path.abspath(os.path.expanduser(spec.get("out_dir") or paths.default_out_dir()))
+
+
+def _valid_folder_name(name: str) -> bool:
+    return bool(name and not name.endswith((" ", "."))
+                and not re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+                and not re.fullmatch(r'(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³])',
+                                     name.partition(".")[0].rstrip(), re.I)
+                and len(name.encode("utf-16-le", errors="surrogatepass")) <= 510)
+
+
+def _output_directory(root: str, folder: str) -> str:
+    if folder == "":
+        return root
+    if not isinstance(folder, str) or "\x00" in folder:
+        raise ValueError("请填写有效的成品子文件夹名或完整目录路径")
+    path = Path(folder)
+    if path.is_absolute():
+        if os.name == "nt":
+            # Accept drive paths and network shares. Device namespaces are not folders.
+            drive = path.drive
+            if drive.startswith("\\\\?\\UNC\\"):
+                drive = "\\\\" + drive[8:]
+            elif drive.startswith("\\\\?\\"):
+                drive = drive[4:]
+            share = drive.removeprefix("\\\\").split("\\")
+            if not (re.fullmatch(r"[a-zA-Z]:", drive) or
+                    (drive.startswith("\\\\") and len(share) == 2 and all(_valid_folder_name(s) for s in share))):
+                raise ValueError("请选择有效的磁盘文件夹或网络共享文件夹")
+            if any(not _valid_folder_name(part) for part in path.parts[1:]):
+                raise ValueError("成品文件夹路径中包含无效的文件夹名")
+        return os.path.normpath(folder)
+    if not _valid_folder_name(folder):
+        raise ValueError("请填写单个成品子文件夹名，或选择完整的目标文件夹路径")
+    directory = os.path.join(root, folder)
+    if os.path.normcase(os.path.dirname(os.path.realpath(directory))) != os.path.normcase(os.path.realpath(root)):
+        raise ValueError("成品子文件夹必须位于所选成品目录内")
+    return directory
 
 
 def build_tasks(spec: dict) -> list:
@@ -144,8 +192,7 @@ def build_tasks(spec: dict) -> list:
     kind = spec.get("kind") or "image"
     provider = spec.get("provider") or ""
     model = spec.get("model") or ""
-    out_dir = os.path.abspath(os.path.expanduser(
-        spec.get("out_dir") or paths.default_out_dir()))
+    out_dir = _output_root(spec)
     ext = ".png" if kind == "image" else ".mp4"
     repeat = max(1, int(spec.get("repeat") or 1))
     shared = [str(r).strip() for r in (spec.get("refs") or []) if str(r).strip()]
@@ -159,6 +206,7 @@ def build_tasks(spec: dict) -> list:
     rows = _rows_of(spec)
     tasks, idx = [], 0
     for i, row in enumerate(rows, 1):
+        destination_dir = _output_directory(out_dir, row.get("output_folder", ""))
         # 共用的在前、这条自己的在后 —— 顺序就是各家的「图1、图2」，
         # 反过来会让「@Image1 指谁」变掉，而那不会报错，只是出来的不对。
         row_refs = shared + [r for r in row["refs"] if r not in shared]
@@ -171,7 +219,7 @@ def build_tasks(spec: dict) -> list:
                 stem = f"{stem}_{k + 1}"
             # 前面无条件带序号：重名会互相覆盖，而覆盖之后你以为跑了 20 条、
             # 硬盘上只有 12 个文件，状态还全是「完成」。
-            dest = os.path.join(out_dir, f"{i:03d}_{stem}{ext}")
+            dest = os.path.join(destination_dir, f"{i:03d}_{stem}{ext}")
             tasks.append(Task(
                 idx, kind, provider, model, row["prompt"], row_refs + picked, dest,
                 size=spec.get("size") or "", ratio=spec.get("ratio") or "",
@@ -189,9 +237,16 @@ class Run:
     """一次跑批的全部状态。页面每秒拉一次 `snapshot()`。"""
 
     def __init__(self, tasks: list, spec: dict, cfg: dict):
-        self.id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+        self.id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:12]
+        self.submission_id = None
         self.tasks = tasks
         self.spec = spec
+        self.out_dir = _output_root(spec)
+        self.output_dirs = list(dict.fromkeys(os.path.dirname(t.dest) for t in tasks))
+        self.label = spec.get("model") or spec.get("provider") or ""
+        self.account_pool = None
+        self.output_route = (spec.get("kind"), spec.get("provider"), spec.get("model"),
+                             cfg.get("_usage", {}).get("key_id"))
         self.cfg = cfg
         self._private_profile = distribution.profile() if distribution.ENABLED else None
         self.status = "排队中"
@@ -251,7 +306,8 @@ class Run:
                 "gate": GATE.snapshot(),
                 "seconds": round((self.ended or time.time()) - self.started, 1),
                 "manifest": self.manifest_path,
-                "out_dir": os.path.dirname(self.tasks[0].dest) if self.tasks else ""}, self._private_profile)
+                "output_dirs": self.output_dirs,
+                "out_dir": self.out_dir if self.tasks else ""}, self._private_profile)
 
     def write_manifest(self) -> None:
         write_json(self.manifest_path, release.redact({
@@ -267,6 +323,60 @@ class Run:
             "counts": self.counts(),
             "tasks": [t.row() for t in self.tasks],
         }, self._private_profile))
+
+    def retry_download(self, idx: int) -> None:
+        """Retrieve the current batch's known result; never dispatch generation."""
+        with self._lock:
+            if self.status not in ('已完成', '已停止'):
+                raise ValueError('请等待当前批次完成后再取回结果')
+            task = next((t for t in self.tasks if t.idx == idx), None)
+            if task is None or not task.download_retry or task.status != '失败':
+                raise ValueError('该任务没有可重新下载的结果；请核对原任务记录')
+            previous_status = self.status
+            self.status, self.message = '下载中', '正在重新下载已有结果，不重新生成'
+            task.status, task.error = '进行中', ''
+            task.ended = 0
+
+        def retrieve():
+            from . import managed_usage, production_diagnostics
+            session, source = task.download_retry
+            try:
+                with production_diagnostics.attempt(self, task, reuse_usage=True):
+                    session.save_item(source, task.dest, log=lambda text: self.log(text, task.idx))
+                    if task.usage:
+                        task.usage = managed_usage.complete_download(
+                            self.cfg.get('_usage', {}).get('owner', ''), task.usage)
+                task.status, task.error, task.error_kind = '完成', '', ''
+                task.download_retry = None
+                self.log(f'[{idx}] 原结果已取回，未重新生成', idx)
+            except Exception as exc:
+                task.status, task.error_kind = '失败', TASK_FATAL
+                # The download helper already provides a safe, actionable message.
+                task.error = (str(exc) if getattr(exc, 'err_code', '') == 'result_download_failed'
+                              else f'重新下载未成功（{type(exc).__name__}），未重新生成；请检查网络和保存目录后再试')
+                self.log(f'[{idx}] {task.error}', idx)
+            finally:
+                task.ended = time.time()
+                self.save_history([task])
+                with self._lock:
+                    self.ended = time.time()
+                    self.status = previous_status
+                    c = self.counts()
+                    self.message = f"完成 {c['完成']}、失败 {c['失败']}。本次操作只下载已有结果。"
+                    try:
+                        self.write_manifest()
+                    except OSError:
+                        self.log('任务记录保存失败，请检查磁盘空间；不会重新生成')
+
+        threading.Thread(target=retrieve, daemon=True).start()
+
+    def save_history(self, tasks, status=None):
+        try:
+            task_history.record(self, tasks, status)
+        except Exception:
+            self.log('任务中心记录未能写入本机，请检查数据盘可用空间')
+            return False
+        return True
 
 
 def _dispatch(prov, task: Task, run: Run, log: Callable, resolved: list) -> dict:
@@ -324,8 +434,16 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
         run.log(f"[{task.idx}] 已存在，跳过：{os.path.basename(task.dest)}", task.idx)
         return
 
-    os.makedirs(os.path.dirname(task.dest) or ".", exist_ok=True)
+    try:
+        os.makedirs(os.path.dirname(task.dest) or ".", exist_ok=True)
+    except OSError as exc:
+        task.status, task.ended = "未发", time.time()
+        task.error = f"无法创建成品目录：{exc}"
+        run.log(task.error, task.idx)
+        return
     task.status = "进行中"
+    if run.cfg.get('_usage'):
+        run.save_history([task])
 
     def log(*a):
         run.log(" ".join(str(x) for x in a), task.idx)
@@ -341,32 +459,34 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
             task.ended = time.time()
             return
         try:
-            # 参考图解析放在重试圈**里面**：上传失败也是可重试的技术失败
-            if run.cfg.get('_usage'):
-                from . import managed
-                try:
-                    managed.manager.authorize_task(run.cfg['_usage'])
-                except managed.LoginRequired as exc:
-                    task.status = '未发'
-                    raise ApiError(str(exc), kind=BATCH_FATAL) from None
-            resolved = [resolve(r, log) for r in task.refs]
+            from . import production_diagnostics
+            with production_diagnostics.attempt(run, task):
+                # 参考图解析放在重试圈**里面**：上传失败也是可重试的技术失败
+                if run.cfg.get('_usage'):
+                    from . import managed
+                    try:
+                        managed.manager.authorize_task(run.cfg['_usage'])
+                    except managed.LoginRequired as exc:
+                        task.status = '未发'
+                        raise ApiError(str(exc), kind=BATCH_FATAL) from None
+                production_diagnostics.stage('references')
+                resolved = [resolve(r, log) for r in task.refs]
+                production_diagnostics.stage('submit')
 
-            with GATE.slot(task.provider):
-                pool = accounts.pool(task.provider)
-                if pool:
-                    # 按账号串行的家：占一个空账号，占不到就等。
-                    # 每个账号要用自己那把 key，所以在这儿现建 provider。
-                    with pool.slot(log=log, cancel=run.cancelled) as acct:
-                        p = providers.build(
-                            task.provider, acct.api_key,
-                            run.spec.get("base_url") or "",
-                            run.spec.get("proxy") or "",
-                            int(run.spec.get("timeout") or 900),
-                            adapter_sha256=run.cfg.get('_adapter_sha256', ''))
-                        meta = _tracked_dispatch(p, task, run, log, resolved)
+                pool = getattr(run, "account_pool", None)
+                account_slot = pool.slot(log=log, cancel=run.cancelled) if pool else nullcontext(None)
+                with account_slot as acct, GATE.slot(task.provider, cancel=run.cancelled):
+                    if run.cancelled():
+                        raise CancelledWhileWaiting("此批次已停止，任务尚未提交")
+                    p = prov
+                    if acct:
+                        p = providers.build(task.provider, acct.api_key,
+                                            run.spec.get("base_url") or "", run.spec.get("proxy") or "",
+                                            int(run.spec.get("timeout") or 900),
+                                            adapter_sha256=run.cfg.get('_adapter_sha256', ''))
+                    meta = _tracked_dispatch(p, task, run, log, resolved)
+                    if acct:
                         accounts.bump(task.provider, acct.label)
-                else:
-                    meta = _tracked_dispatch(prov, task, run, log, resolved)
 
             task.meta = meta or {}
             task.status = "完成"
@@ -375,8 +495,16 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
                 f"（{round(task.ended - task.started, 1)}s）")
             return
 
+        except CancelledWhileWaiting as exc:
+            task.status, task.error, task.ended = "未发", str(exc), time.time()
+            return
         except ApiError as exc:
             task.error, task.error_kind = str(exc), exc.kind
+            if getattr(exc, 'download_retry', None):
+                task.download_retry = exc.download_retry
+                task.status, task.ended = '失败', time.time()
+                log(f'[{task.idx}] {task.error}')
+                return
             if task.usage and task.usage['status'] in ('pending', 'unknown'):
                 task.status = '失败'
                 task.ended = time.time()
@@ -424,17 +552,47 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
             return
 
 
-def start(spec: dict, cfg: dict) -> Run:
+def _separate_outputs(run: Run, previous_runs) -> None:
+    """不同模型同名时保留各自成品，同一模型重复提交也不能覆盖仍在写的文件。"""
+    reserved, other_models = set(), set()
+    for previous in previous_runs:
+        active = previous.status in ("排队中", "跑批中", "下载中")
+        for task in previous.tasks:
+            path = os.path.normcase(os.path.realpath(task.dest))
+            if active or task.download_retry:
+                reserved.add(path)
+            if previous.output_route != run.output_route and (active or task.download_retry or task.status in ("完成", "跳过")):
+                other_models.add(path)
+    route_tag = hashlib.sha256(repr(run.output_route).encode()).hexdigest()[:12]
+    for task in run.tasks:
+        stem, ext = os.path.splitext(task.dest)
+        model_path = f"{stem}_{route_tag}{ext}"
+        path = os.path.normcase(os.path.realpath(task.dest))
+        if path in other_models or os.path.isfile(model_path):
+            task.dest = model_path
+            path = os.path.normcase(os.path.realpath(model_path))
+        if path in reserved:
+            task.dest = f"{stem}_{run.id}{ext}"
+
+
+def start(spec: dict, cfg: dict, *, previous_runs=()) -> Run:
     """展开任务、配好三层闸、开跑。立刻返回，实际执行在后台线程。"""
+    public_model = spec.get("model")
     if distribution.ENABLED:
         spec, cfg = release.prepare(spec)
     tasks = build_tasks(spec)
     run = Run(tasks, spec, cfg)
+    if distribution.ENABLED:
+        run.label = next((m["label"] for m in run._private_profile["models"] if m["id"] == public_model), "所选模型")
+    else:
+        run.label = " · ".join(filter(None, (spec.get("provider"), spec.get("model"))))
+    _separate_outputs(run, previous_runs)
 
     def stop_now(msg: str) -> Run:
         run.status, run.message = "已停止", msg
         run.ended = time.time()
         run.log(msg)
+        run.save_history(tasks, '未发')
         return run
 
     if not tasks:
@@ -486,8 +644,10 @@ def start(spec: dict, cfg: dict) -> Run:
     # 配置里那张 per_provider 表不知道它。不设的话会有多条挤在同一个账号上 ——
     # 表现不是报错，是那一家直接拒或排队超时，失败记录只会说「生成失败」。
     if getattr(prov, "per_account_serial", False):
-        n = accounts.configure(pid, api_key)
-        GATE.set_provider_limit(pid, max(1, n))
+        run.account_pool = accounts.configured_pool(pid, api_key)
+        n = len(run.account_pool)
+        if not n:
+            return stop_now("未找到可用账号凭据")
         run.log(f"{prov.name} 按账号计费、一个账号同时只能跑一条 —— 当前 {n} 个账号，"
                 f"就是 {n} 路并发，其余排队。想更快就在设置里多粘几个账号。")
 
@@ -504,10 +664,20 @@ def start(spec: dict, cfg: dict) -> Run:
         run.log(f"{prov.name} 的创建请求按次计费、文档明写不得自动重试 —— "
                 f"这一批每条只发一次，「失败重试」那个数对它不生效。")
 
+    try:
+        for directory in run.output_dirs:
+            os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        return stop_now(f"无法创建成品目录：{exc}")
+
+    if not run.save_history(tasks):
+        return stop_now('无法暂存本批任务记录，释放客户端数据盘空间后再提交')
+
     def worker(t: Task) -> None:
         try:
             _execute(run, t, prov, resolve, max_retry)
         finally:
+            run.save_history([t])
             try:
                 run.write_manifest()      # 每条落一次：中途被强杀也留得下结果
             except Exception:             # noqa: BLE001
@@ -515,14 +685,11 @@ def start(spec: dict, cfg: dict) -> Run:
 
     def go() -> None:
         run.status = "跑批中"
-        display_model = (next((m["label"] for m in release.catalog()
-                               if m["provider"] == pid and m["model"] == spec.get("model")), "所选模型")
-                         if distribution.ENABLED else f"{prov.name} / {spec.get('model')}")
-        run.log(f"开跑：{len(tasks)} 条，{workers} 路并发，"
-                f"{display_model}，输出到 "
-                f"{os.path.dirname(tasks[0].dest)}")
+        destinations = run.output_dirs[0] if len(run.output_dirs) == 1 else f"{len(run.output_dirs)} 个成品目录"
+        run.log(f"开跑：{len(tasks)} 条，{workers} 路并发，{run.label}，输出到 {destinations}")
         try:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            budget = GATE.batch_limit(run.id, workers) if distribution.ENABLED else nullcontext()
+            with budget, ThreadPoolExecutor(max_workers=workers) as pool:
                 list(pool.map(worker, tasks))
         except Exception as exc:                            # noqa: BLE001
             run.message = f"跑批异常：{exc}"

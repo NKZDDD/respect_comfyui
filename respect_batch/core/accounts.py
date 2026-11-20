@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import re
 import threading
 import time
@@ -33,6 +32,7 @@ from contextlib import contextmanager
 from typing import Callable, Optional
 
 from . import paths
+from .limits import CancelledWhileWaiting
 
 # **不能用绝对时间当上限。** 原来写的是 3600 秒，而合法的等待远超它：
 # 一个账号 × 50 条视频 × 每条 5 分钟 = 4 小时以上，第十几条之后就会报
@@ -48,6 +48,8 @@ STUCK_SECONDS = 3600
 KEEP_DAYS = 60
 
 _LOCK = threading.RLock()
+_AVAILABLE = threading.Condition()
+_BUSY: set = set()
 _POOLS: dict = {}          # provider_id → _Pool
 _USAGE_LOCK = threading.RLock()
 
@@ -160,71 +162,69 @@ class _Pool:
     def __init__(self, provider: str, accounts: list):
         self.provider = provider
         self.accounts = list(accounts)
-        self._free: queue.Queue = queue.Queue()
-        for a in self.accounts:
-            self._free.put(a)
-        # 最后一次有账号被归还的时刻。**判「卡住了」用它，不用绝对等待时长** ——
-        # 一个账号排 50 条队是正常的，等 4 小时也正常。
-        self._last_release = time.time()
+        self._next = 0
+        self._keys = []
+        for account in self.accounts:
+            device = _DEVICE.search(account.api_key)
+            self._keys.append((provider, device.group(1) if device else account.api_key))
+        self._last_release = time.monotonic()
 
     def __len__(self) -> int:
         return len(self.accounts)
 
     def busy(self) -> int:
-        return max(0, len(self.accounts) - self._free.qsize())
+        with _AVAILABLE:
+            return sum(key in _BUSY for key in set(self._keys))
 
     @contextmanager
     def slot(self, log: Optional[Callable] = None,
              cancel: Optional[Callable] = None):
-        """占一个空账号。全忙就等 —— 这就是「一个账号只能跑一条」的实现。"""
-        waited = 0.0
+        started = time.monotonic()
         told = False
-        while True:
-            if cancel and cancel():
-                raise RuntimeError("等空账号的时候被取消了")
-            try:
-                acct = self._free.get(timeout=2)
+        with _AVAILABLE:
+            while True:
+                if cancel and cancel():
+                    raise CancelledWhileWaiting("等空账号时已取消")
+                for _ in self.accounts:
+                    i = self._next
+                    self._next = (i + 1) % len(self.accounts)
+                    key = self._keys[i]
+                    if key not in _BUSY:
+                        _BUSY.add(key)
+                        break
+                else:
+                    elapsed = time.monotonic() - started
+                    if log and elapsed >= 4 and not told:
+                        log(f"{len(self.accounts)} 个账号都在忙，正在等待空闲账号")
+                        told = True
+                    if time.monotonic() - max(started, self._last_release) >= STUCK_SECONDS:
+                        raise RuntimeError("等待账号超时，请查看正在生成的任务")
+                    _AVAILABLE.wait(2)
+                    continue
                 break
-            except queue.Empty:
-                waited += 2
-                if log and not told and waited >= 4:
-                    told = True
-                    log(f"{len(self.accounts)} 个账号都在忙，排队等一个空的 —— "
-                        f"这一家一个账号只能同时生成一条，"
-                        f"{len(self.accounts)} 个账号就是 {len(self.accounts)} 路并发，"
-                        f"剩下的按顺序一条一条来（想更快就多配账号）。")
-                idle = time.time() - self._last_release
-                if idle >= STUCK_SECONDS:
-                    raise RuntimeError(
-                        f"已经 {int(idle)} 秒没有任何账号被归还了 —— 队伍不动了。"
-                        f"（自己等了 {int(waited)} 秒。这一家一个账号同时只能生成一条，"
-                        f"当前配了 {len(self.accounts)} 个账号，排队本身是正常的，"
-                        f"但这么久一条都没做完不正常。）"
-                        f"去看在跑的那几条是不是卡在轮询上，或者把出片的"
-                        f"「等出结果最多多久」调小一点。")
-        if log:
-            log(f"用账号 {acct.label}（这一家一个账号只能同时跑一条）")
+        acct = self.accounts[i]
         try:
+            if log:
+                log(f"用账号 {acct.label}（这一家一个账号只能同时跑一条）")
             yield acct
         finally:
-            self._free.put(acct)
-            self._last_release = time.time()   # 队伍往前走了一格
+            with _AVAILABLE:
+                _BUSY.remove(key)
+                self._last_release = time.monotonic()
+                _AVAILABLE.notify_all()
 
 
-def configure(provider: str, api_key: str) -> int:
-    """按当前凭据文本重建这一家的账号池，返回账号数。
-
-    账号没变就**不重建** —— 重建会把在途任务占着的槽位凭空变回空闲，
-    于是同一个账号上会挤进两条，而那正是这套东西要防的事。
-    """
+def configured_pool(provider: str, api_key: str) -> _Pool:
     fresh = parse_accounts(api_key)
     with _LOCK:
         old = _POOLS.get(provider)
-        if old is not None and [a.api_key for a in old.accounts] == \
-                [a.api_key for a in fresh]:
-            return len(old)
-        _POOLS[provider] = _Pool(provider, fresh)
-        return len(fresh)
+        if old is None or [a.api_key for a in old.accounts] != [a.api_key for a in fresh]:
+            _POOLS[provider] = _Pool(provider, fresh)
+        return _POOLS[provider]
+
+
+def configure(provider: str, api_key: str) -> int:
+    return len(configured_pool(provider, api_key))
 
 
 def pool(provider: str) -> Optional[_Pool]:

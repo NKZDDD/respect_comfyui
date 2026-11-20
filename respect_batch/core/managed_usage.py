@@ -106,6 +106,16 @@ def snapshot():
     return dict(ctx['event']) if ctx and ctx.get('event') else None
 
 
+def complete_download(owner, event):
+    """Update the same generation attempt after retrieval, without counting another."""
+    updated = dict(event, sequence=event['sequence'] + 1, status='completed', updated_at=int(time.time()))
+    try:
+        persist(owner, updated)
+    except ValueError:
+        pass  # A reporting failure must not turn a saved result into a failed task.
+    return updated
+
+
 @contextmanager
 def tracking(assignment, task):
     if not assignment:

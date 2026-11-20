@@ -27,9 +27,10 @@ def read_json(path: str, default: Any = None) -> Any:
             return default
 
 
-def write_json(path: str, data: Any) -> None:
+def write_json(path: str, data: Any, *, redact_output: bool = True) -> None:
     from .release import redact
-    data = redact(data)
+    if redact_output:
+        data = redact(data)
     with LOCK:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"

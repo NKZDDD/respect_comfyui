@@ -1,6 +1,16 @@
 """Join public supplier statistics to the account's exact, private model routes."""
-from . import providers, release
-from .supplier_statistics import CACHE
+from . import providers, release, supplier_statistics as supplier
+from .statistics_transport import get_json
+
+
+def _fetch_public(pid):
+    base, path, _ = supplier.SOURCES[pid]
+    data = get_json(base + path)
+    catalog = get_json(base + '/api/models') if pid == 'zhongheng' else None
+    return supplier.normalize(pid, data, catalog)
+
+
+CACHE = supplier.StatisticsCache(fetcher=_fetch_public)
 
 
 def snapshot():

@@ -22,24 +22,33 @@ def catalog() -> list:
 def public_boot() -> dict:
     from . import config, paths, refs, uploader
     cfg = config.load()
+    profile = distribution.profile()
+    incomplete = bool(profile.get('managed') and profile.get('issues'))
     caps = {"id": "preset", "name": "Respect", "supports": []}
     for kind in ("image", "video"):
-        rows = [r for r in catalog() if r["kind"] == kind]
-        if not rows:
+        rows = [r for r in profile['models'] if r["kind"] == kind]
+        # A failed discovery does not mean the account lost that production mode.
+        # Keep the entry visible without restoring stale or unapproved routes.
+        if not rows and not incomplete:
             continue
         caps["supports"].append(kind)
-        caps[kind] = {"models": [r["id"] for r in rows], "default_model": rows[0]["id"],
+        caps[kind] = {"models": [r["id"] for r in rows], "default_model": rows[0]["id"] if rows else '',
                       "model_labels": {r["id"]: r["label"] for r in rows},
                       "model_options": {r["id"]: {**{k: v for k, v in r["options"].items()
                                                 if k in OPTION_KEYS},
-                          "upload_ready": uploader.configured(refs.upload_config(cfg, r["provider"]))}
+                          "upload_ready": uploader.configured(refs.upload_config(cfg, r["provider"])),
+                          "upload_warning": uploader.unavailable_reason(refs.upload_config(cfg, r["provider"]))}
                           for r in rows}}
-    return {"ok": True, "distribution": True, "preview": bool(distribution.profile().get("preview")),
+        if not rows:
+            name = '图片' if kind == 'image' else '视频'
+            caps[kind]['empty_message'] = f'暂无可用{name}模型。模型目录未完整加载，请检查上方提示，再点击“刷新后台配置与模型”。'
+    return {"ok": True, "distribution": True, "preview": bool(profile.get("preview")),
             "providers": [caps], "templates": [],
             "config": {"providers": {"preset": {"api_key": "configured"}},
                        "defaults": cfg["defaults"], "limits": {"global": cfg["limits"]["global"]}},
             "default_out_dir": paths.default_out_dir(), "data_dir": "",
-            "upload_ready": uploader.configured(cfg.get("upload"))}
+            "upload_ready": uploader.configured(cfg.get("upload")),
+            "upload_warning": uploader.unavailable_reason(cfg.get("upload"))}
 
 
 def prepare(raw: dict) -> tuple[dict, dict]:
@@ -81,7 +90,7 @@ def prepare(raw: dict) -> tuple[dict, dict]:
     for pool in pools:
         check_refs(pool)
     for row in rows:
-        if not isinstance(row, dict) or set(row) - {"prompt", "refs"}:
+        if not isinstance(row, dict) or set(row) - {"prompt", "refs", "output_folder"}:
             raise ValueError("任务格式不正确")
         if not isinstance(row.get("prompt"), str):
             raise ValueError("提示词必须是文字")
@@ -116,9 +125,9 @@ def prepare(raw: dict) -> tuple[dict, dict]:
                                     for row in rows):
         raise ValueError(f"当前模型每条最多 {max_refs} 张参考图，请减少参考图或素材库")
     if (shared or pool_count or any(r.get("refs") for r in rows)) and opts.get("ref_mode") == "url":
-        from .uploader import configured
+        from .uploader import configured, unavailable_reason
         if not configured(refs.upload_config(cfg, item["provider"])):
-            raise ValueError("尚未配置图片上传服务，请联系管理员分配 R2 上传授权")
+            raise ValueError(unavailable_reason(refs.upload_config(cfg, item["provider"])))
     defaults = cfg["defaults"]
     out.update(provider=item["provider"], model=item["model"], kind=item["kind"])
     out["concurrency"] = max(1, int(raw.get("concurrency") or defaults["concurrency"]))
@@ -157,7 +166,7 @@ def redact(value, profile=None):
                      "source", "raw", "response", "headers", "authorization",
                      "per_provider_limit", "per_provider_inflight", "_usage", "route", "adapter_sha256", "_adapter_sha256"}
 
-    user_fields = {"prompt", "path", "dest", "manifest", "out_dir", "refs", "ref_slots", "name"}
+    user_fields = {"prompt", "path", "dest", "manifest", "out_dir", "output_dirs", "refs", "ref_slots", "name"}
 
     def clean(v, hide_source=True):
         if isinstance(v, dict):

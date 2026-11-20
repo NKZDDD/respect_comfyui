@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import requests
 
-from . import submitted
+from . import submitted, production_diagnostics
 
 # 完成词。**多收几个同义词是有价值的**，不只是靠下面那支兜底：
 # 认出「完成」之后还有一步 —— 完成了但响应里没给地址时，会去打
@@ -1050,6 +1050,7 @@ class HttpSession:
             return {"http": "", "https": ""}
         return {"http": self.proxy, "https": self.proxy} if self.proxy else None
 
+    @production_diagnostics.request_call
     def request(self, method: str, path: str, *, json_body: Any = None, params: Any = None,
                 files: Any = None, raw_body: Any = None, headers: Optional[dict] = None,
                 retries: int = 3, timeout: Optional[int] = None,
@@ -1058,6 +1059,14 @@ class HttpSession:
         提交之前的上传之类要显式传 `submit=False`，否则上传超时也会被当成提交不确定。
         """
         url = path if path.startswith("http") else self.base_url + path
+        if files:
+            # Downloaded adapters may mix text fields and image tuples here.
+            # Requests treats a bare string in `files` as a file with a filename;
+            # upstream form parsers then see an empty model/prompt. Keep file
+            # tuples and duplicate image fields intact, but mark scalar fields.
+            parts = files.items() if isinstance(files, dict) else files
+            files = [(name, (None, str(value)) if isinstance(value, (str, int, float, bool)) else value)
+                     for name, value in parts]
         last: Optional[Exception] = None
         if submit is None:
             submit = (method.upper() == "POST" and submitted.submitting()
@@ -1073,6 +1082,7 @@ class HttpSession:
                 request_headers = self._headers(multipart=bool(files))
                 if headers:
                     request_headers.update(headers)
+                production_diagnostics.observe_network()
                 resp = requests.request(
                     method, url, headers=request_headers,
                     json=json_body, data=raw_body, params=params, files=files,
@@ -1080,6 +1090,7 @@ class HttpSession:
                     allow_redirects=not (managed_usage.active() or
                         (distribution.ENABLED and getattr(distribution, 'MANAGED', False))),
                 )
+                production_diagnostics.observe_response(resp)
                 if resp.status_code >= 400:
                     if tracked:
                         managed_usage.failed_request(resp.status_code)
@@ -1202,6 +1213,7 @@ class HttpSession:
                and last_status not in RUNNING_STATES else ""),
             status=0, kind=RETRYABLE)
 
+    @production_diagnostics.download_call
     def save_item(self, item: str, dest: str, retries: int = 3, *, log=None) -> str:
         """结果（http / data URI / 裸base64）暂存、校验，再原子发布。
 
@@ -1225,10 +1237,12 @@ class HttpSession:
                 log("结果已保存并通过文件检查")
                 return result
             except ApiError as exc:
+                if not remote:
+                    raise
+                last = exc
                 if exc.kind == TASK_FATAL or ("字节" not in str(exc)
                                               and exc.err_code != "result_invalid"):
-                    raise                       # 不是空文件，是别的错，别在这儿吞
-                last = exc
+                    break
             except requests.RequestException as exc:
                 last = exc
                 # 鉴权回退已经试过。永久 HTTP 错误不必再请求同一个地址。
@@ -1237,14 +1251,23 @@ class HttpSession:
                 if 400 <= status < 500 and status not in (404, 408, 425, 429):
                     break
             if attempt < attempts - 1:
-                log(f"下载未成功，将重新下载同一结果，不重新生成：{str(last)[:180]}")
+                log(f"下载未成功，将重新下载同一结果，不重新生成（{type(last).__name__}）")
                 time.sleep(2 * (attempt + 1))
-        if (isinstance(last, requests.RequestException)
-                or isinstance(last, ApiError) and last.err_code == "result_invalid"):
+        if remote:
+            response = getattr(last, 'response', None)
+            status = getattr(response, 'status_code', 0) or getattr(last, 'status', 0)
+            reason = ('TLS 连接中断，请检查下载线路或代理规则' if isinstance(last, requests.exceptions.SSLError)
+                      else '代理连接失败，请检查联网设置' if isinstance(last, requests.exceptions.ProxyError)
+                      else '下载连接超时' if isinstance(last, requests.exceptions.Timeout)
+                      else f'下载服务器返回 HTTP {status}' if status else f'下载或文件检查失败（{type(last).__name__}）')
             exc = ApiError(
                 f"结果下载失败：已取得服务商结果，但取回或文件检查未能通过（尝试 {attempt + 1} 次）。"
-                f"已停止自动重试生成，避免重复计费。最后的下载错误：{last}",
-                kind=TASK_FATAL, err_code="result_download_failed")
+                f"{reason}。调整联网设置后可点“仅重新下载”，不会重新生成。"
+                f"若链接已过期，请从原任务取回结果。",
+                status=status, kind=TASK_FATAL, err_code="result_download_failed")
+            # In-memory recovery only. Never serialize the signed URL or session
+            # credentials into the public task record, logs or diagnostics.
+            exc.download_retry = (self, item)
             exc.extra_fix = ([f"已返回的结果地址：{item}"] if remote else
                              ["服务商返回的是内嵌图片，请从该任务取回完整原图。"]) + [f"应保存到：{dest}"]
             raise exc from last

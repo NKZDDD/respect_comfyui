@@ -20,7 +20,7 @@ def page():
     text = render((ROOT / 'web/index.html').read_text(encoding='utf-8')).decode('utf-8')
     if text.count('\nboot();') != 1:
         raise ValueError('发行页面启动入口已变化，请更新构建器')
-    scripts = '\n'.join((ROOT / 'web' / name).read_text(encoding='utf-8') for name in ('model-statistics.js', 'managed.js', 'updates.js'))
+    scripts = '\n'.join((ROOT / 'web' / name).read_text(encoding='utf-8') for name in ('model-statistics.js', 'managed.js', 'network.js', 'updates.js'))
     css = (ROOT / 'web/model-statistics.css').read_text(encoding='utf-8')
     text = text.replace('</head>', '<style>' + css + '</style></head>')
     text = text.replace('\nboot();', '\n' + scripts)

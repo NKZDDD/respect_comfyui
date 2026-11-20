@@ -52,6 +52,13 @@ IMAGE_25 = [
     "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2K-Native",
     "gpt-image-2.5-sunburst-4K-Native",
 ]
+# Gemini TH exposes output resolution as image_size on both image endpoints.
+GEMINI_TH_RESOLUTIONS = {
+    "gemini-3-pro-image-preview-th": ["1K", "2K", "4K"],
+    "gemini-3.1-flash-image-preview-th": ["512", "1K", "2K", "4K"],
+    "gemini-nano-banana-2.1-th": ["512", "1K", "2K", "4K"],
+    "nano-banana-2.1-th": ["512", "1K", "2K", "4K"],
+}
 IMAGE_MODELS = [
     "gpt-image-2-th", "gpt-image-2.5-th", "gpt-image-2.5-flare-th", "gpt-image-2.5-sunburst-th",
     *IMAGE_25,
@@ -70,6 +77,7 @@ IMAGE_MODELS = [
     "gpt-image2-2K-Direct", "gpt-image2-4K-Direct",
     "gpt-image-1k-th",
     "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
+    *GEMINI_TH_RESOLUTIONS,
 ]
 
 # 逐模型的约束，来自实拉 schema。**只写它声明了的** ——
@@ -85,6 +93,12 @@ TH_SIZED_MODELS = ("gpt-image-2-th", "gpt-image-2.5-th", "gpt-image-2.5-flare-th
 for _model in TH_SIZED_MODELS:
     IMAGE_MODEL_OPTIONS[_model] = {"resolutions": ["1K", "2K", "4K"], "default_resolution": "1K"}
 IMAGE_MODEL_OPTIONS["gpt-image-1k-th"] = {"resolutions": ["1K"]}
+for _model, _resolutions in GEMINI_TH_RESOLUTIONS.items():
+    IMAGE_MODEL_OPTIONS[_model] = {"resolutions": _resolutions, "default_resolution": "1K"}
+IMAGE_RESOLUTION_FIELDS = {
+    **dict.fromkeys(TH_SIZED_MODELS, "size"),
+    **dict.fromkeys(GEMINI_TH_RESOLUTIONS, "image_size"),
+}
 for _model in IMAGE_MODELS:
     if _model in TH_SIZED_MODELS or _model == "gpt-image-1k-th":
         continue
@@ -420,6 +434,7 @@ class ChaomoProvider(Provider):
         model = task.model or "gpt-image-2.5-flare"
         ratio = _to_ratio(task.size)
         resolution = str(task.extra.get("resolution") or "").upper()
+        resolution_field = IMAGE_RESOLUTION_FIELDS.get(model)
         allowed = IMAGE_MODEL_OPTIONS.get(model, {}).get("resolutions", [])
         if resolution and resolution not in allowed:
             raise ApiError(f"{model} 不支持图片清晰度 {resolution}，请选择对应档位的模型。", kind="task_fatal")
@@ -443,8 +458,8 @@ class ChaomoProvider(Provider):
                      # 返回可核验的实际宽高/格式/**字节数**，用来核对有没有传丢
                      ("include_metadata", (None, "true"))]
             attached = 0
-            if model in TH_SIZED_MODELS:
-                files.append(("size", (None, resolution or "1K")))
+            if resolution_field:
+                files.append((resolution_field, (None, resolution or "1K")))
             for i, ref in enumerate(refs, start=1):
                 got = self._ref_bytes(ref, i, log=log)
                 if got:
@@ -469,8 +484,8 @@ class ChaomoProvider(Provider):
                     "include_metadata": True}
             if task.extra.get("quality"):
                 body["quality"] = str(task.extra["quality"])
-            if model in TH_SIZED_MODELS:
-                body["size"] = resolution or "1K"
+            if resolution_field:
+                body[resolution_field] = resolution or "1K"
             log(f"超模 文生图 {model}: ratio={ratio}")
             data = self.session.request("POST", "/v1/images/generations", json_body=body,
                                         retries=2, timeout=600)

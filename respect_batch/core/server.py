@@ -19,19 +19,44 @@ import subprocess
 import sys
 import threading
 import traceback
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (accounts, assets, batch, config, distribution, paths, providers,
-               release, templates, uploader, model_catalog, managed, updates)
+               release, templates, uploader, model_catalog, managed, updates, network)
 
-# 当前这一次跑批。**故意只留一个**：并发在批内部，不在批之间。
-# 允许同时开几批的话，三层闸还是全局的，两批会互相抢槽，
-# 而页面上各自显示自己的进度，看起来像"变慢了"却查不出原因。
-_RUN: dict = {"cur": None}
+_RUNS: dict[str, batch.Run] = {}
+_ACTIVE = {"跑批中", "排队中", "下载中"}
 _LOCK = threading.RLock()
 _SESSION = secrets.token_urlsafe(32)
 PERSONAL = False
+
+
+def _busy_run():
+    return next((run for run in _RUNS.values() if run.status in _ACTIVE), None)
+
+
+def _visible_runs(cookie):
+    if not managed.enabled():
+        return list(_RUNS.values())
+    if not managed.manager.matches(cookie):
+        raise managed.LoginRequired()
+    owner = (managed.manager.user or {}).get('id')
+    return [run for run in _RUNS.values() if owner and run.cfg.get('_usage', {}).get('owner') == owner]
+
+
+def _selected_run(run_id, visible, *, action=False):
+    if run_id:
+        run = _RUNS.get(run_id)
+        if run is None:
+            raise ValueError('未找到此批次，请刷新批次列表')
+        if run not in visible:
+            raise managed.LoginRequired('该批次属于另一个账号', 'run_owner_mismatch', 403)
+        return run
+    if action and len(visible) > 1:
+        raise ValueError('请选择要操作的批次')
+    return visible[-1] if visible else None
 
 
 def _json_bytes(obj) -> bytes:
@@ -61,6 +86,12 @@ class Handler(BaseHTTPRequestHandler):
     def _ok(self, obj) -> None:
         self._send(200, _json_bytes(release.redact(obj)), "application/json; charset=utf-8")
 
+    def _network(self, value) -> None:
+        # This endpoint contains only validated local preferences. The generic
+        # upstream redactor would destroy the user-entered proxy URL.
+        self._send(200, _json_bytes({'ok': True, 'network': network.validate(value)}),
+                   'application/json; charset=utf-8')
+
     def _err(self, msg: str, code: int = 400) -> None:
         self._send(code, _json_bytes({"ok": False, "msg": release.redact(str(msg))}),
                    "application/json; charset=utf-8")
@@ -89,19 +120,20 @@ class Handler(BaseHTTPRequestHandler):
         if (self.headers.get("Host") not in hosts or
                 self.headers.get("Origin") not in (None, *[f"http://{h}" for h in hosts])):
             return deny("请从本程序打开的页面操作")
-        allowed = ({"/api/upload", "/api/start", "/api/cancel", "/api/pick_dir", "/api/open"}
+        allowed = ({"/api/upload", "/api/start", "/api/cancel", "/api/pick_dir", "/api/open", "/api/retry-download"}
                    if post else {"/", "/index.html", "/api/boot", "/api/run", "/api/file"})
         if managed.enabled():
-            allowed |= ({'/api/auth/login', '/api/auth/logout', '/api/auth/refresh'} if post else {'/api/auth/status'})
+            allowed.add('/api/network')
+            allowed |= ({'/api/auth/login', '/api/auth/logout', '/api/auth/refresh', '/api/auth/page'} if post else {'/api/auth/status'})
             allowed |= ({'/api/updates/check', '/api/updates/download', '/api/updates/install'} if post else {'/api/updates/status'})
             if not post:
                 allowed.add('/api/model-statistics')
         if distribution.ENABLED and route not in allowed:
             return deny("发行版未开放此功能")
-        if (post or route in ("/api/boot", "/api/run", "/api/model-statistics")) and not secrets.compare_digest(
+        if (post or route in ("/api/boot", "/api/run", "/api/model-statistics", "/api/network")) and not secrets.compare_digest(
                 self.headers.get("X-Respect-Session", ""), _SESSION):
             return deny("页面已失效，请重新打开程序页面")
-        if managed.enabled() and not route.startswith('/api/updates/') and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status'):
+        if managed.enabled() and not route.startswith('/api/updates/') and route not in ('/', '/index.html', '/api/auth/login', '/api/auth/status', '/api/auth/page', '/api/network'):
             try:
                 # Logout still works when offline; refresh can recover an expired grant.
                 if route in ('/api/auth/logout', '/api/auth/refresh'):
@@ -109,9 +141,6 @@ class Handler(BaseHTTPRequestHandler):
                         raise managed.LoginRequired()
                 else:
                     managed.manager.require(self.headers.get('Cookie'), force=route == '/api/start')
-                current = _RUN['cur']
-                if route in ('/api/run', '/api/cancel', '/api/open') and current and current.cfg.get('_usage', {}).get('owner') != (managed.manager.user or {}).get('id'):
-                    raise managed.LoginRequired('该批次属于另一个账号，请切回原账号查看', 'run_owner_mismatch', 403)
             except managed.LoginRequired as exc:
                 return deny(str(exc), exc.status)
         return True
@@ -145,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._release_access(u.path):
             return
         try:
+            if u.path == '/api/network' and managed.enabled():
+                return self._network(network.load())
             if u.path == '/api/updates/status' and managed.enabled():
                 return self._ok({'ok': True, **updates.manager.status()})
             if u.path == '/api/auth/status' and managed.enabled():
@@ -179,12 +210,16 @@ class Handler(BaseHTTPRequestHandler):
 
             if u.path == "/api/run":
                 with _LOCK:
-                    run = _RUN["cur"]
-                if not run:
-                    return self._ok({"ok": True, "idle": True})
-                frm = int((q.get("log_from") or ["0"])[0])
-                return self._ok({"ok": True, "idle": False,
-                                 **run.snapshot(log_from=frm)})
+                    visible = _visible_runs(self.headers.get('Cookie'))
+                    requested = q.get('run_id', [''])[0]
+                    run = _selected_run(requested if requested in _RUNS else '', visible)
+                    if not run:
+                        return self._ok({"ok": True, "idle": True, "runs": []})
+                    summaries = [{"id": r.id, "label": r.label, "status": r.status,
+                                  "total": len(r.tasks)} for r in reversed(visible)]
+                    offset = 0 if requested and run.id != requested else int(q.get('log_from', ['0'])[0])
+                    snapshot = run.snapshot(log_from=offset)
+                return self._ok({"ok": True, "idle": False, "runs": summaries, **snapshot})
 
             if u.path == "/api/file":
                 # 只放行 uploads 目录里的 —— 不限制的话这个进程就成了
@@ -196,6 +231,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, f.read(), assets.content_type(path))
 
             return self._err("没有这个地址", 404)
+        except managed.LoginRequired as exc:
+            return self._err(str(exc), exc.status)
+        except ValueError as exc:
+            return self._err(str(exc), 400)
         except FileNotFoundError as exc:
             return self._err(f"找不到界面文件：{exc}", 500)
         except Exception as exc:                            # noqa: BLE001
@@ -229,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._err(str(exc), 400)
         try:
+            if u.path == '/api/network' and managed.enabled():
+                return self._network(network.save(body))
             if managed.enabled() and u.path.startswith('/api/updates/'):
                 if u.path == '/api/updates/check':
                     return self._ok({'ok': True, **updates.manager.check()})
@@ -236,17 +277,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self._ok({'ok': True, **updates.manager.download()})
                 if u.path == '/api/updates/install':
                     with _LOCK:
-                        return self._ok({'ok': True, **updates.manager.install(_RUN['cur'])})
+                        return self._ok({'ok': True, **updates.manager.install(_busy_run())})
+            if managed.enabled() and u.path == '/api/auth/page':
+                managed.manager.report_page(self.headers.get('Cookie'), body)
+                return self._ok({'ok': True})
             if managed.enabled() and u.path.startswith('/api/auth/'):
                 with _LOCK:
                     if u.path != '/api/auth/login' and not managed.manager.matches(self.headers.get('Cookie')):
                         raise managed.LoginRequired()
-                    current = _RUN['cur']
-                    if current and current.status in ('跑批中', '排队中'):
+                    if _busy_run():
                         raise ValueError('请先停止新任务并等待当前批次收尾，再刷新配置或切换账号')
                     if u.path == '/api/auth/login':
                         token = managed.manager.login(body)
-                        _RUN['cur'] = None
+                        _RUNS.clear()
                         return self._send(200, _json_bytes({'ok': True}), 'application/json; charset=utf-8',
                             f'{managed.COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/')
                     if u.path == '/api/auth/refresh':
@@ -254,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._ok({'ok': True})
                     if u.path == '/api/auth/logout':
                         managed.manager.logout(self.headers.get('Cookie'))
-                        _RUN['cur'] = None
+                        _RUNS.clear()
                         return self._send(200, _json_bytes({'ok': True}), 'application/json; charset=utf-8',
                             f'{managed.COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0')
             if u.path == "/api/config":
@@ -318,19 +361,31 @@ class Handler(BaseHTTPRequestHandler):
                 pid = body.get("provider") or ""
                 return self._ok({"ok": True, "report": accounts.report(pid)})
 
+            if u.path == '/api/retry-download':
+                with _LOCK:
+                    cur = _selected_run(body.get('run_id'), _visible_runs(self.headers.get('Cookie')), action=True)
+                    if not cur or body.get('run_id') != cur.id:
+                        raise ValueError('任务批次已切换，请刷新当前任务列表')
+                    if set(body) != {'run_id', 'task_idx'} or type(body['task_idx']) is not int:
+                        raise ValueError('请选择当前列表中需要下载的任务')
+                    cur.retry_download(body['task_idx'])
+                    return self._ok({'ok': True})
+
             if u.path == "/api/start":
                 with _LOCK:
                     if managed.enabled():
                         if updates.manager.status()['phase'] == 'installing':
                             raise ValueError('正在安装更新，请等待程序重新启动')
                         managed.manager.require(self.headers.get('Cookie'))
-                    cur = _RUN["cur"]
-                    if cur and cur.status in ("跑批中", "排队中"):
-                        return self._ok({"ok": False,
-                                         "msg": "已经有一批在跑了。要么等它跑完，"
-                                                "要么先点「停止」。"})
                     cfg = config.load()
                     spec = dict(body.get("spec") or {})
+                    submission_id = body.get('submission_id')
+                    if submission_id is not None:
+                        submission_id = str(uuid.UUID(str(submission_id)))
+                        previous = next((r for r in _visible_runs(self.headers.get('Cookie'))
+                                         if r.submission_id == submission_id), None)
+                        if previous:
+                            return self._ok({"ok": True, **previous.snapshot()})
                     d = cfg.get("defaults") or {}
                     if not distribution.ENABLED:
                         spec.setdefault("out_dir", d.get("out_dir"))
@@ -342,25 +397,37 @@ class Handler(BaseHTTPRequestHandler):
                                         d.get("poll_timeout_image", 900)
                                         if spec.get("kind") == "image"
                                         else d.get("poll_timeout_video", 2400))
-                    run = batch.start(spec, cfg)
-                    _RUN["cur"] = run
+                    run = batch.start(spec, cfg, previous_runs=_RUNS.values())
+                    run.submission_id = submission_id
+                    _RUNS[run.id] = run
+                    # Keep recent finished runs in the picker; pending downloads still need their session.
+                    finished = [r.id for r in _RUNS.values() if r.status not in _ACTIVE
+                                and not any(t.download_retry for t in r.tasks)]
+                    for old in finished[:-30]:
+                        del _RUNS[old]
                 return self._ok({"ok": True, "id": run.id, **run.snapshot()})
 
             if u.path == "/api/cancel":
                 with _LOCK:
-                    run = _RUN["cur"]
-                if not run:
-                    return self._ok({"ok": False, "msg": "现在没有在跑的批次"})
-                run.cancel()
+                    run = _selected_run(body.get('run_id'), _visible_runs(self.headers.get('Cookie')), action=True)
+                    if not run or run.status not in ('排队中', '跑批中'):
+                        return self._ok({"ok": False, "msg": "此批次没有可停止的生成任务"})
+                    run.cancel()
                 return self._ok({"ok": True})
 
             if u.path == "/api/open":
                 path = (body.get("path") or "").strip()
                 if distribution.ENABLED:
-                    cur = _RUN["cur"]
-                    allowed = [cur.manifest_path, os.path.dirname(cur.tasks[0].dest)] if cur and cur.tasks else []
-                    if os.path.abspath(path) not in [os.path.abspath(p) for p in allowed]:
+                    with _LOCK:
+                        cur = _selected_run(body.get('run_id'), _visible_runs(self.headers.get('Cookie')), action=True)
+                        directories = [cur.out_dir, *cur.output_dirs] if cur and cur.tasks else []
+                        manifest = cur.manifest_path if cur and cur.tasks else None
+                    requested = os.path.normcase(os.path.abspath(path))
+                    is_record = manifest and requested == os.path.normcase(os.path.abspath(manifest))
+                    if not is_record and not any(requested == os.path.normcase(os.path.abspath(p)) for p in directories):
                         return self._err("只能打开本次任务的成品目录或记录", 403)
+                    if not is_record and not os.path.isdir(path):
+                        return self._ok({"ok": False, "msg": "成品目录不存在或无法访问"})
                 if not path or not os.path.exists(path):
                     return self._ok({"ok": False, "msg": f"路径不存在：{path}"})
                 if os.name == "nt":
@@ -383,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8790) -> ThreadingHTTPServer:
+    if managed.enabled():
+        network.install()
     httpd = ThreadingHTTPServer((host, port), Handler, bind_and_activate=False)
     try:
         if os.name == "nt":

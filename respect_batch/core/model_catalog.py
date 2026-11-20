@@ -83,12 +83,12 @@ def identity(pid, pc):
 
 def fetch(pid, pc):
     """仅 GET 模型端点；不跟随跨站跳转、不返回含凭据的原始错误。"""
-    from . import distribution
+    from . import distribution, network
     managed = distribution.ENABLED and getattr(distribution, 'MANAGED', False)
     if not managed and pid == 'hvtald':
         return {'ok': False, 'msg': '该服务商使用固定账号模型，没有模型清单接口'}
     prov = providers.build(pid, pc.get('api_key', ''), pc.get('base_url', ''),
-                           'direct' if managed else pc.get('proxy') or 'direct', 20)
+                           network.proxy_value() if managed else pc.get('proxy') or 'direct', 20)
     reader = None
     if managed:
         from .providers.base import Provider
@@ -119,7 +119,7 @@ def fetch(pid, pc):
             continue
         try:
             with requests.Session() as session:
-                session.trust_env = False
+                session.trust_env = False  # no netrc auth; managed proxy hook selects the route
                 response = session.get(prov.session.base_url + endpoint,
                     headers=prov.session._headers(), proxies=prov.session._proxies(),
                     timeout=(8, 20), allow_redirects=False)

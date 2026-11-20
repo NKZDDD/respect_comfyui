@@ -22,7 +22,7 @@ def version(value):
 
 def validate_release(data):
     if not isinstance(data, dict) or data.get('flavor') != 'batch' or data.get('application') != 'batch':
-        raise ValueError('更新包不属于对外批量版，已拒绝安装')
+        raise ValueError('请选择批量创作的更新包')
     version(data.get('version'))
     url = urlsplit(data.get('url', ''))
     name = f"Respect-Batch-Setup-{data['version']}.exe"
@@ -160,7 +160,7 @@ class UpdateManager:
     def install(self, run):
         # Caller holds the same lock as /api/start, so installation and new batches cannot race.
         with self.lock:
-            if run and run.status in ('跑批中', '排队中'):
+            if run and run.status in ('跑批中', '排队中', '下载中'):
                 raise ValueError('仍有任务运行，请等待批次收尾后重启更新')
             if self.phase != 'ready' or not self.installer or not self.install_callback:
                 raise ValueError('请先下载更新，或从批量版程序中操作')

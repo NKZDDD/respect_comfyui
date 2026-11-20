@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -135,6 +136,53 @@ def test_文件名前面必须带序号_否则重名互相覆盖(tmp_path):
     from core import batch
     ts = batch.build_tasks(_spec(tmp_path, lines="一样的\n一样的"))
     assert len({t.dest for t in ts}) == 2
+
+
+@pytest.mark.parametrize("kind,extension", [("image", ".png"), ("video", ".mp4")])
+def test_grouped_outputs_follow_source_row_across_repeats_and_reruns(tmp_path, kind, extension):
+    from core import batch
+    other_dir = tmp_path / "另一处" / "独立交付"
+    rows = [{"prompt": "外套", "output_folder": "秋装"}, {"prompt": ""},
+            {"prompt": "衬衫", "output_folder": "秋装"},
+            {"prompt": "表", "output_folder": str(other_dir)}, {"prompt": "其他"}]
+    spec = _spec(tmp_path, kind=kind, tasks=rows, repeat=2, skip_existing=True)
+    cfg = _cfg()
+    run = _wait(batch.start(spec, cfg))
+    root = Path(spec["out_dir"])
+    assert run.counts()["完成"] == 8
+    assert run.snapshot()["out_dir"] == str(root)
+    assert run.snapshot()["output_dirs"] == [str(root / "秋装"), str(other_dir), str(root)]
+    expected = [folder / f"{i:03d}_{prompt}_{copy}{extension}"
+                for i, (folder, prompt) in enumerate(
+                    [(root / "秋装", "外套"), (root / "秋装", "衬衫"), (other_dir, "表"), (root, "其他")], 1)
+                for copy in (1, 2)]
+    assert [Path(t.dest) for t in run.tasks] == expected
+    assert all(p.is_file() for p in expected)
+    assert _wait(batch.start(spec, cfg)).counts()["跳过"] == 8
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 目录格式")
+@pytest.mark.parametrize("folder", [r"E:\客户交付\成品", r"\\fileserver\共享\手表"])
+def test_absolute_drive_and_share_are_kept_as_task_destinations(tmp_path, folder):
+    from core import batch
+    tasks = batch.build_tasks(_spec(tmp_path, tasks=[{"prompt": "测试", "output_folder": folder}]))
+    assert os.path.dirname(tasks[0].dest) == folder
+
+
+@pytest.mark.parametrize("folder", ["..", "D:x", "a/b", "CON.txt", "x.", "x:y", "x\x00y", None])
+def test_invalid_output_folder_rejected_before_run(tmp_path, folder):
+    from core import batch
+    with pytest.raises(ValueError, match="子文件夹"):
+        batch.start(_spec(tmp_path, tasks=[{"prompt": "a", "output_folder": folder}]), _cfg())
+
+
+def test_group_path_occupied_by_file_stops_before_submission(tmp_path):
+    from core import batch
+    (tmp_path / "已占用").write_text("keep")
+    run = batch.start(_spec(tmp_path, out_dir=str(tmp_path), tasks=[
+        {"prompt": "a"}, {"prompt": "b", "output_folder": "已占用"}]), _cfg())
+    assert run.status == "已停止" and "成品目录" in run.message
+    assert all(t.attempts == 0 for t in run.tasks)
 
 
 def test_每条出几张展开成几条独立任务(tmp_path):

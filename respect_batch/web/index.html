@@ -63,6 +63,7 @@
   .th{position:relative;width:70px;height:70px;border-radius:8px;overflow:hidden;
       border:1px solid var(--line);background:var(--soft)}
   .th img{width:100%;height:100%;object-fit:cover;display:block}
+  .th .preview-error{position:absolute;inset:20px 0;text-align:center;font-size:11px;color:var(--bad)}
   .th b{position:absolute;left:0;bottom:0;background:rgba(0,0,0,.62);color:#fff;
         font-size:10px;padding:1px 4px;border-radius:0 4px 0 0;font-weight:600}
   .th x{position:absolute;top:2px;right:2px;width:17px;height:17px;border-radius:50%;
@@ -72,16 +73,20 @@
 
   /* 任务卡片 */
   .cards{display:flex;flex-direction:column;gap:8px}
-  .cd{display:flex;gap:9px;align-items:flex-start;background:var(--soft);
+  .cd{display:flex;flex-wrap:wrap;gap:9px;align-items:flex-start;background:var(--soft);
       border:1px solid var(--line);border-radius:9px;padding:8px 9px;transition:.15s}
   .cd.over{border-color:var(--acc);background:var(--acc2)}
   .cd>.n{width:24px;flex:0 0 auto;text-align:center;color:var(--dim);font-size:12px;
          font-weight:700;padding-top:7px}
-  .cd textarea{flex:1 0 auto;align-self:flex-start;min-width:240px;min-height:38px;
-               resize:both;overflow:auto;border-radius:7px;
+  .cd textarea{flex:1 1 240px;align-self:flex-start;min-width:0;max-width:100%;min-height:38px;
+               resize:vertical;overflow:auto;border-radius:7px;
                background:var(--card);padding:7px 9px;line-height:1.5}
   .cd .side{display:flex;flex-direction:column;gap:5px;flex:0 0 auto;padding-top:1px}
   .cd .thumbs{margin:0;flex-basis:100%;padding-left:33px}
+  .cd .output-folder{flex-basis:100%;padding-left:33px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
+  #outputGroups input[type=number]{width:6em}
+  #outputGroups .folder-target{flex:1 1 18em;min-width:0}
+  #runOutputDirs{max-width:100%}
 
   .msg{padding:9px 13px;border-radius:8px;margin-top:10px;font-size:13px;white-space:pre-wrap}
   .msg.ok{background:rgba(18,128,92,.13);color:var(--ok)}
@@ -172,6 +177,7 @@
     <div class="hint" id="catalogNote" data-admin></div>
     <details data-admin><summary>接口返回的完整模型清单</summary><pre id="allModels" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre></details>
     <div id="releaseNotice"></div>
+    <div id="modelNotice" role="status"></div>
     <div class="note hide" id="provNote"></div>
   </div>
 
@@ -229,10 +235,22 @@
       <div id="libraryPreview" class="wrapbox hide" style="margin-top:10px"></div>
     </details>
 
+    <details id="outputGroups">
+      <summary>按任务范围分配成品文件夹</summary>
+      <div class="row">
+        <div class="f"><label for="folderFrom">从第几条</label><input id="folderFrom" type="number" min="1" value="1"></div>
+        <div class="f"><label for="folderTo">到第几条（含）</label><input id="folderTo" type="number" min="1" value="1"></div>
+        <div class="f folder-target"><label for="folderName">目标文件夹</label><input id="folderName" placeholder="选择文件夹、粘贴完整路径或填写子文件夹名"></div>
+        <button type="button" id="pickRangeDir">选择文件夹…</button>
+        <button id="assignFolder">分配文件夹</button>
+        <button id="clearFolder">恢复到成品主目录</button>
+      </div>
+      <div class="hint">选好目录后点「分配文件夹」，该范围内的成品都保存到那里。只填名称时建在成品主目录下，留空按任务范围命名。</div>
+    </details>
     <div class="f" style="margin:16px 0 6px"><label>任务（一条一行，粘贴多行会自动拆开）</label></div>
     <div class="cards" id="cards"></div>
     <div class="row" style="margin-top:9px">
-      <button class="ghost" id="btnAdd">＋ 加一条</button>
+      <button class="ghost" id="btnAdd" title="新增任务，沿用上一条提示词">＋ 加一条</button>
       <button class="ghost mini" id="btnClear">清空</button>
       <span class="hint">想批量：把写好的一段文字粘进任意一个框，会自动拆成多条</span>
     </div>
@@ -241,9 +259,15 @@
   <!-- ── 进度 ── -->
   <div class="step hide" id="progCard">
     <h2><i>▶</i>进度</h2>
+    <div class="row" style="margin-bottom:10px">
+      <div class="f"><label for="batchPicker">查看批次</label><select id="batchPicker"></select></div>
+      <button id="btnStop" class="mini hide">停止此批次</button>
+      <button id="btnNewBatch" class="mini">新建空白批次</button>
+    </div>
     <div class="pills" id="pills"></div>
     <div class="bar"><i id="barFill" style="width:0"></i></div>
     <div class="row" style="margin-top:11px">
+      <select id="runOutputDirs" class="hide" aria-label="选择要打开的成品目录"></select>
       <button class="mini" id="btnOpenOut">打开成品目录</button>
       <button class="mini" id="btnOpenManifest">打开这次的记录</button>
       <span class="hint" id="runMsg"></span>
@@ -314,7 +338,6 @@ R2 的公开域名别填 *.r2.cloudflarestorage.com，那是 S3 API 域名、不
 <div class="gobar" id="gobar">
   <div class="inner">
     <button class="primary" id="btnRun" style="padding:9px 30px;font-size:15px">开跑</button>
-    <button class="hide" id="btnStop" style="color:var(--bad);border-color:var(--bad)">停止</button>
     <b id="goCount"></b>
     <span class="hint" id="goWhat"></span>
     <div class="grow"></div>
@@ -329,6 +352,8 @@ const $ = s => document.querySelector(s);
 const el = (t,c,x) => { const n=document.createElement(t); if(c) n.className=c;
                         if(x!==undefined) n.textContent=x; return n; };
 let CAPS=[], CFG=null, TPLS=[], TIMER=null, LOGN=0;
+let selectedRun='', pollSequence=0, submitting=false;
+let pendingSubmission=null;
 let RELEASE=false, PREVIEW=false;
 const SESSION='__RELEASE_SESSION__';
 const sessionHeaders=()=>SESSION.startsWith('__')?{}:{'X-Respect-Session':SESSION};
@@ -361,6 +386,7 @@ async function boot(){
   }
   CAPS = d.providers||[]; CFG = d.config; TPLS = d.templates||[];
   CFG.__uploadReady = !!d.upload_ready;   // refWarn 靠它判断配没配对象存储
+  CFG.__uploadWarning = d.upload_warning || '';
   if(RELEASE) $('#prov').value='preset';
   if(!RELEASE){
   /* @admin-start */
@@ -391,8 +417,9 @@ async function boot(){
   drawTemplates(); drawProviders(); drawLimits();
   /* @admin-end */
   }
-  onProv(); render();
+  onProv(); render(); drawLibraries();
   window.BatchModelStats?.mount();
+  poll();
 }
 
 const cap = () => CAPS.find(c=>c.id===$('#prov').value) || {};
@@ -431,7 +458,8 @@ function onKind(){
   ms.innerHTML='';
   (b.models||[]).forEach(m=>ms.appendChild(Object.assign(el('option','',(b.model_labels||{})[m]||m),{value:m})));
   if(!(b.models||[]).length)
-    ms.appendChild(Object.assign(el('option','','暂无可用模型，请联系支持'),{value:''}));
+    ms.appendChild(Object.assign(el('option','','暂无可用模型，请检查提示后刷新'),{value:''}));
+  msg('#modelNotice',false,!(b.models||[]).length ? (b.empty_message||'暂无可用模型，请检查授权或刷新模型目录。') : '');
   if(b.default_model && (b.models||[]).includes(b.default_model)) ms.value=b.default_model;
   onModel();
 }
@@ -534,6 +562,7 @@ function thumbs(list, box, onDel){
     const t=el('div','th');
     const im=el('img'); im.src='/api/file?path='+encodeURIComponent(r.path);
     im.alt=r.name; im.title=r.name; t.appendChild(im);
+    im.onerror=()=>{if(!t.querySelector('.preview-error'))t.appendChild(el('span','preview-error','预览失败'));};
     t.appendChild(el('b','',String(i+1)));       // 序号 = 各家的「图1、图2」
     const x=el('x','','×'); x.title='去掉'; x.onclick=e=>{e.stopPropagation(); onDel(i);};
     t.appendChild(x);
@@ -541,12 +570,15 @@ function thumbs(list, box, onDel){
   });
 }
 
-function bindDrop(node, into){
+function bindDrop(node, getTarget){
   node.addEventListener('dragover', e=>{e.preventDefault(); node.classList.add('over');});
   node.addEventListener('dragleave', ()=>node.classList.remove('over'));
   node.addEventListener('drop', e=>{
     e.preventDefault(); e.stopPropagation(); node.classList.remove('over');
-    if(e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files, into);
+    // Login replaces reference arrays; resolve the current list at drop time.
+    const files=[...(e.dataTransfer?.files||[])];
+    if(files.length) uploadFiles(files, getTarget());
+    else toast('没有收到可读取的图片文件。若从微信拖入，请先将图片另存到电脑，再拖入或点击选择。');
   });
 }
 function pickInto(into){ PICK_TARGET=into; $('#filePick').value=''; $('#filePick').click(); }
@@ -581,6 +613,11 @@ async function importLibrary(files, into){
 }
 function drawLibraries(){
   const box=$('#libraries'); box.innerHTML='';
+  // An old import success message must not survive removing its library.
+  if(!LIB_LOADING && $('#libraryMsg .ok')){
+    const count=LIBRARIES.reduce((n,p)=>n+p.length,0), pools=LIBRARIES.filter(p=>p.length).length;
+    msg('#libraryMsg',true,count?`当前 ${pools} 个素材库，共 ${count} 张图片；每条任务从每个非空库取 1 张。`:'');
+  }
   $('#btnAddLibrary').disabled=LIB_LOADING;
   LIBRARIES.forEach((pool,si)=>{
     const wrap=el('div','note'), row=el('div','row');
@@ -630,16 +667,24 @@ function previewLibraries(total){
   box.appendChild(table);
 }
 
+function referenceUploadError(){
+  const b=block();
+  const anyRef=SHARED.length || TASKS.some(t=>t.refs.length) || LIBRARIES.some(p=>p.length);
+  if(b.max_refs===0 && anyRef) return '当前模型只支持文字生成，不接受参考图；请移除参考图或更换支持参考图的模型。';
+  return RELEASE && anyRef && b.ref_mode==='url' && !(b.upload_ready ?? CFG.__uploadReady)
+    ? (b.upload_warning || CFG.__uploadWarning || '图片上传服务尚未配置，请联系管理员检查上传配置。') : '';
+}
 function refWarn(){
   const b=block(), box=$('#refWarn'); box.innerHTML='';
   const anyRef = SHARED.length || TASKS.some(t=>t.refs.length) || LIBRARIES.some(p=>p.length);
   if(b.min_refs) box.appendChild(el('div','msg','这个模型每条任务需要一张首帧参考图，可从图片或文件夹导入。'));
   if(!anyRef) return;
+  if(b.max_refs===0){box.appendChild(el('div','msg bad',referenceUploadError()));return;}
   // 只收公网链接的家 + 没配对象存储 = 这一批一定跑不了。**现在就说**，
   // 别等跑到第一条才报 —— 那时人已经填完一整屏了。
   if(b.ref_mode==='url' && !(b.upload_ready ?? CFG.__uploadReady)){
     const w=el('div','msg bad');
-    if(RELEASE){w.textContent='图片上传服务尚未配置，请联系管理员提供完整发行包。';box.appendChild(w);return;}
+    if(RELEASE){w.textContent=referenceUploadError();box.appendChild(w);return;}
     w.append(`${cap().name} 这个模型的参考图只收公网链接，但还没配对象存储 —— 带图会跑不了。`);
     const t=el('button','mini','去配'); t.style.marginLeft='10px';
     t.onclick=()=>document.querySelector('.tab[data-tab=set]').click();
@@ -671,17 +716,36 @@ function render(){
     side.appendChild(bx);
     cd.appendChild(side);
 
+    if(t.output_folder) cd.appendChild(el('div','output-folder',(fullOutputPath(t.output_folder)?'成品目录 · ':'成品子文件夹 · ')+t.output_folder));
     if(t.refs.length){
       const tb=el('div','thumbs');
       thumbs(t.refs, tb, j=>{ t.refs.splice(j,1); render(); updateGo(); });
       cd.appendChild(tb);
     }
-    bindDrop(cd, t.refs);
+    bindDrop(cd, ()=>t.refs);
     box.appendChild(cd);
     autoGrow(ta);
   });
   thumbs(SHARED, $('#sharedThumbs'), i=>{ SHARED.splice(i,1); render(); refWarn(); updateGo(); });
   updateGo();
+}
+function fullOutputPath(value){
+  return /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+|\/(?!\/))/i.test(value);
+}
+function assignOutputFolder(useRoot){
+  const from=$('#folderFrom').valueAsNumber, to=$('#folderTo').valueAsNumber;
+  if(!Number.isInteger(from) || !Number.isInteger(to) || from<1 || to<from || to>TASKS.length){
+    toast(`请输入现有任务的起止行号（1–${TASKS.length}），结束行须大于或等于起始行`);
+    return;
+  }
+  const folder=useRoot ? '' : ($('#folderName').value.trim() || `任务${from}-${to}`);
+  if(folder && !fullOutputPath(folder) && (/[<>:"/\\|?*\x00-\x1f]/.test(folder) || folder.endsWith('.') || folder.length>255
+      || /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]) *(?:\.|$)/i.test(folder))){
+    toast('请选择目标文件夹、粘贴完整路径，或只填子文件夹名称'); return;
+  }
+  for(const task of TASKS.slice(from-1,to)) task.output_folder=folder;
+  render();
+  toast(`第 ${from}–${to} 条成品将保存到${folder || '成品主目录'}`);
 }
 function autoGrow(ta){
   const kept=parseFloat(ta.dataset.userH||'0')||0;
@@ -696,22 +760,34 @@ function onPaste(e, i){
   if(lines.length<2) return;              // 单行就按普通粘贴走
   e.preventDefault();
   const cur=TASKS[i];
-  const made=lines.map(p=>({prompt:p, refs:[]}));
-  // 粘进一个空框 → 顶掉它；粘进有内容的框 → 插在它后面，不动已有的
-  if(!cur.prompt.trim()){ made[0].refs=cur.refs; TASKS.splice(i,1,...made); }
+  const made=lines.map(p=>({prompt:p, refs:[], output_folder:cur.output_folder}));
+  const field=e.target;
+  const replacesPrompt=field.selectionStart===0 && field.selectionEnd===field.value.length;
+  if(!cur.prompt.trim() || replacesPrompt){ made[0].refs=cur.refs; TASKS.splice(i,1,...made); }
   else TASKS.splice(i+1,0,...made);
   render();
   toast(`拆成了 ${lines.length} 条`);
 }
 
 function liveTasks(){ return TASKS.filter(t=>t.prompt.trim()); }
+function resetTaskList(){
+  TASKS=[{prompt:'',refs:[]}];
+  $('#folderFrom').value='1';
+  $('#folderTo').value='1';
+  $('#folderName').value='';
+}
+function modelSelectionError(){ return $('#model').value ? '' : (block().empty_message||'请先选择可用模型'); }
 function updateGo(){
   const n=liveTasks().length, rep=parseInt($('#repeat').value,10)||1;
   const total=n*rep;
   $('#goCount').textContent = total ? `${total} 条` : '还没有任务';
   const libraryError=libraryLimitError();
-  $('#btnRun').disabled = !total || LIB_LOADING || RUNNING || PREVIEW || !!libraryError;
-  $('#btnRun').title=libraryError || (LIB_LOADING?'等待文件夹读取完成':'');
+  const modelError=modelSelectionError();
+  const uploadError=referenceUploadError();
+  $('#btnRun').disabled = !total || LIB_LOADING || submitting || PREVIEW || !!modelError || !!libraryError || !!uploadError;
+  $('#btnRun').textContent=submitting ? '提交中…' : RUNNING ? '提交新批次' : '开跑';
+  $('#btnRun').title=modelError || libraryError || uploadError || (LIB_LOADING?'等待文件夹读取完成':'');
+  refWarn();
   previewLibraries(total);
   const c=cap(), b=block(), k=$('#kind').value;
   const bits=[c.name, $('#model').selectedOptions[0]?.textContent];
@@ -722,7 +798,14 @@ function updateGo(){
   const refs=SHARED.length;
   if(refs) bits.push(`${refs} 张共用参考图`);
   $('#goWhat').textContent = bits.filter(Boolean).join(' · ');
-  $('#goOut').textContent = '成品 → ' + ($('#outDir').value||'');
+  const assigned = new Set(liveTasks().map(t=>t.output_folder || ''));
+  const firstFolder = assigned.values().next().value || '';
+  const mainDir = $('#outDir').value || '';
+  let destination = firstFolder || mainDir;
+  if(firstFolder && !fullOutputPath(firstFolder) && mainDir){
+    destination = mainDir.replace(/[\\/]+$/,'') + (mainDir.includes('\\')?'\\':'/') + firstFolder;
+  }
+  $('#goOut').textContent = assigned.size>1 ? '成品 → 按任务分配目录' : '成品 → ' + destination;
   $('#taskHint').textContent = libraryError || (n ? `${n} 条` : '');
 }
 
@@ -822,7 +905,8 @@ function collect(){
 function buildSpec(){
   return {kind:$('#kind').value, provider:$('#prov').value, model:$('#model').value,
           tasks: liveTasks().map(t=>({prompt:t.prompt.trim(),
-                                      refs:t.refs.map(r=>r.path)})),
+                                      refs:t.refs.map(r=>r.path),
+                                      ...(t.output_folder ? {output_folder:t.output_folder} : {})})),
           refs: SHARED.map(r=>r.path),
           video_refs: $('#kind').value==='video'&&block().max_video_refs ? VIDEO_REFS.map(r=>r.path) : [],
           ref_slots: LIBRARIES.map(pool=>pool.map(r=>r.path)),
@@ -836,28 +920,80 @@ function buildSpec(){
 }
 async function startRun(){
   if(PREVIEW){toast('请联系管理员提供正式发行包');return;}
-  if(LIB_LOADING || RUNNING) return;
-  const error=libraryLimitError();
+  if(LIB_LOADING || submitting) return;
+  const error=modelSelectionError() || libraryLimitError() || referenceUploadError();
   if(error){toast(error);return;}
-  const d=await api('/api/start',{spec:buildSpec()});
-  if(!d.ok){ toast(d.msg); msg('#keyWarn', false, d.msg); return; }
-  if(d.status==='已停止'){ toast(d.message); msg('#keyWarn', false, d.message); return; }
-  msg('#keyWarn', true, '');
-  LOGN=0; $('#logBox').textContent='';
-  $('#progCard').classList.remove('hide');
-  $('#progCard').scrollIntoView({behavior:'smooth', block:'start'});
-  setRunning(true); poll();
+  submitting=true; updateGo();
+  try{
+    const spec=buildSpec(), content=JSON.stringify(spec);
+    if(pendingSubmission?.content!==content) pendingSubmission={content,id:crypto.randomUUID()};
+    const d=await api('/api/start',{spec,submission_id:pendingSubmission.id});
+    pendingSubmission=null;
+    if(!d.ok){ toast(d.msg); msg('#keyWarn', false, d.msg); return; }
+    msg('#keyWarn', false, d.status==='已停止' ? d.message : '');
+    $('#progCard').classList.remove('hide');
+    $('#progCard').scrollIntoView({behavior:'smooth', block:'start'});
+    await selectRun(d.id);
+  }catch(e){
+    msg('#keyWarn',false,'提交结果待确认，请先查看批次进度再决定是否重试。');
+    await poll();
+  }finally{submitting=false; updateGo();}
 }
-function setRunning(on){
-  RUNNING=on;
-  $('#btnRun').disabled=on; $('#btnStop').classList.toggle('hide',!on);
-  if(TIMER) clearInterval(TIMER);
-  TIMER = on ? setInterval(poll,1200) : null;
-  if(!on) updateGo();
+function clearRunView(){
+  LOGN=0;
+  for(const selector of ['#logBox','#taskBody','#runMsg','#pills']) $(selector).replaceChildren();
+  $('#barFill').style.width='0';
+  $('#btnStop').classList.add('hide');
+  $('#btnOpenOut').disabled=$('#btnOpenManifest').disabled=true;
+  $('#runOutputDirs').replaceChildren(); $('#runOutputDirs').classList.add('hide');
+}
+function resetRuns(){
+  ++pollSequence; clearTimeout(TIMER); RUNNING=false; selectedRun='';
+  $('#progCard').classList.add('hide');
+  $('#batchPicker').replaceChildren(); clearRunView();
+}
+function selectRun(id){
+  selectedRun=id; clearRunView(); return poll();
 }
 async function poll(){
-  const d=await api('/api/run?log_from='+LOGN);
-  if(!d.ok||d.idle) return;
+  const seq=++pollSequence;
+  clearTimeout(TIMER);
+  try{
+    const query=new URLSearchParams({log_from:String(LOGN)});
+    if(selectedRun) query.set('run_id',selectedRun);
+    const d=await api('/api/run?'+query);
+    if(seq!==pollSequence) return;
+    if(!d.ok) throw new Error(d.msg||'读取批次进度失败');
+    if(d.idle){resetRuns();updateGo();return;}
+    if(d.id!==selectedRun){clearRunView();selectedRun=d.id;}
+    const runs=d.runs || [d];
+    const wasRunning=RUNNING;
+    RUNNING=runs.some(r=>['跑批中','排队中','下载中'].includes(r.status));
+    const picker=$('#batchPicker');
+    const options=runs.map(r=>{
+      const time=r.id.replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-.+$/,'$2/$3 $4:$5:$6');
+      const label=[time+' #'+r.id.slice(-4),r.label,r.total && r.total+' 条',r.status].filter(Boolean).join(' · ');
+      return new Option(label,r.id,false,r.id===selectedRun);
+    });
+    if(options.length!==picker.length || options.some((o,i)=>o.value!==picker.options[i].value || o.text!==picker.options[i].text)){
+      picker.replaceChildren(...options);
+    }
+    picker.value=selectedRun;
+    $('#progCard').classList.remove('hide');
+    $('#btnStop').classList.toggle('hide',!['跑批中','排队中'].includes(d.status));
+    $('#btnOpenOut').disabled=!d.out_dir; $('#btnOpenManifest').disabled=!d.manifest;
+    drawRun(d); if(RUNNING!==wasRunning) updateGo();
+    for(const id of ['#managed-refresh','#managed-logout']){
+      if($(id)) $(id).disabled=RUNNING;
+    }
+    if(RUNNING) TIMER=setTimeout(poll,1200);
+  }catch(e){
+    if(seq!==pollSequence) return;
+    $('#runMsg').textContent=e.message || '进度读取失败，正在重试';
+    if(selectedRun || RUNNING) TIMER=setTimeout(poll,2500);
+  }
+}
+function drawRun(d){
   const c=d.counts, done=c['完成']+c['失败']+c['未发']+c['跳过'];
   $('#pills').innerHTML='';
   // 「未发」单独一格，别并进失败：整批停下来时它们一条都没发出去、没扣钱，
@@ -880,9 +1016,29 @@ async function poll(){
     tr.appendChild(el('td','s-'+t.status,t.status));
     tr.appendChild(el('td','',t.seconds?t.seconds+'s':''));
     tr.appendChild(el('td','',t.attempts?String(t.attempts):''));
-    const last=el('td','', t.error || ((t.status==='完成'||t.status==='跳过')
-                 ? t.dest.split(/[\\/]/).pop() : ''));
+    const last=el('td','', t.error || '');
+    if(!t.error && t.dest && (t.status==='完成'||t.status==='跳过')){
+      const root=(d.out_dir||'').replace(/[\\/]+$/,'');
+      const suffix=t.dest.slice(root.length);
+      last.textContent=root && t.dest.startsWith(root) && /^[\\/]/.test(suffix) ? suffix.slice(1) : t.dest;
+    }
     if(t.error) last.className='s-失败';
+    if(t.can_retry_download){
+      const retry=el('button','mini','仅重新下载');
+      retry.style.display='block';retry.style.marginTop='8px';
+      retry.disabled=!['已完成','已停止'].includes(d.status);
+      retry.title='只取回同一结果，不重新生成；请保持程序打开，链接过期后需从原任务取回';
+      retry.onclick=async()=>{
+        retry.disabled=true;
+        try{
+          const r=await api('/api/retry-download',{run_id:d.id,task_idx:t.idx});
+          if(!r.ok){toast(r.msg);return;}
+          await poll();
+        }catch(e){toast('无法连接本地程序，请刷新任务状态；不会重新生成');}
+        finally{retry.disabled=false;}
+      };
+      last.appendChild(retry);
+    }
     tr.appendChild(last); tb.appendChild(tr);
   });
   if(d.logs&&d.logs.length){
@@ -894,9 +1050,20 @@ async function poll(){
   }
   const g=d.gate||{};
   $('#gateInfo').textContent=`在途 ${g.global_inflight||0}/${g.global_limit||0}`;
-  $('#btnOpenOut').onclick=()=>api('/api/open',{path:d.out_dir});
-  $('#btnOpenManifest').onclick=()=>api('/api/open',{path:d.manifest});
-  if(d.status==='已完成'||d.status==='已停止'){ setRunning(false); toast(d.message); }
+  const dirs=d.output_dirs || (d.out_dir?[d.out_dir]:[]);
+  const outputPicker=$('#runOutputDirs');
+  if(dirs.length!==outputPicker.options.length || dirs.some((path,i)=>path!==outputPicker.options[i].value)){
+    const previous=outputPicker.value;
+    outputPicker.replaceChildren(...dirs.map(path=>new Option(path,path)));
+    if(dirs.includes(previous)) outputPicker.value=previous;
+  }
+  outputPicker.classList.toggle('hide',dirs.length<2);
+  $('#btnOpenOut').disabled=!dirs.length;
+  $('#btnOpenOut').onclick=async()=>{
+    const result=await api('/api/open',{run_id:d.id,path:outputPicker.value});
+    if(!result.ok) toast(result.msg);
+  };
+  $('#btnOpenManifest').onclick=()=>api('/api/open',{run_id:d.id,path:d.manifest});
 }
 
 /* ══════════════════════ 事件 ══════════════════════ */
@@ -916,31 +1083,62 @@ $('#conc').oninput=concNote;
 $('#repeat').oninput=updateGo;
 $('#btnAddLibrary').onclick=()=>{LIBRARIES.push([]); drawLibraries(); updateGo();};
 $('#libraryMode').onchange=updateGo;
-$('#btnAdd').onclick=()=>{ TASKS.push({prompt:'',refs:[]}); render();
-  const ts=document.querySelectorAll('.cd textarea'); ts[ts.length-1].focus(); };
-$('#btnClear').onclick=()=>{ TASKS=[{prompt:'',refs:[]}]; render(); };
-$('#btnRun').onclick=startRun;
-$('#btnStop').onclick=()=>api('/api/cancel',{});
+$('#assignFolder').onclick=()=>assignOutputFolder(false);
+$('#clearFolder').onclick=()=>assignOutputFolder(true);
+$('#btnAdd').onclick=()=>{
+  TASKS.push({prompt:TASKS.at(-1)?.prompt || '', refs:[]});
+  render();
+  const prompt=$('#cards .cd:last-child textarea');
+  prompt.focus();
+  prompt.select();
+};
+$('#btnClear').onclick=()=>{ resetTaskList(); render(); };
+$('#btnRun').onclick=e=>{if(e.detail<2) startRun();};
+$('#batchPicker').onchange=e=>selectRun(e.target.value);
+$('#btnStop').onclick=async()=>{
+  const d=await api('/api/cancel',{run_id:selectedRun});
+  if(!d.ok) toast(d.msg);
+  await poll();
+};
+$('#btnNewBatch').onclick=()=>{
+  if(LIB_LOADING || submitting) return;
+  resetTaskList(); SHARED=[]; VIDEO_REFS=[]; LIBRARIES=[];
+  render(); drawLibraries(); drawVideoRefs();
+  $('#model').focus();
+  $('#model').scrollIntoView({block:'center',behavior:'smooth'});
+};
+window.addEventListener('focus',()=>{if(CFG && !document.body.classList.contains('managed-locked')) poll();});
 function drawVideoRefs(){
  const box=$('#videoRefList');box.innerHTML='';VIDEO_REFS.forEach((r,i)=>{const row=el('div','row');row.appendChild(el('span','',`${i+1}. ${r.name}`));const del=el('button','mini','移除');del.onclick=()=>{VIDEO_REFS.splice(i,1);drawVideoRefs();};row.appendChild(del);box.appendChild(row);});
 }
 $('#videoPick').onchange=async()=>{
+ const target=VIDEO_REFS;
  for(const f of $('#videoPick').files){
-  if(VIDEO_REFS.length>=(block().max_video_refs||0)){toast('参考视频数量已到该模型上限');break;}
+  if(target!==VIDEO_REFS) break;
+  if(target.length>=(block().max_video_refs||0)){toast('参考视频数量已到该模型上限');break;}
   if(f.size>200*1024*1024){toast('参考视频不能超过 200MB');continue;}
   const r=await fetch('/api/upload?name='+encodeURIComponent(f.name),{method:'POST',headers:sessionHeaders(),body:f});const d=await r.json();
-  if(d.ok){if(!VIDEO_REFS.some(v=>v.path===d.path))VIDEO_REFS.push({path:d.path,name:d.name});}else toast(d.msg);
+  if(d.ok){if(!target.some(v=>v.path===d.path))target.push({path:d.path,name:d.name});}else toast(d.msg);
  }drawVideoRefs();$('#videoPick').value='';
 };
 $('#sharedDrop').onclick=()=>pickInto(SHARED);
-bindDrop($('#sharedDrop'), SHARED);
+bindDrop($('#sharedDrop'), ()=>SHARED);
 $('#filePick').onchange=e=>{ if(PICK_TARGET && e.target.files.length)
                                uploadFiles(e.target.files, PICK_TARGET); };
-$('#btnPickDir').onclick=async()=>{
-  const d=await api('/api/pick_dir',{start:$('#outDir').value});
-  if(d.ok){ $('#outDir').value=d.path; updateGo(); }
-  else if(d.msg && d.msg!=='取消了') toast(d.msg);
-};
+async function chooseOutputDir(button,field){
+  const draft=TASKS;
+  button.disabled=true;
+  try{
+    const start=fullOutputPath(field.value)?field.value:$('#outDir').value;
+    const d=await api('/api/pick_dir',{start});
+    if(field.id==='folderName' && draft!==TASKS) return;
+    if(d.ok){field.value=d.path;updateGo();}
+    else if(d.msg && d.msg!=='取消了') toast(d.msg);
+  }catch{toast('无法打开文件夹选择框，请重试');}
+  finally{button.disabled=false;}
+}
+$('#btnPickDir').onclick=e=>chooseOutputDir(e.currentTarget,$('#outDir'));
+$('#pickRangeDir').onclick=e=>chooseOutputDir(e.currentTarget,$('#folderName'));
 /* @admin-start */
 $('#tpl').onchange=e=>{ if(e.target.value) applyTemplate(e.target.value); };
 $('#btnTplSave').onclick=async()=>{
