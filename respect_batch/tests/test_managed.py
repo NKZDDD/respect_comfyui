@@ -86,6 +86,34 @@ def test_model_union_routes_to_key_and_ignores_local_config(online):
     assert all(s not in public for s in ['FAKE-KEY', 'upstream.invalid', 'base_url', 'assignment_id'])
 
 
+def test_quota_checked_before_adapter_and_completed_under_same_id(online, monkeypatch):
+    manager, _ = online
+    manager.quota_protocol = True
+    calls, allowed = [], False
+    def authorize(action, body, token):
+        assert action == 'quota/reserve'
+        calls.append(body['event_id'])
+        if not allowed:
+            raise managed.LoginRequired('额度已用完', 'quota_exhausted', 409)
+        return dict(reserved=True, event_id=body['event_id'])
+    monkeypatch.setattr(manager, 'post', authorize)
+    def generate(self, task, dest, **kwargs):
+        calls.append('generation')
+        Path(dest).write_bytes(b'x'*800)
+        return {}
+    monkeypatch.setattr(providers.REGISTRY['faker'], 'generate_image', generate)
+    run = batch.start(spec(), {})
+    wait(run)
+    assert len(calls) == 1 and 'generation' not in calls
+    assert not usage.pending('account-a')
+    allowed = True
+    run = batch.start(spec(), {})
+    wait(run)
+    reports = usage.pending('account-a')
+    assert len(calls) == 3 and calls[-1] == 'generation'
+    assert [(r['status'], r['event_id']) for r in reports] == [('completed', calls[1])]
+
+
 def test_refresh_revocation_overlap_and_account_switch(online):
     m, state = online
     old = spec('fast')

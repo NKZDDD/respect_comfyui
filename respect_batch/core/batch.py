@@ -404,14 +404,17 @@ def _dispatch(prov, task: Task, run: Run, log: Callable, resolved: list) -> dict
 def _tracked_dispatch(prov, task, run, log, resolved):
     from . import managed, managed_usage
     assignment = run.cfg.get('_usage')
+    if not assignment and managed.enabled():
+        task.status = '未发'
+        raise ApiError('任务缺少账号归属，请刷新后台配置后重新建立任务', kind=BATCH_FATAL)
     if assignment:
         try:
             managed.manager.authorize_task(assignment)
         except managed.LoginRequired as exc:
             task.status = '未发'
             raise ApiError(str(exc), kind=BATCH_FATAL) from None
-    with managed_usage.tracking(assignment, task):
-        if run.cfg.get('_adapter_sha256'):
+    with managed_usage.tracking(assignment, task, reserve=managed.manager.reserve_quota):
+        if assignment:
             # Some downloaded adapters use their own HTTP client. Reserve the
             # attempt before entering their code so those calls are counted too.
             managed_usage.begin()
@@ -500,6 +503,10 @@ def _execute(run: Run, task: Task, prov, resolve: Callable, max_retry: int) -> N
             return
         except ApiError as exc:
             task.error, task.error_kind = str(exc), exc.kind
+            if exc.err_code == 'quota_exhausted':
+                task.status, task.ended = '未发', time.time()
+                log(f'[{task.idx}] {exc}')
+                return
             if getattr(exc, 'download_retry', None):
                 task.download_retry = exc.download_retry
                 task.status, task.ended = '失败', time.time()

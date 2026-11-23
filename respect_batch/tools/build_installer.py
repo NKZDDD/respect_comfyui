@@ -19,7 +19,7 @@ def build(payload, makensis):
     with output.open('rb') as fp:
         sha = hashlib.file_digest(fp, 'sha256').hexdigest()
     manifest = dict(application='batch', flavor='batch', version=info['version'], build_sha256=info['sha256'],
-                    sha256=sha, bytes=output.stat().st_size, url='', notes='批量版支持独立下载安装更新', mandatory=False)
+                    sha256=sha, bytes=output.stat().st_size, url='', notes='支持账号生成次数额度，开跑前确认剩余额度，原任务重新下载沿用原次数。', mandatory=False)
     (payload / 'release.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     print(output)
     return manifest

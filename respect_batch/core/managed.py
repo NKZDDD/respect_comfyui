@@ -14,7 +14,7 @@ import requests
 from . import distribution, paths, managed_usage, production_diagnostics, login_diagnostics, task_history
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.11.20.2'
+VERSION = '2026.11.23.1'
 COOKIE = 'respect_batch_login'
 
 
@@ -50,6 +50,7 @@ class Manager:
     def __init__(self):
         self.lock = threading.RLock()
         self.tokens = None
+        self.quota_protocol = False
         self.user = None
         self._diagnostic_owner = None
         self.local_session = ''
@@ -101,6 +102,7 @@ class Manager:
         if self._headers is None:
             self._headers = build_headers()
         headers = dict(self._headers)
+        headers['X-Respect-Quota'] = '1'
         if request_id:
             headers['X-Studio-Request-ID'] = request_id
         if token:
@@ -227,6 +229,7 @@ class Manager:
                 self.configs, self.storage = copy.deepcopy(configs), copy.deepcopy(storage)
                 self.adapter_config = copy.deepcopy(adapter)
             self.user = user
+            self.quota_protocol = result.get('quota_protocol') == 1
             self.until = time.monotonic() + 60
 
     def matches(self, cookie):
@@ -257,6 +260,28 @@ class Manager:
             if self.user['id'] != assignment['owner'] or not any(
                     m['route']['_usage'] == assignment for m in self.profile['models']):
                 raise LoginRequired('账号或 Key 授权已变化，尚未提交的任务已停止', 'assignment_changed', 403)
+
+    def reserve_quota(self, owner, event_id):
+        from .apiutil import ApiError, TASK_FATAL
+        with self.lock:
+            if not self.user or self.user['id'] != owner:
+                raise ApiError('账号已变化，请登录原账号后再提交', kind=TASK_FATAL)
+            if not self.quota_protocol:
+                return
+            try:
+                for attempt in range(2):
+                    try:
+                        result = self.post('quota/reserve', dict(device_id=self.device_id(), event_id=event_id),
+                                           self.tokens['access_token'])
+                        break
+                    except LoginRequired as exc:
+                        if attempt or exc.code != 'access_expired':
+                            raise
+                        self.verify()
+            except LoginRequired as exc:
+                raise ApiError(str(exc), kind=TASK_FATAL, err_code=exc.code) from None
+            if result.get('reserved') is not True or result.get('event_id') != event_id:
+                raise ApiError('服务端未确认生成额度，任务尚未提交', kind=TASK_FATAL, err_code='quota_unavailable')
 
     def snapshot(self):
         from . import config

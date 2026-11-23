@@ -57,6 +57,13 @@ def begin():
                  model=ctx['model'], kind=ctx['kind'], source='managed',
                  assignment_id=ctx['assignment_id'], key_id=ctx['key_id'], key_name=ctx['key_name'],
                  task_id='', status='attempted', resumed=False, started_at=now, updated_at=now)
+    if ctx.get('reserve'):
+        try:
+            ctx['reserve'](ctx['owner'], event['event_id'])
+        except Exception as exc:
+            if getattr(exc, 'err_code', '') in ('auth_unavailable', 'quota_unavailable'):
+                persist(ctx['owner'], dict(event, status='failed', sequence=2))
+            raise
     persist(ctx['owner'], event)  # Must succeed before a new billable request.
     ctx['event'] = event
     ctx['request_started'] = False
@@ -117,11 +124,11 @@ def complete_download(owner, event):
 
 
 @contextmanager
-def tracking(assignment, task):
+def tracking(assignment, task, reserve=None):
     if not assignment:
         yield
         return
-    token = _context.set(dict(assignment, provider=task.provider, model=task.model, kind=task.kind))
+    token = _context.set(dict(assignment, provider=task.provider, model=task.model, kind=task.kind, reserve=reserve))
     try:
         yield
         event = snapshot()

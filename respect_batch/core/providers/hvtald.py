@@ -546,7 +546,7 @@ class HvtaldProvider(Provider):
         log(f"HVTALD 投递 actionId={aid} 参考图{len(body['imgs'])}张 prompt={body['prompt'][:40]}…")
         url = self.session.base_url.rstrip("/") + API_PATH
         from .. import managed_usage
-        managed_usage.begin()
+        managed_usage.begin_request()
         try:
             r = requests.post(url, json=body, timeout=self._timeout)
         except Exception as exc:                            # noqa: BLE001
