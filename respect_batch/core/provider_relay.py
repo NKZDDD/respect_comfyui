@@ -155,6 +155,7 @@ class Relay:
         poll_timeout=2400,
     ):
         job = relay_transport.event_id()
+        log(f"服务器转发任务编号：{job}")
         def call(action, **fields):
             return relay_transport.call(self.owner, action, dict(job=job, **fields))
 
