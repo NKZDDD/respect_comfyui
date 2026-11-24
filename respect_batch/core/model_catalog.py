@@ -82,7 +82,10 @@ def identity(pid, pc):
 
 
 def fetch(pid, pc):
-    """仅 GET 模型端点；不跟随跨站跳转、不返回含凭据的原始错误。"""
+    """Read the model metadata through the selected provider route."""
+    from . import provider_relay
+    if provider_relay.route(pc.get('api_key')):
+        return provider_relay.catalog(pid, pc['api_key'])
     from . import distribution, network
     managed = distribution.ENABLED and getattr(distribution, 'MANAGED', False)
     if not managed and pid == 'hvtald':

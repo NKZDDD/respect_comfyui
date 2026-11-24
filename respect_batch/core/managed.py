@@ -14,7 +14,7 @@ import requests
 from . import distribution, paths, managed_usage, production_diagnostics, login_diagnostics, task_history
 
 AUTH_URL = 'https://login.respect.chat'
-VERSION = '2026.11.23.1'
+VERSION = '2026.11.24.1'
 COOKIE = 'respect_batch_login'
 
 
@@ -103,6 +103,7 @@ class Manager:
             self._headers = build_headers()
         headers = dict(self._headers)
         headers['X-Respect-Quota'] = '1'
+        headers['X-Respect-Relay'] = '1'
         if request_id:
             headers['X-Studio-Request-ID'] = request_id
         if token:
@@ -116,7 +117,7 @@ class Manager:
                     headers['Content-Type'] = 'application/json'
                     payload = {'data': json.dumps(body,ensure_ascii=False).encode('utf-8')}
                 response = session.post(AUTH_URL + '/api/v1/auth/' + action, **payload,
-                    headers=headers, timeout=(8, 30), allow_redirects=False)
+                    headers=headers, timeout=(8, 50 if action == 'relay/catalog' else 30), allow_redirects=False)
             status = response.status_code
             payload = response.json()
             if response.status_code != 200:

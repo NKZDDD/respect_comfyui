@@ -273,6 +273,9 @@ def build(provider_id: str, api_key: str, base_url: str = "",
         raise ValueError(f"未知服务商: {provider_id}"
                          f"（可用: {'、'.join(REGISTRY)}；"
                          f"别名: {'、'.join(ALIASES) or '无'}）")
+    from .. import provider_relay
+    if provider_relay.route(api_key):
+        return provider_relay.Relay(cls, api_key)
     return cls(api_key=api_key, base_url=base_url, proxy=proxy, timeout=timeout)
 
 
